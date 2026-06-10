@@ -58,7 +58,7 @@ The contract an agent must satisfy (`templates/receipt.example.json`):
 | `validation_plan` | Commands + *why each one covers the change* + required flag |
 | `execution_evidence` | What actually ran, status, output reference |
 | `changed_files` | Must account for the real diff — undeclared changes fail the gate |
-| `head_sha` | Must match the PR head — receipts can't be recycled |
+| `diff_sha256` | sha256 of `git diff <base>...HEAD -- . ':(exclude).proofgate/receipt.json'` — binds the receipt to the diff content so receipts can't be recycled. Excluding the receipt file is what makes it computable before the receipt commit (a commit can never contain its own SHA), and a content hash survives GitHub's merge-ref checkout where a head SHA cannot. |
 | `self_modifying` | True if protected surfaces are touched; removes any auto-approve path |
 | `result_summary` | What a human should know before merging |
 

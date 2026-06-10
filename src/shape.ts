@@ -1,6 +1,30 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { ReceiptSchema, type Policy, type Receipt, type ShapeResult } from "./types.js";
 import { matchesAny } from "./glob.js";
+
+/**
+ * Canonical receipt binding: sha256 over the diff EXCLUDING the receipt
+ * file itself. The exclusion is what makes this computable before the
+ * receipt is committed — a commit can never contain its own SHA, so the
+ * old head_sha binding was unsatisfiable for an in-repo receipt.
+ */
+export const RECEIPT_DIFF_SPEC = ["--", ".", ":(exclude).proofgate/receipt.json"] as const;
+
+export function computeDiffSha256(diff: string): string {
+  return createHash("sha256").update(diff, "utf8").digest("hex");
+}
+
+/**
+ * A validation-plan command satisfies a required check only at token
+ * boundaries — `bundle exec rspec spec/foo_spec.rb` matches the check
+ * "bundle exec rspec"; `echo "bundle exec rspec"` does not. Plain
+ * substring matching let quoted/commented commands satisfy the policy.
+ */
+export function commandMatchesCheck(command: string, check: string): boolean {
+  const escaped = check.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|\\s)${escaped}(\\s|$)`).test(command);
+}
 
 export interface ShapeOptions {
   /** Base ref for `git diff` (e.g. origin/main). Empty disables git checks. */
@@ -20,8 +44,12 @@ function gitChangedFiles(baseRef: string, cwd: string): string[] {
   return out.split("\n").map((l) => l.trim()).filter(Boolean);
 }
 
-function gitHeadSha(cwd: string): string {
-  return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+function gitDiffExcludingReceipt(baseRef: string, cwd: string): string {
+  return execFileSync(
+    "git",
+    ["diff", `${baseRef}...HEAD`, ...RECEIPT_DIFF_SPEC],
+    { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  );
 }
 
 /**
@@ -66,8 +94,9 @@ export function shapeCheck(
   const receipt = parsed.data;
 
   // 1. Every policy-required check must exist as a *required* plan step.
+  // Token-boundary matching: quoted/echoed commands don't count.
   for (const check of policy.required_checks) {
-    const step = receipt.validation_plan.find((s) => s.command.includes(check));
+    const step = receipt.validation_plan.find((s) => commandMatchesCheck(s.command, check));
     if (!step) {
       errors.push(`required check missing from validation_plan: "${check}"`);
     } else if (!step.required) {
@@ -105,15 +134,24 @@ export function shapeCheck(
     warnings.push("self_modifying is true but no changed files match protected paths");
   }
 
-  // 4. Git integrity: receipt must account for the actual diff.
+  // 4. Git integrity: receipt must account for the actual diff. The
+  // binding is a content hash of the diff (receipt file excluded), so
+  // it survives both the receipt's own commit and GitHub's synthetic
+  // merge-ref checkout — neither of which a head SHA could.
   if (!opts.skipGit) {
     const cwd = opts.cwd ?? process.cwd();
     try {
-      const actualSha = gitHeadSha(cwd);
-      if (actualSha !== receipt.head_sha) {
-        errors.push(`head_sha mismatch: receipt=${receipt.head_sha} actual=${actualSha}`);
+      if (!opts.baseRef) {
+        warnings.push("no base ref provided — diff integrity (diff_sha256) not verified");
       }
       if (opts.baseRef) {
+        const actualHash = computeDiffSha256(gitDiffExcludingReceipt(opts.baseRef, cwd));
+        if (actualHash !== receipt.diff_sha256) {
+          errors.push(
+            `diff_sha256 mismatch: receipt=${receipt.diff_sha256} actual=${actualHash} ` +
+              `(compute with: git diff ${opts.baseRef}...HEAD -- . ':(exclude).proofgate/receipt.json' | sha256)`,
+          );
+        }
         const actual = gitChangedFiles(opts.baseRef, cwd);
         const declared = new Set(receipt.changed_files);
         const undeclared = actual.filter((f) => !declared.has(f));

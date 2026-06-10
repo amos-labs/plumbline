@@ -43,6 +43,6 @@
     "app/models/enrollment.rb",
     "spec/models/enrollment_spec.rb"
   ],
-  "head_sha": "0123456789abcdef0123456789abcdef01234567",
+  "diff_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "result_summary": "Added a date-ordering validation to Enrollment with a clear error message, plus specs covering valid, inverted, and equal date cases. No schema change required; existing records unaffected."
 }

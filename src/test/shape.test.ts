@@ -1,0 +1,118 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { shapeCheck, commandMatchesCheck, computeDiffSha256 } from "../shape.js";
+import { globToRegExp, matchesAny } from "../glob.js";
+import { PolicySchema } from "../types.js";
+
+const policy = PolicySchema.parse({
+  version: "1.0",
+  required_checks: ["bundle exec rspec"],
+  protected_paths: [
+    "db/migrate/**",
+    "app/models/invoice*",
+    "app/controllers/**/stripe*",
+    ".proofgate/**",
+  ],
+});
+
+function validReceipt(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    receipt_version: "1.0",
+    task_id: "TEST-1",
+    agent_id: "test-agent",
+    intent: "A perfectly reasonable change with an intent long enough to pass the schema.",
+    self_modifying: false,
+    policy_refs: [".proofgate/MISSION.md"],
+    validation_plan: [
+      { command: "bundle exec rspec spec/models/foo_spec.rb", reason: "covers the change", required: true },
+      { command: "bundle exec rspec", reason: "full suite", required: true },
+    ],
+    execution_evidence: [
+      { command: "bundle exec rspec spec/models/foo_spec.rb", status: "passed", output_ref: "3 examples, 0 failures" },
+      { command: "bundle exec rspec", status: "passed", output_ref: "100 examples, 0 failures" },
+    ],
+    changed_files: ["app/models/foo.rb", "spec/models/foo_spec.rb"],
+    diff_sha256: computeDiffSha256("fake diff"),
+    result_summary: "Did the reasonable change and validated it with model specs plus the full suite.",
+    ...overrides,
+  });
+}
+
+test("valid receipt passes (skipGit)", () => {
+  const { result } = shapeCheck(validReceipt(), policy, { skipGit: true });
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.pass, true);
+});
+
+test("invalid JSON fails", () => {
+  const { result } = shapeCheck("{nope", policy, { skipGit: true });
+  assert.equal(result.pass, false);
+});
+
+test("missing required check fails", () => {
+  const receipt = validReceipt({
+    validation_plan: [{ command: "rubocop", reason: "style", required: true }],
+    execution_evidence: [{ command: "rubocop", status: "passed" }],
+  });
+  const { result } = shapeCheck(receipt, policy, { skipGit: true });
+  assert.ok(result.errors.some((e) => e.includes('required check missing')));
+});
+
+test("a quoted/echoed command does not satisfy a required check", () => {
+  const receipt = validReceipt({
+    validation_plan: [{ command: 'echo "bundle exec rspec"', reason: "sneaky", required: true }],
+    execution_evidence: [{ command: 'echo "bundle exec rspec"', status: "passed" }],
+  });
+  const { result } = shapeCheck(receipt, policy, { skipGit: true });
+  assert.ok(result.errors.some((e) => e.includes('required check missing')));
+});
+
+test("required step with failed evidence fails", () => {
+  const receipt = validReceipt({
+    execution_evidence: [
+      { command: "bundle exec rspec spec/models/foo_spec.rb", status: "passed" },
+      { command: "bundle exec rspec", status: "failed" },
+    ],
+  });
+  const { result } = shapeCheck(receipt, policy, { skipGit: true });
+  assert.ok(result.errors.some((e) => e.includes('has status "failed"')));
+});
+
+test("protected path without self_modifying fails", () => {
+  const receipt = validReceipt({ changed_files: ["db/migrate/20260101_x.rb"] });
+  const { result } = shapeCheck(receipt, policy, { skipGit: true });
+  assert.ok(result.errors.some((e) => e.includes("self_modifying is false")));
+});
+
+test("protected path with self_modifying true passes the protected check", () => {
+  const receipt = validReceipt({ changed_files: ["db/migrate/20260101_x.rb"], self_modifying: true });
+  const { result } = shapeCheck(receipt, policy, { skipGit: true });
+  assert.equal(result.pass, true);
+});
+
+test("commandMatchesCheck: boundaries", () => {
+  assert.equal(commandMatchesCheck("bundle exec rspec spec/x_spec.rb", "bundle exec rspec"), true);
+  assert.equal(commandMatchesCheck("bundle exec rspec", "bundle exec rspec"), true);
+  assert.equal(commandMatchesCheck('echo "bundle exec rspec"', "bundle exec rspec"), false);
+  assert.equal(commandMatchesCheck("xbundle exec rspec", "bundle exec rspec"), false);
+});
+
+test("computeDiffSha256 is stable and hex", () => {
+  const h = computeDiffSha256("diff --git a/x b/x\n");
+  assert.match(h, /^[0-9a-f]{64}$/);
+  assert.equal(h, computeDiffSha256("diff --git a/x b/x\n"));
+  assert.notEqual(h, computeDiffSha256("different"));
+});
+
+test("glob: prefix wildcards do not over-match siblings", () => {
+  assert.ok(matchesAny("app/models/invoice.rb", policy.protected_paths));
+  assert.ok(matchesAny("app/models/invoice_item.rb", policy.protected_paths));
+  assert.equal(matchesAny("app/models/course_pool_invoice.rb", policy.protected_paths), null);
+});
+
+test("glob: ** spans directories", () => {
+  assert.ok(globToRegExp("db/migrate/**").test("db/migrate/2026/x.rb"));
+  assert.ok(globToRegExp("app/controllers/**/stripe*").test("app/controllers/webhooks/stripe_events_controller.rb"));
+  assert.ok(globToRegExp("app/controllers/**/stripe*").test("app/controllers/stripe_events_controller.rb"));
+  assert.equal(globToRegExp("db/migrate/**").test("db/schema.rb"), false);
+});
