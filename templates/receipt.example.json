@@ -1,0 +1,48 @@
+{
+  "receipt_version": "1.0",
+  "task_id": "ISSUE-142",
+  "agent_id": "claude-code-main",
+  "intent": "Add server-side validation for course enrollment dates so that enrollments cannot be created with an end date before the start date, per ISSUE-142.",
+  "self_modifying": false,
+  "policy_refs": [".proofgate/MISSION.md"],
+  "validation_plan": [
+    {
+      "command": "bundle exec rspec spec/models/enrollment_spec.rb",
+      "reason": "New model validation needs a failing-then-passing spec covering the date ordering rule",
+      "required": true
+    },
+    {
+      "command": "bundle exec rspec",
+      "reason": "Full suite to catch regressions in enrollment-dependent flows",
+      "required": true
+    },
+    {
+      "command": "bundle exec rubocop app/models/enrollment.rb",
+      "reason": "Style conformance on touched file",
+      "required": false
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "bundle exec rspec spec/models/enrollment_spec.rb",
+      "status": "passed",
+      "output_ref": "12 examples, 0 failures"
+    },
+    {
+      "command": "bundle exec rspec",
+      "status": "passed",
+      "output_ref": "1843 examples, 0 failures, 3 pending"
+    },
+    {
+      "command": "bundle exec rubocop app/models/enrollment.rb",
+      "status": "passed",
+      "output_ref": "1 file inspected, no offenses detected"
+    }
+  ],
+  "changed_files": [
+    "app/models/enrollment.rb",
+    "spec/models/enrollment_spec.rb"
+  ],
+  "head_sha": "0123456789abcdef0123456789abcdef01234567",
+  "result_summary": "Added a date-ordering validation to Enrollment with a clear error message, plus specs covering valid, inverted, and equal date cases. No schema change required; existing records unaffected."
+}

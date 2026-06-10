@@ -1,0 +1,12 @@
+{
+  "version": "1.0",
+  "mission_file": ".proofgate/MISSION.md",
+  "required_checks": [],
+  "protected_paths": [
+    ".proofgate/**",
+    ".github/workflows/**"
+  ],
+  "min_review_confidence": 0.8,
+  "review_model": "claude-sonnet-4-6",
+  "max_receipt_bytes": 262144
+}
