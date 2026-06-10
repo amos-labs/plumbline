@@ -4,7 +4,8 @@ import { readFileSync, existsSync } from "node:fs";
 import { PolicySchema, type GateResult, type Policy, type Verdict } from "./types.js";
 import { shapeCheck } from "./shape.js";
 import { semanticReview } from "./review.js";
-import { renderComment, postPrComment } from "./github.js";
+import { renderComment } from "./github.js";
+import { detectCi, reportToCi } from "./ci.js";
 
 function loadPolicy(path: string): Policy {
   if (!existsSync(path)) {
@@ -36,10 +37,11 @@ function flag(name: string): boolean {
 
 async function main(): Promise<number> {
   const cmd = process.argv[2];
+  const ci = detectCi();
   const cwd = arg("cwd", process.cwd())!;
   const receiptPath = arg("receipt", ".proofgate/receipt.json")!;
   const policyPath = arg("policy", ".proofgate/policy.json")!;
-  const baseRef = arg("base", process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF}` : "origin/main")!;
+  const baseRef = arg("base", ci.baseRef ?? "origin/main")!;
   const skipGit = flag("no-git");
 
   if (!cmd || !["shape", "review", "run"].includes(cmd)) {
@@ -116,17 +118,19 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
 
   // --- CI reporting ---
   if (cmd === "run") {
-    const repo = process.env.GITHUB_REPOSITORY;
-    const token = process.env.GITHUB_TOKEN;
-    const prNumber = Number(
-      process.env.PROOFGATE_PR_NUMBER ||
-        (process.env.GITHUB_REF?.match(/refs\/pull\/(\d+)\//)?.[1] ?? NaN),
+    if (ci.prNumber !== undefined && process.env.PROOFGATE_PR_NUMBER) {
+      ci.prNumber = Number(process.env.PROOFGATE_PR_NUMBER);
+    }
+    const posted = await reportToCi(ci, renderComment(gate), gate.final === "approve").catch(
+      (e) => {
+        console.error(`proofgate: failed to post CI comment: ${e?.message ?? e}`);
+        return false;
+      },
     );
-    if (repo && token && Number.isFinite(prNumber)) {
-      await postPrComment(repo, prNumber, renderComment(gate), token);
-      console.error(`posted gate result to ${repo}#${prNumber}`);
+    if (posted) {
+      console.error(`posted gate result to PR #${ci.prNumber} (${ci.provider})`);
     } else {
-      console.error("proofgate: not in a PR context (or GITHUB_TOKEN missing) — printing comment:\n");
+      console.error("proofgate: no PR context detected — printing comment:\n");
       console.log(renderComment(gate));
     }
   } else {

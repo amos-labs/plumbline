@@ -1,0 +1,44 @@
+# proofgate for Azure DevOps Pipelines.
+# Copy into your repo (e.g. pipelines/proofgate.yml) and add it as a PR build
+# validation policy on your target branch (Repos > Branches > Branch policies).
+#
+# Setup:
+# 1. Add ANTHROPIC_API_KEY as a secret pipeline variable (or variable group / Key Vault).
+# 2. Grant the build service identity "Contribute to pull requests" on the repo
+#    (Project Settings > Repositories > Security > <project> Build Service).
+# 3. Make the pipeline a *required* build validation policy so the gate blocks merge.
+
+trigger: none # PR-only: runs via branch policy build validation
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - checkout: self
+    fetchDepth: 0
+    persistCredentials: true
+
+  - task: NodeTool@0
+    inputs:
+      versionSpec: "20.x"
+
+  # Until proofgate is published to npm, clone it. Afterwards: npx proofgate run
+  - script: |
+      git clone --depth 1 https://github.com/amos-labs/proofgate.git $(Agent.TempDirectory)/proofgate
+      cd $(Agent.TempDirectory)/proofgate
+      npm ci && npm run build
+    displayName: Install proofgate
+
+  - script: |
+      TARGET=$(echo "$SYSTEM_PULLREQUEST_TARGETBRANCH" | sed 's#refs/heads/##')
+      git fetch origin "$TARGET" --depth=200 || true
+      node $(Agent.TempDirectory)/proofgate/dist/cli.js run --base "origin/$TARGET"
+    displayName: Run proofgate
+    env:
+      ANTHROPIC_API_KEY: $(ANTHROPIC_API_KEY)
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)

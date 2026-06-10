@@ -29,7 +29,9 @@ Two-tier validation, on purpose: the shape gate never pretends to understand mea
 
 2. **Add the policy.** Copy `templates/policy.json` to `.proofgate/policy.json`. Set `required_checks` (commands every validation plan must include, e.g. your test suite) and `protected_paths` (globs that force `self_modifying: true` and human review).
 
-3. **Add the workflow.** Copy `templates/workflow.yml` to `.github/workflows/proofgate.yml` and add `ANTHROPIC_API_KEY` to your repo secrets. Make the `proofgate` check required in branch protection.
+3. **Add the CI hook.**
+   - **GitHub:** copy `templates/workflow.yml` to `.github/workflows/proofgate.yml`, add `ANTHROPIC_API_KEY` to repo secrets, make the check required in branch protection.
+   - **Azure DevOps:** copy `templates/azure-pipelines.yml`, add `ANTHROPIC_API_KEY` as a secret variable, grant the build service "Contribute to pull requests", and add the pipeline as a required build validation policy. The gate posts/updates a PR thread (active on revise/escalate, resolved on approve).
 
 4. **Teach your agent the contract.** Add to your `CLAUDE.md` / agent instructions: every PR must include `.proofgate/receipt.json` conforming to `templates/receipt.example.json`, with real evidence from commands actually run.
 
