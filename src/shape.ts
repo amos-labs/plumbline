@@ -5,11 +5,26 @@ import { matchesAny } from "./glob.js";
 
 /**
  * Canonical receipt binding: sha256 over the diff EXCLUDING the receipt
- * file itself. The exclusion is what makes this computable before the
- * receipt is committed — a commit can never contain its own SHA, so the
- * old head_sha binding was unsatisfiable for an in-repo receipt.
+ * file(s). The exclusion is what makes this computable before the receipt
+ * is committed — a commit can never contain its own SHA, so the old
+ * head_sha binding was unsatisfiable for an in-repo receipt.
+ *
+ * Both the legacy single-file path and the per-PR receipts directory are
+ * excluded. The directory form (`.proofgate/receipts/<task_id>.json`, one
+ * file per PR) is what lets many PRs be open at once without ever
+ * conflicting on a shared receipt file.
  */
-export const RECEIPT_DIFF_SPEC = ["--", ".", ":(exclude).proofgate/receipt.json"] as const;
+export const RECEIPT_DIFF_SPEC = [
+  "--",
+  ".",
+  ":(exclude).proofgate/receipt.json",
+  ":(exclude).proofgate/receipts/*.json",
+] as const;
+
+/** True for any path that is itself a proof receipt (not real changed work). */
+export function isReceiptPath(file: string): boolean {
+  return file === ".proofgate/receipt.json" || /^\.proofgate\/receipts\/[^/]+\.json$/.test(file);
+}
 
 export function computeDiffSha256(diff: string): string {
   return createHash("sha256").update(diff, "utf8").digest("hex");
@@ -149,10 +164,14 @@ export function shapeCheck(
         if (actualHash !== receipt.diff_sha256) {
           errors.push(
             `diff_sha256 mismatch: receipt=${receipt.diff_sha256} actual=${actualHash} ` +
-              `(compute with: git diff ${opts.baseRef}...HEAD -- . ':(exclude).proofgate/receipt.json' | sha256)`,
+              `(compute with: git diff ${opts.baseRef}...HEAD -- . ':(exclude).proofgate/receipt.json' ':(exclude).proofgate/receipts/*.json' | sha256)`,
           );
         }
-        const actual = gitChangedFiles(opts.baseRef, cwd);
+        // The receipt file(s) themselves are never "changed work" — exclude
+        // them so an agent never has to declare its own receipt (circular)
+        // and so a receipt under .proofgate/ doesn't trip the protected-path
+        // rule and force self_modifying on otherwise-ordinary PRs.
+        const actual = gitChangedFiles(opts.baseRef, cwd).filter((f) => !isReceiptPath(f));
         const declared = new Set(receipt.changed_files);
         const undeclared = actual.filter((f) => !declared.has(f));
         if (undeclared.length > 0) {

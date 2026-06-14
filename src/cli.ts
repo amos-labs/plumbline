@@ -23,6 +23,49 @@ function getDiff(baseRef: string, cwd: string): string {
   });
 }
 
+const DEFAULT_RECEIPT = ".proofgate/receipt.json";
+
+/**
+ * Locate the receipt for THIS PR. Per-PR receipts live at
+ * `.proofgate/receipts/<task_id>.json` — one file per PR, so concurrent
+ * PRs never collide on a shared receipt (the single biggest blocker to
+ * running many agent PRs at once). We find the one added/modified in this
+ * PR's diff. Falls back to the legacy single-file path when none is found
+ * or git isn't available, so existing repos keep working unchanged. An
+ * explicit non-default --receipt always wins.
+ */
+function resolveReceiptPath(
+  explicit: string,
+  baseRef: string | undefined,
+  cwd: string,
+  skipGit: boolean,
+): string {
+  if (explicit !== DEFAULT_RECEIPT) return explicit;
+  if (skipGit || !baseRef) return DEFAULT_RECEIPT;
+  let changed: string[] = [];
+  try {
+    changed = execFileSync(
+      "git",
+      ["diff", "--name-only", "--diff-filter=AMR", `${baseRef}...HEAD`],
+      { cwd, encoding: "utf8" },
+    )
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((f) => /^\.proofgate\/receipts\/[^/]+\.json$/.test(f));
+  } catch {
+    return DEFAULT_RECEIPT;
+  }
+  if (changed.length === 1) return changed[0];
+  if (changed.length > 1) {
+    console.error(
+      `proofgate: this PR adds ${changed.length} receipts (${changed.join(", ")}); ` +
+        `expected exactly one under .proofgate/receipts/. Using the first.`,
+    );
+    return changed[0];
+  }
+  return DEFAULT_RECEIPT;
+}
+
 function arg(name: string, fallback?: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
   if (i >= 0 && process.argv[i + 1] && !process.argv[i + 1].startsWith("--")) {
@@ -39,10 +82,15 @@ async function main(): Promise<number> {
   const cmd = process.argv[2];
   const ci = detectCi();
   const cwd = arg("cwd", process.cwd())!;
-  const receiptPath = arg("receipt", ".proofgate/receipt.json")!;
   const policyPath = arg("policy", ".proofgate/policy.json")!;
   const baseRef = arg("base", ci.baseRef ?? "origin/main")!;
   const skipGit = flag("no-git");
+  const receiptPath = resolveReceiptPath(
+    arg("receipt", DEFAULT_RECEIPT)!,
+    skipGit ? undefined : baseRef,
+    cwd,
+    skipGit,
+  );
 
   if (!cmd || !["shape", "review", "run"].includes(cmd)) {
     console.log(`proofgate — proof-carrying gate for AI agent work
@@ -52,7 +100,9 @@ usage:
   proofgate review  [--receipt path] [--policy path] [--base ref] [--mission path]
   proofgate run     [--receipt path] [--policy path] [--base ref]   (shape + review + PR comment in CI)
 
-receipt default: .proofgate/receipt.json
+receipt: auto-discovered from the PR diff at .proofgate/receipts/<task_id>.json
+         (one file per PR — no conflicts); falls back to .proofgate/receipt.json.
+         Pass --receipt to override.
 policy default:  .proofgate/policy.json
 env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (comment), PROOFGATE_MODEL (override)`);
     return cmd ? 2 : 0;

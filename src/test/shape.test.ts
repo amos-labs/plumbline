@@ -1,8 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { shapeCheck, commandMatchesCheck, computeDiffSha256 } from "../shape.js";
+import { shapeCheck, commandMatchesCheck, computeDiffSha256, isReceiptPath } from "../shape.js";
 import { globToRegExp, matchesAny } from "../glob.js";
 import { PolicySchema } from "../types.js";
+
+test("isReceiptPath: recognizes legacy + per-PR receipts, nothing else", () => {
+  assert.ok(isReceiptPath(".proofgate/receipt.json"));
+  assert.ok(isReceiptPath(".proofgate/receipts/mcp-oauth.json"));
+  assert.ok(isReceiptPath(".proofgate/receipts/ISSUE-42.json"));
+  assert.ok(!isReceiptPath(".proofgate/policy.json"));
+  assert.ok(!isReceiptPath(".proofgate/receipts/nested/x.json"));
+  assert.ok(!isReceiptPath("app/models/user.rb"));
+});
 
 const policy = PolicySchema.parse({
   version: "1.0",

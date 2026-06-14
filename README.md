@@ -33,7 +33,9 @@ Two-tier validation, on purpose: the shape gate never pretends to understand mea
    - **GitHub:** copy `templates/workflow.yml` to `.github/workflows/proofgate.yml`, add `ANTHROPIC_API_KEY` to repo secrets, make the check required in branch protection.
    - **Azure DevOps:** copy `templates/azure-pipelines.yml`, add `ANTHROPIC_API_KEY` as a secret variable, grant the build service "Contribute to pull requests", and add the pipeline as a required build validation policy. The gate posts/updates a PR thread (active on revise/escalate, resolved on approve).
 
-4. **Teach your agent the contract.** Add to your `CLAUDE.md` / agent instructions: every PR must include `.proofgate/receipt.json` conforming to `templates/receipt.example.json`, with real evidence from commands actually run.
+4. **Teach your agent the contract.** Add to your `CLAUDE.md` / agent instructions: every PR must include a receipt conforming to `templates/receipt.example.json`, with real evidence from commands actually run.
+
+   **Use one receipt file per PR: `.proofgate/receipts/<task_id>.json`** (e.g. `.proofgate/receipts/ISSUE-142.json`). Because each PR writes a *different* filename, many PRs can be open at once without ever conflicting on the receipt — essential for autonomous / parallel agent work. The gate auto-discovers the receipt added in the PR's diff. The legacy single-file `.proofgate/receipt.json` still works for one-PR-at-a-time repos.
 
 ## CLI
 

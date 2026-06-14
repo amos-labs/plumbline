@@ -14,7 +14,7 @@ inputs:
     required: true
     default: ${{ github.token }}
   receipt:
-    description: "Path to the proof receipt"
+    description: "Path to the proof receipt. Leave as default to auto-discover the per-PR receipt at .proofgate/receipts/<task_id>.json (one file per PR — avoids conflicts); falls back to .proofgate/receipt.json."
     required: false
     default: ".proofgate/receipt.json"
   policy:

@@ -41,10 +41,11 @@ export const ReceiptSchema = z.object({
     .string()
     .regex(/^[0-9a-f]{64}$/, "diff_sha256 must be a 64-char lowercase hex SHA-256")
     .describe(
-      "sha256 of `git diff <base>...HEAD -- . ':(exclude).proofgate/receipt.json'` — " +
-        "binds the receipt to the diff content. Computable BEFORE committing the " +
-        "receipt (a commit can never contain its own SHA, which is why head_sha " +
-        "could not work), and stable across GitHub's synthetic merge-ref checkout.",
+      "sha256 of `git diff <base>...HEAD -- . ':(exclude).proofgate/receipt.json' " +
+        "':(exclude).proofgate/receipts/*.json'` — binds the receipt to the diff " +
+        "content. The receipt file(s) are excluded so it's computable BEFORE " +
+        "committing the receipt (a commit can never contain its own SHA), and so " +
+        "the per-PR receipt at .proofgate/receipts/<task_id>.json doesn't affect it.",
     ),
   result_summary: z.string().min(40),
 });
