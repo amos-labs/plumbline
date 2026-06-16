@@ -8,6 +8,23 @@ export function renderComment(result: GateResult): string {
   lines.push(`## ${icon} proofgate: ${result.final.toUpperCase()}`);
   lines.push("");
 
+  // Action banner — make WHO must act unambiguous. `revise` and `escalate`
+  // both produce a red required-check, which previously looked identical and
+  // left maintainers unsure whether the agent needed to fix something or they
+  // just needed to approve. Spell it out.
+  if (result.final === "approve") {
+    lines.push("> **✅ Passed — merging automatically. No action needed.**");
+  } else if (result.final === "revise") {
+    lines.push(
+      "> **🔁 Rework needed — the agent must fix this and re-push. No human action required.** See the failure capsule below.",
+    );
+  } else {
+    lines.push(
+      "> **⚠️ Human approval required — nothing for the agent to fix.** The change is sound but touches a protected/billing surface, so a maintainer must consciously override-merge: `gh pr merge <PR> --squash --admin`.",
+    );
+  }
+  lines.push("");
+
   lines.push(`**Shape gate:** ${result.shape.pass ? "pass" : "FAIL"}`);
   for (const e of result.shape.errors) lines.push(`- ❌ ${e}`);
   for (const w of result.shape.warnings) lines.push(`- ⚠️ ${w}`);
