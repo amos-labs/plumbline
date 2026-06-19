@@ -29,10 +29,22 @@ export function renderComment(result: GateResult): string {
     );
   } else {
     lines.push(
-      "> **⚠️ Human approval required — nothing for the agent to fix.** Touches a protected/billing surface, so a maintainer must consciously override-merge: `gh pr merge <PR> --squash --admin`.",
+      "> **⚠️ Human approval required — no agent rework needed, but this is NOT a rubber stamp.** Touches a protected/billing surface. **Read the review findings below (risk + validation notes) before override-merging:** `gh pr merge <PR> --squash --admin`.",
     );
   }
   lines.push("");
+
+  // Findings-at-a-glance: a non-approve verdict always carries substantive
+  // review notes. The action banner can read as "just approve" and bury them,
+  // so surface a one-line pointer + risk count right under the banner.
+  if (result.final !== "approve" && result.review) {
+    const riskCount = (result.review.risk_notes.match(/(?:^|\s)\d+[\).]/g) || []).length;
+    const riskLabel = riskCount > 0 ? `${riskCount} risk finding${riskCount === 1 ? "" : "s"}` : "risk notes";
+    lines.push(
+      `> 📋 **Review findings below — don't merge without reading them:** ${riskLabel}, plus validation-coverage and mission-alignment notes.`,
+    );
+    lines.push("");
+  }
 
   lines.push(`**Shape gate:** ${result.shape.pass ? "pass" : "FAIL"}`);
   for (const e of result.shape.errors) lines.push(`- ❌ ${e}`);
@@ -88,6 +100,51 @@ export function renderComment(result: GateResult): string {
   lines.push("");
   lines.push("<sub>proofgate · proof-carrying gate for agent work</sub>");
   return lines.join("\n");
+}
+
+export interface CiAnnotation {
+  /** GitHub workflow-command level. error=red, warning=amber, notice=blue. */
+  level: "error" | "warning" | "notice";
+  title: string;
+  message: string;
+}
+
+/**
+ * A compact one-liner for the GitHub Actions Checks UI (annotation), so the
+ * verdict AND the fact that there's substantive feedback are visible without
+ * opening the PR comment. revise→error (agent must fix), escalate→warning
+ * (human judgment, distinct from "broken"), approve→notice.
+ */
+export function renderCiSummary(result: GateResult): CiAnnotation {
+  if (result.final === "approve") {
+    return {
+      level: "notice",
+      title: "proofgate: APPROVE",
+      message: "Receipt passed shape + semantic review. Merging automatically — no action needed.",
+    };
+  }
+
+  const cap = result.review?.failure_capsule;
+  const parts: string[] = [];
+
+  if (result.final === "revise") {
+    parts.push("Rework needed — the agent fixes the items in the PR comment and re-pushes.");
+  } else {
+    parts.push("Human approval required (protected/billing surface) — NOT a rubber stamp.");
+  }
+  if (cap?.failing_check) parts.push(`Focus: ${cap.failing_check}.`);
+
+  if (result.review) {
+    const riskCount = (result.review.risk_notes.match(/(?:^|\s)\d+[\).]/g) || []).length;
+    const findings = riskCount > 0 ? `${riskCount} risk finding${riskCount === 1 ? "" : "s"} + validation notes` : "risk + validation notes";
+    parts.push(`Read the ${findings} in the PR comment before merging.`);
+  }
+
+  return {
+    level: result.final === "revise" ? "error" : "warning",
+    title: `proofgate: ${result.final.toUpperCase()}`,
+    message: parts.join(" "),
+  };
 }
 
 /** Post (or update) the gate comment on a PR. Requires GITHUB_TOKEN. */

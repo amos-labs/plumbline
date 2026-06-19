@@ -4,7 +4,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { PolicySchema, type GateResult, type Policy, type Verdict } from "./types.js";
 import { shapeCheck } from "./shape.js";
 import { semanticReview } from "./review.js";
-import { renderComment } from "./github.js";
+import { renderComment, renderCiSummary } from "./github.js";
 import { detectCi, reportToCi } from "./ci.js";
 
 function loadPolicy(path: string): Policy {
@@ -171,12 +171,15 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
     if (ci.prNumber !== undefined && process.env.PROOFGATE_PR_NUMBER) {
       ci.prNumber = Number(process.env.PROOFGATE_PR_NUMBER);
     }
-    const posted = await reportToCi(ci, renderComment(gate), gate.final === "approve").catch(
-      (e) => {
-        console.error(`proofgate: failed to post CI comment: ${e?.message ?? e}`);
-        return false;
-      },
-    );
+    const posted = await reportToCi(
+      ci,
+      renderComment(gate),
+      gate.final === "approve",
+      renderCiSummary(gate),
+    ).catch((e) => {
+      console.error(`proofgate: failed to post CI comment: ${e?.message ?? e}`);
+      return false;
+    });
     if (posted) {
       console.error(`posted gate result to PR #${ci.prNumber} (${ci.provider})`);
     } else {

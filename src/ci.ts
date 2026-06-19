@@ -1,4 +1,31 @@
-import { postPrComment as postGitHubComment } from "./github.js";
+import { appendFileSync } from "fs";
+import { postPrComment as postGitHubComment, type CiAnnotation } from "./github.js";
+
+/** Escape a workflow-command annotation message (no raw newlines/%). */
+function escapeAnnotation(s: string): string {
+  return s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+}
+
+/**
+ * Emit a GitHub Actions annotation (stdout workflow command). Surfaces the
+ * verdict inline in the PR Checks UI / Files view — so a maintainer sees that
+ * there's feedback to read without opening the buried PR comment.
+ */
+function emitGitHubAnnotation(a?: CiAnnotation): void {
+  if (!a) return;
+  console.log(`::${a.level} title=${escapeAnnotation(a.title)}::${escapeAnnotation(a.message)}`);
+}
+
+/** Append the full gate comment to the GitHub Actions job summary page. */
+function writeGitHubStepSummary(markdown: string): void {
+  const file = process.env.GITHUB_STEP_SUMMARY;
+  if (!file) return;
+  try {
+    appendFileSync(file, `${markdown}\n`);
+  } catch {
+    /* best-effort — never fail the gate on a summary write */
+  }
+}
 
 /**
  * CI adapter — proofgate core is CI-agnostic; only PR context discovery and
@@ -120,11 +147,18 @@ export async function reportToCi(
   ctx: CiContext,
   body: string,
   approved: boolean,
+  summary?: CiAnnotation,
 ): Promise<boolean> {
-  if (ctx.provider === "github" && ctx.prNumber !== undefined) {
+  if (ctx.provider === "github") {
+    // Surface the verdict in the GitHub UI regardless of PR-comment success:
+    // the annotation (Checks tab) and job summary need no token and make the
+    // feedback visible without opening the comment.
+    emitGitHubAnnotation(summary);
+    writeGitHubStepSummary(body);
+
     const repo = process.env.GITHUB_REPOSITORY;
     const token = process.env.GITHUB_TOKEN;
-    if (!repo || !token) return false;
+    if (!repo || !token || ctx.prNumber === undefined) return false;
     await postGitHubComment(repo, ctx.prNumber, body, token);
     return true;
   }
