@@ -12,7 +12,13 @@ export function buildReviewPrompt(
   mission: string,
   receipt: Receipt,
   diff: string,
+  humanReviewLevel: "low" | "balanced" | "high" = "balanced",
 ): string {
+  const levelGuidance = {
+    low: "The maintainer wants MINIMAL human review. Route to human_actions ONLY what genuinely cannot be done without human judgment (protected-surface/billing override, a real invariant trade-off, irreducibly ambiguous intent). Everything an agent could reasonably do goes in agent_actions.",
+    balanced: "Route real trade-offs, ambiguity, and protected-surface decisions to human_actions; route concrete fixes to agent_actions.",
+    high: "The maintainer wants CONSERVATIVE review. When in doubt, put it in human_actions — prefer a human's eyes on anything uncertain.",
+  }[humanReviewLevel];
   const truncated =
     diff.length > MAX_DIFF_CHARS
       ? diff.slice(0, MAX_DIFF_CHARS) + "\n\n[diff truncated at 180k chars]"
@@ -51,17 +57,24 @@ Respond with ONLY a JSON object, no markdown fence, with this exact shape:
   "failure_capsule": {
     "failing_check": "<what failed conceptually>",
     "suspected_cause": "<why, at least one sentence>",
-    "next_action_requested": "<the single most useful next step for the agent>",
+    "next_action_requested": "<the single most useful next step>",
+    "agent_actions": ["<concrete fixes an AGENT can do now — code/security/tests/docs; [] if none>"],
+    "human_actions": ["<decisions only a HUMAN can make — protected/billing override, real trade-off, ambiguous intent; [] if none>"],
     "changed_files_implicated": ["<paths>"],
     "severity": "fixable" | "fatal" | "escalation"
   }
 }
 
+Separate the work by WHO must act — they are independent, and a single PR can have BOTH:
+- agent_actions: anything an agent could reasonably do right now. ALWAYS list these when they exist, even on "escalate" — never claim "nothing for the agent to do" if an agent could improve the change.
+- human_actions: only what truly needs a human.
+${levelGuidance}
+
 Rules:
-- "approve" only when validation coverage is adequate AND no invariant is at risk.
-- "revise" when the work is salvageable: include the failure_capsule (it becomes the agent's rework prompt — make next_action_requested concrete and minimal).
-- "escalate" when a human must decide: invariant tension, ambiguous intent, protected-surface changes, or anything you cannot verify from the evidence given.
-- Omit failure_capsule for "approve".`;
+- "approve" only when validation coverage is adequate AND no invariant is at risk (agent_actions and human_actions both empty).
+- "revise" when human_actions is empty and the agent_actions would resolve it — the failure_capsule is the agent's rework prompt; make next_action_requested concrete and minimal.
+- "escalate" when human_actions is non-empty: an invariant trade-off, ambiguous intent, protected-surface changes, or anything you cannot verify. STILL populate agent_actions so the agent-doable parts can proceed in parallel.
+- Omit failure_capsule only for "approve".`;
 }
 
 interface AnthropicResponse {
@@ -75,7 +88,7 @@ export async function semanticReview(
   policy: Policy,
   apiKey: string,
 ): Promise<ReviewResult> {
-  const prompt = buildReviewPrompt(mission, receipt, diff);
+  const prompt = buildReviewPrompt(mission, receipt, diff, policy.human_review_level);
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",

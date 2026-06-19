@@ -12,15 +12,24 @@ export function renderComment(result: GateResult): string {
   // both produce a red required-check, which previously looked identical and
   // left maintainers unsure whether the agent needed to fix something or they
   // just needed to approve. Spell it out.
+  const cap = result.review?.failure_capsule;
+  const agentActions = cap?.agent_actions ?? [];
+  const humanActions = cap?.human_actions ?? [];
+
   if (result.final === "approve") {
     lines.push("> **✅ Passed — merging automatically. No action needed.**");
   } else if (result.final === "revise") {
     lines.push(
-      "> **🔁 Rework needed — the agent must fix this and re-push. No human action required.** See the failure capsule below.",
+      "> **🔁 Rework needed — the agent fixes the 🤖 items below and re-pushes. No human action required.**",
+    );
+  } else if (agentActions.length > 0) {
+    // Escalate, but there's ALSO agent-doable work — don't pretend otherwise.
+    lines.push(
+      "> **⚠️ Human review required — and there are agent-fixable items too.** A maintainer decides the 🧑 items; an agent can address the 🤖 items now (in parallel). Override-merge when ready: `gh pr merge <PR> --squash --admin`.",
     );
   } else {
     lines.push(
-      "> **⚠️ Human approval required — nothing for the agent to fix.** The change is sound but touches a protected/billing surface, so a maintainer must consciously override-merge: `gh pr merge <PR> --squash --admin`.",
+      "> **⚠️ Human approval required — nothing for the agent to fix.** Touches a protected/billing surface, so a maintainer must consciously override-merge: `gh pr merge <PR> --squash --admin`.",
     );
   }
   lines.push("");
@@ -39,13 +48,35 @@ export function renderComment(result: GateResult): string {
     lines.push(`- **Risk:** ${r.risk_notes}`);
     if (r.failure_capsule) {
       lines.push("");
-      lines.push("### Failure capsule (rework prompt)");
+      lines.push(`### What's needed — ${r.failure_capsule.failing_check}`);
+      lines.push(`_${r.failure_capsule.suspected_cause}_`);
+
+      // The whole point: split who-must-act so neither side is buried.
+      if (humanActions.length > 0) {
+        lines.push("");
+        lines.push("#### 🧑 Human must decide");
+        for (const a of humanActions) lines.push(`- [ ] ${a}`);
+      }
+      if (agentActions.length > 0) {
+        lines.push("");
+        lines.push("#### 🤖 Agent can do now");
+        for (const a of agentActions) lines.push(`- [ ] ${a}`);
+        lines.push("");
+        lines.push("_Agent: do the 🤖 items and re-push with an updated receipt._");
+      }
+      // Fall back to the single next step when the model gave no split.
+      if (humanActions.length === 0 && agentActions.length === 0) {
+        lines.push("");
+        lines.push(`**Next action:** ${r.failure_capsule.next_action_requested}`);
+      }
+
+      lines.push("");
+      lines.push("<details><summary>Full capsule (JSON)</summary>");
+      lines.push("");
       lines.push("```json");
       lines.push(JSON.stringify(r.failure_capsule, null, 2));
       lines.push("```");
-      lines.push(
-        "_Agent: treat `next_action_requested` as your rework instruction. Resubmit with an updated receipt._",
-      );
+      lines.push("</details>");
     }
   }
 
