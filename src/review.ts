@@ -99,7 +99,10 @@ export async function semanticReview(
     },
     body: JSON.stringify({
       model: process.env.PROOFGATE_MODEL || policy.review_model,
-      max_tokens: 2000,
+      // The capsule carries three prose notes + a failure capsule; 2000 was
+      // tight enough that a thorough review got truncated mid-JSON and failed
+      // to parse. Give it real headroom.
+      max_tokens: 4000,
       messages: [{ role: "user", content: prompt }],
     }),
   });
@@ -112,17 +115,37 @@ export async function semanticReview(
   const data = (await res.json()) as AnthropicResponse;
   const text = data.content.find((c) => c.type === "text")?.text ?? "";
 
-  let parsed: ReviewResult;
-  try {
-    // Tolerate accidental code fences.
-    const cleaned = text.trim().replace(/^```(json)?\s*/i, "").replace(/```\s*$/, "");
-    parsed = JSON.parse(cleaned) as ReviewResult;
-  } catch {
-    throw new Error(`semantic review returned unparseable output: ${text.slice(0, 500)}`);
-  }
+  const parsed = parseReviewJson(text);
 
-  if (!["approve", "revise", "escalate"].includes(parsed.verdict)) {
-    throw new Error(`semantic review returned invalid verdict: ${String(parsed.verdict)}`);
+  // Crashing here would leave the PR with a STALE, contradictory gate comment
+  // (and a red check with no explanation) — the worst kind of "what just
+  // happened?". Instead, surface a clear, self-describing verdict so the
+  // comment always reflects reality: the review didn't complete, here's why,
+  // here's what to do.
+  if (!parsed || !["approve", "revise", "escalate"].includes(parsed.verdict)) {
+    return {
+      verdict: "revise",
+      confidence: 0,
+      validation_coverage_notes: "Not evaluated — the semantic-review response could not be parsed.",
+      mission_alignment_notes: "Not evaluated — the semantic-review response could not be parsed.",
+      risk_notes:
+        "proofgate could not read the review model's JSON (it was likely truncated at the token limit on a large diff/receipt, or wrapped in extra prose). This is a gate-internal hiccup — the review did NOT run to completion, so it is not a finding about your change.",
+      failure_capsule: {
+        failing_check: "semantic review output could not be parsed",
+        suspected_cause:
+          "The review model returned non-JSON or truncated output, so the verdict could not be read.",
+        next_action_requested:
+          "Re-run the gate — the response is usually parseable on retry. If it keeps failing, the change may be too large for the review budget.",
+        agent_actions: [
+          "Re-run the gate (push an empty commit or re-run the workflow). No code change is required unless it persists.",
+        ],
+        human_actions: [
+          "If it fails repeatedly, the diff/receipt is likely too large for the review token budget — review manually and --admin merge if sound.",
+        ],
+        changed_files_implicated: [],
+        severity: "fixable",
+      },
+    };
   }
 
   // Policy enforcement on top of the model's judgment:
@@ -139,4 +162,53 @@ export async function semanticReview(
   }
 
   return { ...parsed, verdict };
+}
+
+/**
+ * Best-effort JSON extraction from a model response. Handles the common ways
+ * an LLM wraps/garnishes JSON: code fences, a leading sentence, or trailing
+ * prose after the object. Returns the parsed object, or null if nothing
+ * parseable is found (the caller turns null into a clear, non-crashing
+ * verdict rather than throwing).
+ */
+export function parseReviewJson(text: string): ReviewResult | null {
+  if (!text) return null;
+  const stripped = text.trim().replace(/^```(json)?\s*/i, "").replace(/```\s*$/, "").trim();
+
+  // 1. Straight parse (the happy path).
+  try {
+    return JSON.parse(stripped) as ReviewResult;
+  } catch {
+    /* fall through */
+  }
+
+  // 2. Salvage: take the first balanced {...} object (ignores any prose the
+  // model added before or after the JSON).
+  const start = stripped.indexOf("{");
+  if (start === -1) return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < stripped.length; i++) {
+    const ch = stripped[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        try {
+          return JSON.parse(stripped.slice(start, i + 1)) as ReviewResult;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null; // unbalanced (e.g. truncated mid-object)
 }
