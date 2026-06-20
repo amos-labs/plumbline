@@ -16,12 +16,21 @@ agent does work
   -> shape gate                       deterministic: schema, evidence coverage, protected paths, SHA/diff integrity
   -> semantic review                  one LLM call vs your MISSION.md: coverage, alignment, risk
   -> verdict
-       approve   -> CI check green, human merges at leisure
-       revise    -> failure capsule posted; agent reworks and resubmits
-       escalate  -> human must decide (always the case for self-modifying work)
+       approve   -> CI check green, merges automatically
+       revise    -> capsule's 🤖 agent_actions; agent reworks and resubmits (no human needed)
+       escalate  -> capsule's 🧑 human_actions; a human decides (always for self-modifying)
 ```
 
 Two-tier validation, on purpose: the shape gate never pretends to understand meaning, and the reviewer never re-does deterministic checks.
+
+**The capsule splits who must act.** Every failure capsule separates `agent_actions`
+(concrete fixes an agent can do now) from `human_actions` (decisions only a human can
+make) — and a PR can carry **both**. An `escalate` still lists `agent_actions` so the
+agent-fixable parts proceed in parallel while a human decides the rest; it no longer
+pretends "there's nothing for the agent to do." How aggressively work routes to humans
+is the `human_review_level` dial (`low` / `balanced` / `high`) in `policy.json` — it
+tunes the split only and never lowers the hard floor (protected paths + `self_modifying`
+always need a human).
 
 ## Quick start
 
@@ -70,6 +79,28 @@ The contract an agent must satisfy (`templates/receipt.example.json`):
 - **Low confidence never auto-approves.** Verdicts below `min_review_confidence` are downgraded to escalate.
 - **Failure capsules, not log dumps.** A revise verdict includes the failing check, suspected cause, implicated files, and a single concrete next action — structured to be fed straight back to the agent.
 - **The gate protects itself.** `.proofgate/**` and your workflows belong in `protected_paths`.
+
+## Running agents at scale
+
+proofgate is the *gate*; pair it with an issue-tracker queue + an executor and you have
+an autonomous delivery loop. See **[docs/AGENTS_ON_A_MISSION.md](docs/AGENTS_ON_A_MISSION.md)** —
+a harness-agnostic pattern: queue in your issue tracker (a human-applied `agent-ready`
+label), progress in a checkpoint file, discipline in hooks, judgment in this gate. Two
+human checkpoints (apply `agent-ready` on intake; `self_modifying`/escalate on output)
+let the middle run unattended.
+
+## Operating notes (learned in production)
+
+- **One receipt file per PR** (`.proofgate/receipts/<task_id>.json`) — many PRs open at
+  once never conflict on the receipt. The gate auto-discovers the one in the diff.
+- **Compute `diff_sha256` and write the receipt in the *same* step.** The hash is over
+  the diff *excluding* receipt paths, so it's computable before committing the receipt —
+  but shell variables don't persist across separate tool calls, so compute-and-write
+  together or you'll ship an empty/stale SHA and fail the shape gate.
+- **`self_modifying` PRs don't auto-merge** — wire auto-merge only for non-self_modifying
+  green PRs; protected work waits for a human override-merge.
+- **Mass-outbound / irreversible prod ops should be `human-only`**, not auto-drained.
+- **Keep agent concurrency at 1–2** against a shared main branch.
 
 ## Status
 

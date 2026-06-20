@@ -65,6 +65,17 @@ export const PolicySchema = z.object({
   protected_paths: z.array(z.string()).default([]),
   /** Semantic review verdicts below this confidence are downgraded to escalate. */
   min_review_confidence: z.number().min(0).max(1).default(0.8),
+  /**
+   * How readily the semantic gate routes judgment calls to a HUMAN vs. lets an
+   * AGENT handle them — the user's "how much goes to human review" dial:
+   *   "low"      — escalate only what genuinely needs a human; prefer agent_actions.
+   *   "balanced" — escalate real trade-offs/ambiguity (default).
+   *   "high"     — when in doubt, send it to a human.
+   * This tunes the human_actions/agent_actions split ONLY. It never lowers the
+   * hard floor: protected_paths + self_modifying always require a human,
+   * regardless of this setting.
+   */
+  human_review_level: z.enum(["low", "balanced", "high"]).default("balanced"),
   /** Anthropic model used for semantic review. */
   review_model: z.string().default("claude-sonnet-4-6"),
   /** Max receipt size in bytes (anti garbage-dump). */
@@ -78,6 +89,19 @@ export interface FailureCapsule {
   failing_check: string;
   suspected_cause: string;
   next_action_requested: string;
+  /**
+   * Concrete fixes an AGENT can do right now — code, security, tests, docs.
+   * Populated independently of verdict: an escalated PR can still carry a list
+   * of agent-actionable items to tackle in parallel while a human decides the
+   * human_actions. `[]` when there's genuinely nothing for an agent to do.
+   */
+  agent_actions?: string[];
+  /**
+   * Decisions only a HUMAN can make — protected/billing override, ambiguous
+   * intent, an invariant trade-off, anything unverifiable from the evidence.
+   * `[]` when nothing actually requires a human.
+   */
+  human_actions?: string[];
   changed_files_implicated: string[];
   relevant_excerpt?: string;
   severity: "fixable" | "fatal" | "escalation";
