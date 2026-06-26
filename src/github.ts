@@ -147,6 +147,96 @@ export function renderCiSummary(result: GateResult): CiAnnotation {
   };
 }
 
+// ── Evidence integrity: corroborate against the REAL CI run (#6) ──────────
+//
+// execution_evidence[].status in the receipt is self-reported — the gate
+// shouldn't take "rspec passed" on faith. For policy `ci_evidence_checks`,
+// we read the actual GitHub check-run conclusions for the PR HEAD commit and
+// require success. The receipt declares the plan; CI proves it. (So an agent
+// need not self-report status for these — and can't fake a passing suite.)
+
+export interface CheckRun {
+  name: string;
+  /** queued | in_progress | completed */
+  status: string;
+  /** success | failure | neutral | cancelled | skipped | timed_out | action_required | null */
+  conclusion: string | null;
+}
+
+const GH_HEADERS = (token: string) => ({
+  authorization: `Bearer ${token}`,
+  accept: "application/vnd.github+json",
+});
+
+/** The PR's head commit SHA (the real commit CI ran on — not the merge ref). */
+export async function getPrHeadSha(repo: string, prNumber: number, token: string): Promise<string> {
+  const res = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNumber}`, {
+    headers: GH_HEADERS(token),
+  });
+  if (!res.ok) throw new Error(`get PR #${prNumber}: ${res.status} ${await res.text()}`);
+  const pr = (await res.json()) as { head?: { sha?: string } };
+  if (!pr.head?.sha) throw new Error(`PR #${prNumber} has no head.sha`);
+  return pr.head.sha;
+}
+
+/** All check-runs reported for a commit. */
+export async function getCheckRunsForSha(repo: string, sha: string, token: string): Promise<CheckRun[]> {
+  const res = await fetch(
+    `https://api.github.com/repos/${repo}/commits/${sha}/check-runs?per_page=100`,
+    { headers: GH_HEADERS(token) },
+  );
+  if (!res.ok) throw new Error(`get check-runs for ${sha}: ${res.status} ${await res.text()}`);
+  const data = (await res.json()) as { check_runs?: CheckRun[] };
+  return (data.check_runs ?? []).map((c) => ({
+    name: c.name,
+    status: c.status,
+    conclusion: c.conclusion ?? null,
+  }));
+}
+
+/**
+ * Pure decision (no network): every required check-run name must have at least
+ * one run that CONCLUDED `success` for the commit. A re-run that later succeeds
+ * counts. Missing or not-passed → error. Kept pure so it's unit-testable.
+ */
+export function evaluateCiEvidence(
+  checkRuns: CheckRun[],
+  required: string[],
+): { pass: boolean; errors: string[]; notes: string[] } {
+  const errors: string[] = [];
+  const notes: string[] = [];
+  for (const name of required) {
+    const runs = checkRuns.filter((c) => c.name === name);
+    if (runs.length === 0) {
+      errors.push(
+        `ci-evidence: required check "${name}" did not run for the head commit ` +
+          `(the gate verifies the real CI run, not the receipt's self-report)`,
+      );
+    } else if (runs.some((c) => c.conclusion === "success")) {
+      notes.push(`${name}: success`);
+    } else {
+      const w = runs.find((c) => c.status === "completed") ?? runs[0];
+      errors.push(
+        `ci-evidence: required check "${name}" did not pass — status=${w.status} conclusion=${w.conclusion ?? "none"}`,
+      );
+    }
+  }
+  return { pass: errors.length === 0, errors, notes };
+}
+
+/** Fetch the PR head's check-runs and evaluate them against the required set. */
+export async function verifyCiEvidence(
+  repo: string,
+  prNumber: number,
+  token: string,
+  required: string[],
+): Promise<{ pass: boolean; errors: string[]; notes: string[] }> {
+  if (required.length === 0) return { pass: true, errors: [], notes: [] };
+  const sha = await getPrHeadSha(repo, prNumber, token);
+  const runs = await getCheckRunsForSha(repo, sha, token);
+  return evaluateCiEvidence(runs, required);
+}
+
 /** Post (or update) the gate comment on a PR. Requires GITHUB_TOKEN. */
 export async function postPrComment(
   repo: string, // "owner/name"
