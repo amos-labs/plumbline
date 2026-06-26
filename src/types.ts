@@ -59,6 +59,15 @@ export const PolicySchema = z.object({
   /** Commands that MUST appear (as required steps) in every validation plan. */
   required_checks: z.array(z.string()).default([]),
   /**
+   * GitHub check-run names that must actually CONCLUDE `success` for the PR
+   * head commit. The gate (in CI `run` mode) reads the real check-runs — not
+   * the receipt's self-reported `execution_evidence` — so a receipt can't
+   * claim a passing suite the CI didn't actually pass. The agent need not
+   * self-report status for these; CI is the source of truth. Empty = disabled
+   * (self-report only). E.g. ["test"] to bind the repo's `test` CI job.
+   */
+  ci_evidence_checks: z.array(z.string()).default([]),
+  /**
    * Glob patterns for protected surfaces. Changes matching these require
    * self_modifying: true and always escalate to a human — no auto-approve.
    */
