@@ -2,6 +2,7 @@
   "version": "1.0",
   "mission_file": ".proofgate/MISSION.md",
   "required_checks": [],
+  "ci_evidence_checks": [],
   "protected_paths": [
     ".proofgate/**",
     ".github/workflows/**"

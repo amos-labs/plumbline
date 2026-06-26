@@ -66,6 +66,16 @@ Common flags: `--receipt <path>` `--policy <path>` `--base <ref>` `--mission <pa
 
 Exit code is the gate: `0` only on approve.
 
+### Evidence integrity (`ci_evidence_checks`)
+
+`execution_evidence[].status` in the receipt is *self-reported* — by itself the gate would be
+taking "the suite passed" on faith. Set `ci_evidence_checks` in the policy to the GitHub
+**check-run names** that must actually conclude `success` for the PR head commit (e.g.
+`["test"]`). In `run` mode the gate reads the **real** check-run conclusions for that commit and
+fails if a required check didn't pass — so a receipt can't claim a passing suite the CI didn't
+run. The receipt declares the *plan*; CI *proves* it. (Agents needn't fuss over self-reporting
+status for these — CI is the source of truth, and an optimistic receipt is caught.)
+
 ## The receipt
 
 The contract an agent must satisfy (`templates/receipt.example.json`):
