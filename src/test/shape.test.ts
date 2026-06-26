@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { shapeCheck, commandMatchesCheck, computeDiffSha256, isReceiptPath } from "../shape.js";
+import { shapeCheck, commandMatchesCheck, evidenceSatisfiesStep, computeDiffSha256, isReceiptPath } from "../shape.js";
 import { globToRegExp, matchesAny } from "../glob.js";
 import { PolicySchema } from "../types.js";
 
@@ -74,6 +74,33 @@ test("a quoted/echoed command does not satisfy a required check", () => {
   });
   const { result } = shapeCheck(receipt, policy, { skipGit: true });
   assert.ok(result.errors.some((e) => e.includes('required check missing')));
+});
+
+test("evidenceSatisfiesStep: exact + trailing annotation match; args/subsets do NOT", () => {
+  // Exact, and trailing-whitespace tolerant.
+  assert.ok(evidenceSatisfiesStep("bundle exec rspec spec/foo_spec.rb", "bundle exec rspec spec/foo_spec.rb"));
+  assert.ok(evidenceSatisfiesStep("  bundle exec rspec  ", "bundle exec rspec"));
+  // Trailing parenthetical / # annotation is allowed.
+  assert.ok(evidenceSatisfiesStep("bundle exec rspec spec/foo_spec.rb  (re-ran stashed)", "bundle exec rspec spec/foo_spec.rb"));
+  assert.ok(evidenceSatisfiesStep("bundle exec rspec # 3 examples, 0 failures", "bundle exec rspec"));
+  // Extra ARGS must NOT satisfy a broader step — that would let a narrower run
+  // (or a passing partial) stand in for, or mask, the required broader command.
+  assert.ok(!evidenceSatisfiesStep("bundle exec rspec spec/foo_spec.rb", "bundle exec rspec"));
+  assert.ok(!evidenceSatisfiesStep("bundle exec rspec spec/foo_spec.rb --format doc", "bundle exec rspec spec/foo_spec.rb"));
+  // A different command is never evidence.
+  assert.ok(!evidenceSatisfiesStep("bundle exec rspec spec/foo_spec.rb", "bundle exec rspec spec/bar_spec.rb"));
+});
+
+test("evidence with a trailing annotation still satisfies a required step", () => {
+  const receipt = validReceipt({
+    execution_evidence: [
+      { command: "bundle exec rspec spec/models/foo_spec.rb (and again with the fix stashed)", status: "passed", output_ref: "3 examples, 0 failures" },
+      { command: "bundle exec rspec", status: "passed", output_ref: "100 examples, 0 failures" },
+    ],
+  });
+  const { result } = shapeCheck(receipt, policy, { skipGit: true });
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.pass, true);
 });
 
 test("required step with failed evidence fails", () => {
