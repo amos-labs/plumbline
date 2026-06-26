@@ -41,6 +41,25 @@ export function commandMatchesCheck(command: string, check: string): boolean {
   return new RegExp(`(^|\\s)${escaped}(\\s|$)`).test(command);
 }
 
+/**
+ * Evidence satisfies a plan step when its command IS the step's command,
+ * allowing only a trailing PARENTHETICAL or `#` annotation: the step
+ * "bundle exec rspec spec/foo_spec.rb" is satisfied by evidence
+ * "bundle exec rspec spec/foo_spec.rb  (re-ran with the fix stashed)" or
+ * "... # 3 examples". This kills the most common false-negative (a note in
+ * the command field) WITHOUT letting extra arguments through — otherwise a
+ * narrower run ("bundle exec rspec spec/foo") would wrongly satisfy a broader
+ * required step ("bundle exec rspec") and could even mask a failed full-suite
+ * evidence entry.
+ */
+export function evidenceSatisfiesStep(evidenceCommand: string, stepCommand: string): boolean {
+  const ev = evidenceCommand.trim();
+  const step = stepCommand.trim();
+  if (ev === step) return true;
+  if (!ev.startsWith(step)) return false;
+  return /^\s*[(#]/.test(ev.slice(step.length));
+}
+
 export interface ShapeOptions {
   /** Base ref for `git diff` (e.g. origin/main). Empty disables git checks. */
   baseRef?: string;
@@ -121,7 +140,7 @@ export function shapeCheck(
 
   // 2. Every required plan step must have passing evidence.
   for (const step of receipt.validation_plan) {
-    const ev = receipt.execution_evidence.find((e) => e.command === step.command);
+    const ev = receipt.execution_evidence.find((e) => evidenceSatisfiesStep(e.command, step.command));
     if (!ev) {
       if (step.required) errors.push(`no execution evidence for required step: "${step.command}"`);
       else warnings.push(`no execution evidence for optional step: "${step.command}"`);
