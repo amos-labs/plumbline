@@ -69,7 +69,7 @@ export interface ShapeOptions {
   skipGit?: boolean;
 }
 
-function gitChangedFiles(baseRef: string, cwd: string): string[] {
+export function gitChangedFiles(baseRef: string, cwd: string): string[] {
   const out = execFileSync(
     "git",
     ["diff", "--name-only", `${baseRef}...HEAD`],
@@ -78,7 +78,7 @@ function gitChangedFiles(baseRef: string, cwd: string): string[] {
   return out.split("\n").map((l) => l.trim()).filter(Boolean);
 }
 
-function gitDiffExcludingReceipt(baseRef: string, cwd: string): string {
+export function gitDiffExcludingReceipt(baseRef: string, cwd: string): string {
   return execFileSync(
     "git",
     ["diff", `${baseRef}...HEAD`, ...RECEIPT_DIFF_SPEC],

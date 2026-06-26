@@ -49,10 +49,18 @@ always need a human).
 ## CLI
 
 ```bash
+proofgate stamp    # fill diff_sha256 + changed_files from the real diff (do this before committing)
+proofgate check    # local pre-flight: shape + diff_sha256, prints the would-be capsule — no push needed
 proofgate shape    # deterministic checks only — fast, no API key needed
 proofgate review   # shape + semantic review, prints JSON verdict
 proofgate run      # CI mode: shape + review + posts/updates the PR comment
 ```
+
+`stamp` + `check` close the loop in the working tree: `stamp` generates the two most error-prone,
+recompute-on-every-edit fields (`diff_sha256`, `changed_files`) with the exact computation the gate
+uses, and `check` runs the same shape + diff-integrity verification the CI action does — so receipt
+errors are caught before pushing, instead of via a red CI round-trip (which burns Actions minutes).
+Author the intent/plan/evidence; let `stamp` handle the mechanical fields.
 
 Common flags: `--receipt <path>` `--policy <path>` `--base <ref>` `--mission <path>` `--no-git` (fixture testing).
 

@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { PolicySchema, type GateResult, type Policy, type Verdict } from "./types.js";
-import { shapeCheck } from "./shape.js";
+import {
+  shapeCheck,
+  computeDiffSha256,
+  gitDiffExcludingReceipt,
+  gitChangedFiles,
+  isReceiptPath,
+} from "./shape.js";
 import { semanticReview } from "./review.js";
 import { renderComment, renderCiSummary } from "./github.js";
 import { detectCi, reportToCi } from "./ci.js";
@@ -92,10 +98,12 @@ async function main(): Promise<number> {
     skipGit,
   );
 
-  if (!cmd || !["shape", "review", "run"].includes(cmd)) {
+  if (!cmd || !["shape", "review", "run", "stamp", "check"].includes(cmd)) {
     console.log(`proofgate — proof-carrying gate for AI agent work
 
 usage:
+  proofgate stamp   [--receipt path] [--base ref]   (fill diff_sha256 + changed_files from the real diff)
+  proofgate check   [--receipt path] [--policy path] [--base ref]   (local pre-flight: shape + diff_sha256, prints the capsule)
   proofgate shape   [--receipt path] [--policy path] [--base ref] [--no-git]
   proofgate review  [--receipt path] [--policy path] [--base ref] [--mission path]
   proofgate run     [--receipt path] [--policy path] [--base ref]   (shape + review + PR comment in CI)
@@ -118,6 +126,71 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
     return 1;
   }
   const rawReceipt = readFileSync(receiptPath, "utf8");
+
+  // --- stamp: fill the mechanical fields from the real diff, then exit (#5) ---
+  // diff_sha256 + changed_files are the most error-prone fields (they change on
+  // every edit/rebase). Generate them with the exact computation the gate uses,
+  // so the author never hand-maintains them or fails the gate on a stale hash.
+  if (cmd === "stamp") {
+    if (skipGit || !baseRef) {
+      console.error("proofgate stamp: needs git + a --base ref to compute the diff");
+      return 1;
+    }
+    let receiptObj: Record<string, unknown>;
+    try {
+      receiptObj = JSON.parse(rawReceipt);
+    } catch (e) {
+      console.error(`proofgate stamp: receipt is not valid JSON: ${String(e)}`);
+      return 1;
+    }
+    let diffSha: string;
+    let changed: string[];
+    try {
+      diffSha = computeDiffSha256(gitDiffExcludingReceipt(baseRef, cwd));
+      changed = gitChangedFiles(baseRef, cwd).filter((f) => !isReceiptPath(f));
+    } catch (e) {
+      console.error(`proofgate stamp: git failed: ${String(e)}`);
+      return 1;
+    }
+    const prevSha = receiptObj.diff_sha256;
+    receiptObj.diff_sha256 = diffSha;
+    receiptObj.changed_files = changed;
+    writeFileSync(receiptPath, `${JSON.stringify(receiptObj, null, 2)}\n`);
+    console.error(`stamped ${receiptPath} (base ${baseRef}):`);
+    console.error(
+      `  diff_sha256:   ${diffSha}${prevSha && prevSha !== diffSha ? `  (was ${String(prevSha)})` : ""}`,
+    );
+    console.error(`  changed_files (${changed.length}): ${changed.join(", ") || "(none)"}`);
+    return 0;
+  }
+
+  // --- check: local pre-flight — shape + diff_sha256, render the would-be capsule (#4) ---
+  // Same shape + diff integrity the action runs in CI, but in the working tree —
+  // so a shape/sha error is caught before pushing (no red CI round-trip, no
+  // wasted Actions minutes). Semantic review still runs server-side in CI.
+  if (cmd === "check") {
+    const { result: shape } = shapeCheck(rawReceipt, policy, {
+      baseRef: skipGit ? undefined : baseRef,
+      cwd,
+      skipGit,
+    });
+    const gate: GateResult = {
+      shape,
+      final: shape.pass ? "approve" : "revise",
+      reasons: [],
+    };
+    // Print the same capsule CI would post, so the author sees exactly what the
+    // gate will say.
+    console.log(renderComment(gate));
+    for (const e of shape.errors) console.error(`shape ❌ ${e}`);
+    for (const w of shape.warnings) console.error(`shape ⚠️  ${w}`);
+    console.error(
+      shape.pass
+        ? "✓ pre-flight PASS — shape + diff_sha256 OK. Safe to push (semantic review still runs in CI)."
+        : "✗ pre-flight FAIL — fix the above before pushing. Tip: `proofgate stamp` fixes diff_sha256/changed_files.",
+    );
+    return shape.pass ? 0 : 1;
+  }
 
   // --- Shape gate (always runs) ---
   const { result: shape, receipt } = shapeCheck(rawReceipt, policy, {
