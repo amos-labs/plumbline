@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import { PolicySchema, type GateResult, type Policy, type Verdict } from "./types.js";
 import {
   shapeCheck,
@@ -12,6 +13,7 @@ import {
 import { semanticReview } from "./review.js";
 import { renderComment, renderCiSummary, verifyCiEvidence } from "./github.js";
 import { detectCi, reportToCi } from "./ci.js";
+import { pickReceipt, type ReceiptCandidate } from "./receipt-select.js";
 
 function loadPolicy(path: string): Policy {
   if (!existsSync(path)) {
@@ -63,11 +65,33 @@ function resolveReceiptPath(
   }
   if (changed.length === 1) return changed[0];
   if (changed.length > 1) {
-    console.error(
-      `proofgate: this PR adds ${changed.length} receipts (${changed.join(", ")}); ` +
-        `expected exactly one under .proofgate/receipts/. Using the first.`,
-    );
-    return changed[0];
+    // More than one per-PR receipt in the diff — usually a merge re-added an
+    // old branch's receipt next to this PR's real one. DON'T grab the first
+    // (that's how the gate evaluated the wrong receipt and failed a correct
+    // PR). Disambiguate by task_id↔branch / diff_sha256 binding, or fail loudly.
+    const candidates: ReceiptCandidate[] = changed.map((p) => {
+      try {
+        const j = JSON.parse(readFileSync(join(cwd, p), "utf8")) as {
+          task_id?: unknown;
+          diff_sha256?: unknown;
+        };
+        return {
+          path: p,
+          taskId: typeof j.task_id === "string" ? j.task_id : undefined,
+          diffSha256: typeof j.diff_sha256 === "string" ? j.diff_sha256 : undefined,
+        };
+      } catch {
+        return { path: p };
+      }
+    });
+    let actualSha: string | undefined;
+    try {
+      actualSha = computeDiffSha256(gitDiffExcludingReceipt(baseRef, cwd));
+    } catch {
+      // git unavailable for the binding hash — fall back to branch/explicit-fail.
+    }
+    const branch = process.env.GITHUB_HEAD_REF || undefined;
+    return pickReceipt(candidates, { branch, actualSha });
   }
   return DEFAULT_RECEIPT;
 }
