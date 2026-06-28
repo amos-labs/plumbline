@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { PolicySchema, type GateResult, type Policy, type Verdict } from "./types.js";
 import {
   shapeCheck,
@@ -14,6 +14,7 @@ import { semanticReview } from "./review.js";
 import { renderComment, renderCiSummary, verifyCiEvidence } from "./github.js";
 import { detectCi, reportToCi } from "./ci.js";
 import { pickReceipt, type ReceiptCandidate } from "./receipt-select.js";
+import { runInit, sanitizeTaskId, newReceipt } from "./scaffold.js";
 
 function loadPolicy(path: string): Policy {
   if (!existsSync(path)) {
@@ -115,17 +116,19 @@ async function main(): Promise<number> {
   const policyPath = arg("policy", ".proofgate/policy.json")!;
   const baseRef = arg("base", ci.baseRef ?? "origin/main")!;
   const skipGit = flag("no-git");
-  const receiptPath = resolveReceiptPath(
-    arg("receipt", DEFAULT_RECEIPT)!,
-    skipGit ? undefined : baseRef,
-    cwd,
-    skipGit,
-  );
+  // init/new don't operate on an existing receipt — skip resolution (and its
+  // git call, which would print a spurious diff error in a fresh repo).
+  const receiptPath =
+    cmd === "init" || cmd === "new"
+      ? DEFAULT_RECEIPT
+      : resolveReceiptPath(arg("receipt", DEFAULT_RECEIPT)!, skipGit ? undefined : baseRef, cwd, skipGit);
 
-  if (!cmd || !["shape", "review", "run", "stamp", "check"].includes(cmd)) {
+  if (!cmd || !["init", "new", "shape", "review", "run", "stamp", "check"].includes(cmd)) {
     console.log(`proofgate — proof-carrying gate for AI agent work
 
 usage:
+  proofgate init    (scaffold workflow + .proofgate/ + AGENTS.md into this repo — start here)
+  proofgate new     [--task id] [--agent id] [--base ref]   (scaffold a fresh per-PR receipt, diff-stamped)
   proofgate stamp   [--receipt path] [--base ref]   (fill diff_sha256 + changed_files from the real diff)
   proofgate check   [--receipt path] [--policy path] [--base ref]   (local pre-flight: shape + diff_sha256, prints the capsule)
   proofgate shape   [--receipt path] [--policy path] [--base ref] [--no-git]
@@ -138,6 +141,63 @@ receipt: auto-discovered from the PR diff at .proofgate/receipts/<task_id>.json
 policy default:  .proofgate/policy.json
 env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (comment), PROOFGATE_MODEL (override)`);
     return cmd ? 2 : 0;
+  }
+
+  // --- init: scaffold the gate into this repo (no policy/receipt needed) ---
+  if (cmd === "init") {
+    for (const it of runInit(cwd)) {
+      console.error(`  ${it.created ? "created" : "skip   "} ${it.dest}${it.note ? `  (${it.note})` : ""}`);
+    }
+    console.error(
+      `\nproofgate initialized. Next:\n` +
+        `  1. Read .proofgate/AGENTS.md (the agent guide)\n` +
+        `  2. proofgate new  →  fill the receipt  →  proofgate stamp  →  proofgate check\n` +
+        `  3. (human) make 'proofgate' a required check + add the ANTHROPIC_API_KEY secret — steps in AGENTS.md`,
+    );
+    return 0;
+  }
+
+  // --- new: scaffold a fresh per-PR receipt, stamped to the current diff ---
+  if (cmd === "new") {
+    let branch = process.env.GITHUB_HEAD_REF || "";
+    if (!branch) {
+      try {
+        branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+          cwd,
+          encoding: "utf8",
+        }).trim();
+      } catch {
+        /* no git / detached — fall back below */
+      }
+    }
+    const taskId = sanitizeTaskId(arg("task", branch || "TASK")!);
+    const agentId = arg("agent", process.env.PROOFGATE_AGENT_ID || "agent")!;
+    let diffSha: string | undefined;
+    let changed: string[] | undefined;
+    if (!skipGit && baseRef) {
+      try {
+        diffSha = computeDiffSha256(gitDiffExcludingReceipt(baseRef, cwd));
+        changed = gitChangedFiles(baseRef, cwd).filter((f) => !isReceiptPath(f));
+      } catch {
+        /* leave placeholders; author runs `proofgate stamp` later */
+      }
+    }
+    const dest = join(cwd, ".proofgate", "receipts", `${taskId}.json`);
+    if (existsSync(dest)) {
+      console.error(
+        `proofgate new: .proofgate/receipts/${taskId}.json already exists — left as-is. ` +
+          `Edit it, then run 'proofgate stamp' + 'proofgate check'.`,
+      );
+      return 0;
+    }
+    mkdirSync(dirname(dest), { recursive: true });
+    const receipt = newReceipt({ taskId, agentId, diffSha256: diffSha, changedFiles: changed });
+    writeFileSync(dest, `${JSON.stringify(receipt, null, 2)}\n`);
+    console.error(
+      `created .proofgate/receipts/${taskId}.json (diff-stamped: ${diffSha ? "yes" : "no — run 'proofgate stamp'"})\n` +
+        `Fill intent / validation_plan / execution_evidence / result_summary, then: proofgate stamp && proofgate check`,
+    );
+    return 0;
   }
 
   const policy = loadPolicy(policyPath);

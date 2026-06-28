@@ -16,6 +16,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "prepare": "tsc",
     "check": "tsc --noEmit",
     "test": "node --test dist/test/"
   },
