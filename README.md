@@ -4,6 +4,28 @@
 
 Extracted from the [AMOS](https://github.com/amos-labs) proof-carrying autonomous loop. Apache 2.0.
 
+## Quick start (agent-installable)
+
+One command scaffolds the workflow, policy, mission, an example receipt, and an
+**`AGENTS.md`** that tells an AI agent exactly how to satisfy the gate:
+
+```bash
+npx github:amos-labs/proofgate init   # scaffold .github/workflows + .proofgate/ + AGENTS.md
+```
+
+Then the per-PR loop (no human needed after one-time setup):
+
+```bash
+npx github:amos-labs/proofgate new     # scaffold .proofgate/receipts/<branch>.json, diff-stamped
+# …fill intent / validation_plan / execution_evidence / result_summary…
+npx github:amos-labs/proofgate stamp   # refresh diff_sha256 + changed_files after edits/rebase
+npx github:amos-labs/proofgate check   # local pre-flight — same shape+diff checks as CI; must PASS before push
+```
+
+`init` prints the two human-only steps (make `proofgate` a required check; add the
+`ANTHROPIC_API_KEY` secret) — also spelled out in `.proofgate/AGENTS.md`. See that
+file for the full agent guide.
+
 ## The problem
 
 AI agents multiply your velocity until the codebase quietly diverges from your intent — every PR looks fine, the project drifts. Reviewing everything yourself caps velocity at your reading speed. Trusting the agent loses the project over time. proofgate is the missing middle: **legibility as the control surface.** Work carries proof; humans review exceptions.
