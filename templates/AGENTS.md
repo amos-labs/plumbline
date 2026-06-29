@@ -48,6 +48,37 @@ pass — no red-CI round-trips. (Semantic review still runs server-side in CI.)
 - `changed_files` / `diff_sha256` — set by `stamp`; don't edit by hand.
 - `result_summary` — ≥40 chars: what changed + how it was verified.
 
+### How `diff_sha256` is computed (so it always matches CI)
+`proofgate stamp`, `proofgate check`, and the CI gate all run the **identical**
+command — sha256 of:
+
+```
+git diff <base>...HEAD -- . ":(exclude).proofgate/receipt.json" ":(exclude).proofgate/receipts/*.json"
+```
+
+Four things that bite if you hand-roll the hash instead of using `stamp`:
+- **3-dot, not 2-dot** — `<base>...HEAD` diffs `merge-base(<base>,HEAD)..HEAD`.
+  Commits added to `<base>` *after* you branched are NOT included. `git diff
+  <base>..HEAD` (2-dot) yields a different hash.
+- **Committed HEAD, not the working tree** — NOT `--cached`, NOT staged, NOT the
+  index. Commit first; the hash binds what you committed. (`proofgate check`
+  warns when you have uncommitted changes.)
+- **Receipts are excluded** — both `.proofgate/receipt.json` and
+  `.proofgate/receipts/*.json` are stripped (a commit can't contain its own hash).
+- **`<base>` is auto-detected** — your repo's default branch (`origin/main` *or*
+  `origin/master`, resolved from `origin/HEAD`). **No `--base` needed** for
+  standard repos (this is why `main`-vs-`master` no longer trips setup); in CI
+  it's the PR's base branch. Pass `--base <ref>` only to override.
+
+**Don't hand-compute it — run `proofgate stamp`** (it runs exactly the above). If
+you must verify by hand, use that exact command, on a committed HEAD.
+
+### How the gate picks your receipt
+The gate scans `.proofgate/receipts/*.json`, then selects the one whose
+`diff_sha256` matches the PR's actual diff (tie-broken by `task_id`/branch). So
+every PR adds its **own** file — no shared file, no overwrite, no conflict. That
+is why the binding diff *excludes* the receipts directory.
+
 ### Gotchas
 - One receipt per PR at `.proofgate/receipts/<task_id>.json`. If a merge re-adds
   an old branch's receipt, the gate disambiguates by branch/diff-hash — but keep

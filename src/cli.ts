@@ -24,12 +24,65 @@ function loadPolicy(path: string): Policy {
   return PolicySchema.parse(JSON.parse(readFileSync(path, "utf8")));
 }
 
+/**
+ * Resolve the base ref when `--base` isn't given. CI passes `--base` explicitly
+ * (the PR's base), so this is the LOCAL default — auto-detecting the repo's
+ * default branch so `main`-vs-`master` never trips an author (the #1 setup
+ * error: hardcoded `origin/main` errors with "ambiguous argument" on master
+ * repos). Order: `origin/HEAD` symbolic-ref → origin/main → origin/master →
+ * "origin/main". `--base <ref>` always overrides.
+ */
+function detectBaseRef(cwd: string): string {
+  const tryGit = (args: string[]): string | null => {
+    try {
+      return execFileSync("git", args, { cwd, encoding: "utf8" }).trim() || null;
+    } catch {
+      return null;
+    }
+  };
+  const head = tryGit(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+  if (head) return head; // e.g. "origin/master" (already an origin/ ref)
+  for (const b of ["origin/main", "origin/master"]) {
+    if (tryGit(["rev-parse", "--verify", "--quiet", b]) !== null) return b;
+  }
+  return "origin/main";
+}
+
 function getDiff(baseRef: string, cwd: string): string {
   return execFileSync("git", ["diff", `${baseRef}...HEAD`], {
     cwd,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
+}
+
+/**
+ * Pre-push hygiene warnings (non-fatal). The two traps an author hits locally:
+ *  1. A shared `.proofgate/receipt.json` — the anti-pattern that drags the last
+ *     receipt forward across branches and conflicts. Use one file per PR.
+ *  2. Uncommitted changes — the gate binds the COMMITTED HEAD via the 3-dot
+ *     `git diff <base>...HEAD`, so working-tree edits are NOT in diff_sha256.
+ */
+function preflightWarnings(cwd: string, baseRef: string): void {
+  if (existsSync(join(cwd, ".proofgate", "receipt.json"))) {
+    console.error(
+      "proofgate ⚠️  legacy .proofgate/receipt.json present — use one file per PR at " +
+        ".proofgate/receipts/<task_id>.json (a shared receipt.json gets dragged forward " +
+        "across branches and conflicts). `proofgate new` creates the per-PR file.",
+    );
+  }
+  try {
+    const dirty = execFileSync("git", ["status", "--porcelain"], { cwd, encoding: "utf8" }).trim();
+    if (dirty) {
+      console.error(
+        `proofgate ⚠️  uncommitted changes present. The gate binds the COMMITTED HEAD via ` +
+          `\`git diff ${baseRef}...HEAD\` (3-dot) — uncommitted edits are NOT in diff_sha256. ` +
+          `Commit, then re-run \`proofgate stamp\` so the hash matches what CI computes.`,
+      );
+    }
+  } catch {
+    /* not a git repo / git unavailable — skip */
+  }
 }
 
 const DEFAULT_RECEIPT = ".proofgate/receipt.json";
@@ -114,7 +167,7 @@ async function main(): Promise<number> {
   const ci = detectCi();
   const cwd = arg("cwd", process.cwd())!;
   const policyPath = arg("policy", ".proofgate/policy.json")!;
-  const baseRef = arg("base", ci.baseRef ?? "origin/main")!;
+  const baseRef = arg("base", ci.baseRef ?? detectBaseRef(cwd))!;
   const skipGit = flag("no-git");
   // init/new don't operate on an existing receipt — skip resolution (and its
   // git call, which would print a spurious diff error in a fresh repo).
@@ -253,6 +306,7 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
   // so a shape/sha error is caught before pushing (no red CI round-trip, no
   // wasted Actions minutes). Semantic review still runs server-side in CI.
   if (cmd === "check") {
+    if (!skipGit) preflightWarnings(cwd, baseRef);
     const { result: shape } = shapeCheck(rawReceipt, policy, {
       baseRef: skipGit ? undefined : baseRef,
       cwd,
