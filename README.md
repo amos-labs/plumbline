@@ -109,7 +109,7 @@ The contract an agent must satisfy (`templates/receipt.example.json`):
 | `validation_plan` | Commands + *why each one covers the change* + required flag |
 | `execution_evidence` | What actually ran, status, output reference |
 | `changed_files` | Must account for the real diff — undeclared changes fail the gate |
-| `diff_sha256` | sha256 of `git diff <base>...HEAD -- . ':(exclude).proofgate/receipt.json'` — binds the receipt to the diff content so receipts can't be recycled. Excluding the receipt file is what makes it computable before the receipt commit (a commit can never contain its own SHA), and a content hash survives GitHub's merge-ref checkout where a head SHA cannot. |
+| `diff_sha256` | sha256 of `git diff <base>...HEAD -- . ':(exclude).proofgate/receipt.json' ':(exclude).proofgate/receipts/*.json'` — **3-dot (merge-base), over the committed HEAD** (not `--cached`, not the working tree), receipts excluded. Binds the receipt to the diff so receipts can't be recycled. `<base>` is auto-detected (your default branch) — `origin/main` *or* `origin/master`. **Always run `proofgate stamp` rather than hand-computing** (`git diff --cached` / 2-dot give a different hash). Excluding the receipt makes it computable before the commit (a commit can't contain its own SHA); a content hash also survives GitHub's merge-ref checkout where a head SHA cannot. |
 | `self_modifying` | True if protected surfaces are touched; removes any auto-approve path |
 | `result_summary` | What a human should know before merging |
 
