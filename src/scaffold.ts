@@ -66,6 +66,68 @@ export function runInit(cwd: string): ScaffoldItem[] {
   return out;
 }
 
+/**
+ * Single source of truth for the receipt field contract. Drives three
+ * discoverability surfaces so none can drift: `proofgate schema` (CLI), the
+ * `_help` block in a scaffolded receipt, and the AGENTS.md reference. The hard
+ * rules themselves live in the zod schema (types.ts) — this describes them.
+ */
+export interface FieldRef {
+  field: string;
+  type: string;
+  required: boolean;
+  allowed?: string[];
+  note: string;
+}
+
+export const RECEIPT_FIELD_REFERENCE: FieldRef[] = [
+  { field: "receipt_version", type: "string", required: true, allowed: ["1.0"], note: "schema version" },
+  { field: "task_id", type: "string", required: true, note: "ticket/issue/branch id (also the receipt filename)" },
+  { field: "agent_id", type: "string", required: true, note: "which agent or human did the work" },
+  { field: "intent", type: "string (≥40 chars)", required: true, note: "what + why, plain language — the semantic review reads this" },
+  { field: "self_modifying", type: "boolean", required: true, allowed: ["true", "false"], note: "MUST be true if changed_files touch policy.protected_paths; touching one with false is a hard fail; true escalates to human review" },
+  { field: "policy_refs", type: "string[] (≥1)", required: true, note: "policy/mission docs you read" },
+  { field: "validation_plan", type: "object[] (≥1)", required: true, note: "each: { command, reason, required }" },
+  { field: "validation_plan[].required", type: "boolean", required: true, allowed: ["true", "false"], note: "is this check mandatory" },
+  { field: "execution_evidence", type: "object[] (≥1)", required: true, note: "each: { command, status, output_ref?, skip_reason? }" },
+  { field: "execution_evidence[].status", type: "enum", required: true, allowed: ["passed", "failed", "skipped"], note: "required steps must be 'passed'; use skip_reason when 'skipped'" },
+  { field: "changed_files", type: "string[] (≥1)", required: true, note: "set by `proofgate stamp` — don't hand-edit" },
+  { field: "diff_sha256", type: "string (64-char lowercase hex)", required: true, note: "set by `proofgate stamp` — never hand-edit" },
+  { field: "result_summary", type: "string (≥40 chars)", required: true, note: "what changed + how it was verified" },
+];
+
+/** Compact field→rule map embedded as `_help` in a scaffolded receipt. The gate
+ *  ignores unknown keys, so it's safe to leave in (or delete before commit). */
+export function schemaHelpBlock(): Record<string, string> {
+  const help: Record<string, string> = {
+    _note: "Allowed values + requirements per field (this _help block is ignored by the gate — keep or delete). Run `proofgate schema` for the full reference.",
+  };
+  for (const f of RECEIPT_FIELD_REFERENCE) {
+    const allowed = f.allowed ? `one of: ${f.allowed.join(" | ")} — ` : "";
+    help[f.field] = `${allowed}${f.required ? "required" : "optional"} — ${f.note}`;
+  }
+  return help;
+}
+
+/** Human-readable receipt schema reference for `proofgate schema`. */
+export function formatSchemaReference(): string {
+  const lines: string[] = [
+    "proofgate receipt schema (.proofgate/receipts/<task_id>.json)",
+    "",
+  ];
+  const width = Math.max(...RECEIPT_FIELD_REFERENCE.map((f) => f.field.length));
+  for (const f of RECEIPT_FIELD_REFERENCE) {
+    const req = f.required ? "required" : "optional";
+    const allowed = f.allowed ? `  allowed: ${f.allowed.join(" | ")}` : "";
+    lines.push(`  ${f.field.padEnd(width)}  ${f.type}  [${req}]${allowed}`);
+    lines.push(`  ${" ".repeat(width)}  ${f.note}`);
+  }
+  lines.push("");
+  lines.push("changed_files + diff_sha256 are filled by `proofgate stamp` (never hand-edit).");
+  lines.push("Scaffold one with: proofgate new   ·   validate locally with: proofgate check");
+  return lines.join("\n");
+}
+
 /** Branch/ref → a filesystem-safe task id used for the receipt filename. */
 export function sanitizeTaskId(ref: string): string {
   const cleaned = ref
@@ -85,6 +147,7 @@ export function newReceipt(opts: {
   changedFiles?: string[];
 }): Record<string, unknown> {
   return {
+    _help: schemaHelpBlock(),
     receipt_version: "1.0",
     task_id: opts.taskId,
     agent_id: opts.agentId,

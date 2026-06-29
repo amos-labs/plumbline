@@ -42,11 +42,22 @@ pass — no red-CI round-trips. (Semantic review still runs server-side in CI.)
   `protected_paths` lists). Touching a protected path with `self_modifying:false`
   is a hard fail. When `true`, the gate escalates to **human review** — it will
   not auto-approve.
-- `validation_plan` — the checks you intend to run (command + reason + required).
-- `execution_evidence` — the checks you actually ran + their result. Required
-  checks must be `passed`.
+- `validation_plan` — the checks you intend to run; each is
+  `{ command, reason, required }` where **`required` is a boolean** (`true`/`false`).
+- `execution_evidence` — the checks you actually ran; each is
+  `{ command, status, output_ref?, skip_reason? }`. **`status` is one of
+  `passed` | `failed` | `skipped`** — it is an enum, NOT free text (values like
+  `deferred-to-ci` / `pending-human` / `required-check` are rejected). Required
+  steps must be `passed`; when `skipped`, include a `skip_reason`.
 - `changed_files` / `diff_sha256` — set by `stamp`; don't edit by hand.
 - `result_summary` — ≥40 chars: what changed + how it was verified.
+
+**Don't memorize this — run `proofgate schema`** to print every field with its
+type, required/optional, and allowed enum values. A scaffolded receipt also
+carries an inline `_help` block listing the same (safe to leave or delete — the
+gate ignores unknown keys). And a failed `proofgate check` names the allowed set
+for any bad value, e.g. `execution_evidence.0.status must be one of: passed |
+failed | skipped (got "deferred-to-ci")`.
 
 ### How `diff_sha256` is computed (so it always matches CI)
 `proofgate stamp`, `proofgate check`, and the CI gate all run the **identical**

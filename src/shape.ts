@@ -1,7 +1,36 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import type { ZodIssue } from "zod";
 import { ReceiptSchema, type Policy, type Receipt, type ShapeResult } from "./types.js";
 import { matchesAny } from "./glob.js";
+
+/**
+ * Turn a zod issue into a self-correcting message: for any constrained field
+ * (enum, literal, min-length, min-items, regex) the message NAMES the allowed
+ * set + what was received, so a failed `proofgate check` tells the agent exactly
+ * what to write — no learning a constraint by failing the gate. (The concrete
+ * trap that motivated this: `execution_evidence[].status` only accepts
+ * passed|failed|skipped, but an author used "deferred-to-ci".)
+ */
+export function formatZodIssue(issue: ZodIssue): string {
+  const path = issue.path.join(".") || "(root)";
+  switch (issue.code) {
+    case "invalid_enum_value":
+      return `${path} must be one of: ${issue.options.join(" | ")} (got ${JSON.stringify(issue.received)})`;
+    case "invalid_literal":
+      return `${path} must be ${JSON.stringify(issue.expected)} (got ${JSON.stringify(issue.received)})`;
+    case "too_small": {
+      const unit = issue.type === "string" ? "character(s)" : issue.type === "array" ? "item(s)" : "";
+      return `${path} must have at least ${issue.minimum} ${unit}`.trimEnd();
+    }
+    case "invalid_type":
+      return `${path} must be a ${issue.expected} (got ${issue.received})`;
+    default:
+      // invalid_string (regex), etc. — zod's own message already carries the rule
+      // (e.g. diff_sha256's "64-char lowercase hex SHA-256").
+      return `${path}: ${issue.message}`;
+  }
+}
 
 /**
  * Canonical receipt binding: sha256 over the diff EXCLUDING the receipt
@@ -121,7 +150,7 @@ export function shapeCheck(
   const parsed = ReceiptSchema.safeParse(parsedJson);
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
-      errors.push(`schema: ${issue.path.join(".") || "(root)"}: ${issue.message}`);
+      errors.push(`schema: ${formatZodIssue(issue)}`);
     }
     return { result: { pass: false, errors, warnings } };
   }
