@@ -14,7 +14,8 @@ import { semanticReview } from "./review.js";
 import { renderComment, renderCiSummary, verifyCiEvidence } from "./github.js";
 import { detectCi, reportToCi } from "./ci.js";
 import { pickReceipt, type ReceiptCandidate } from "./receipt-select.js";
-import { runInit, sanitizeTaskId, newReceipt } from "./scaffold.js";
+import { runInit, sanitizeTaskId, newReceipt, formatSchemaReference } from "./scaffold.js";
+import { detectBaseRef } from "./base.js";
 
 function loadPolicy(path: string): Policy {
   if (!existsSync(path)) {
@@ -22,30 +23,6 @@ function loadPolicy(path: string): Policy {
     return PolicySchema.parse({ version: "1.0" });
   }
   return PolicySchema.parse(JSON.parse(readFileSync(path, "utf8")));
-}
-
-/**
- * Resolve the base ref when `--base` isn't given. CI passes `--base` explicitly
- * (the PR's base), so this is the LOCAL default — auto-detecting the repo's
- * default branch so `main`-vs-`master` never trips an author (the #1 setup
- * error: hardcoded `origin/main` errors with "ambiguous argument" on master
- * repos). Order: `origin/HEAD` symbolic-ref → origin/main → origin/master →
- * "origin/main". `--base <ref>` always overrides.
- */
-function detectBaseRef(cwd: string): string {
-  const tryGit = (args: string[]): string | null => {
-    try {
-      return execFileSync("git", args, { cwd, encoding: "utf8" }).trim() || null;
-    } catch {
-      return null;
-    }
-  };
-  const head = tryGit(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
-  if (head) return head; // e.g. "origin/master" (already an origin/ ref)
-  for (const b of ["origin/main", "origin/master"]) {
-    if (tryGit(["rev-parse", "--verify", "--quiet", b]) !== null) return b;
-  }
-  return "origin/main";
 }
 
 function getDiff(baseRef: string, cwd: string): string {
@@ -172,16 +149,17 @@ async function main(): Promise<number> {
   // init/new don't operate on an existing receipt — skip resolution (and its
   // git call, which would print a spurious diff error in a fresh repo).
   const receiptPath =
-    cmd === "init" || cmd === "new"
+    cmd === "init" || cmd === "new" || cmd === "schema"
       ? DEFAULT_RECEIPT
       : resolveReceiptPath(arg("receipt", DEFAULT_RECEIPT)!, skipGit ? undefined : baseRef, cwd, skipGit);
 
-  if (!cmd || !["init", "new", "shape", "review", "run", "stamp", "check"].includes(cmd)) {
+  if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check"].includes(cmd)) {
     console.log(`proofgate — proof-carrying gate for AI agent work
 
 usage:
   proofgate init    (scaffold workflow + .proofgate/ + AGENTS.md into this repo — start here)
   proofgate new     [--task id] [--agent id] [--base ref]   (scaffold a fresh per-PR receipt, diff-stamped)
+  proofgate schema  (print the receipt field reference — every field + allowed enum values)
   proofgate stamp   [--receipt path] [--base ref]   (fill diff_sha256 + changed_files from the real diff)
   proofgate check   [--receipt path] [--policy path] [--base ref]   (local pre-flight: shape + diff_sha256, prints the capsule)
   proofgate shape   [--receipt path] [--policy path] [--base ref] [--no-git]
@@ -194,6 +172,12 @@ receipt: auto-discovered from the PR diff at .proofgate/receipts/<task_id>.json
 policy default:  .proofgate/policy.json
 env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (comment), PROOFGATE_MODEL (override)`);
     return cmd ? 2 : 0;
+  }
+
+  // --- schema: print the receipt field reference (no policy/receipt/git needed) ---
+  if (cmd === "schema") {
+    console.log(formatSchemaReference());
+    return 0;
   }
 
   // --- init: scaffold the gate into this repo (no policy/receipt needed) ---
