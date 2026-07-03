@@ -1,10 +1,10 @@
 {
   "version": "1.0",
-  "mission_file": ".proofgate/MISSION.md",
+  "mission_file": ".plumbline/MISSION.md",
   "required_checks": [],
   "ci_evidence_checks": [],
   "protected_paths": [
-    ".proofgate/**",
+    ".plumbline/**",
     ".github/workflows/**"
   ],
   "min_review_confidence": 0.8,

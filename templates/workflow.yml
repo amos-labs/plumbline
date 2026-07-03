@@ -1,5 +1,5 @@
-# Copy to .github/workflows/proofgate.yml in your repository.
-name: proofgate
+# Copy to .github/workflows/plumbline.yml in your repository.
+name: plumbline
 
 on:
   pull_request:
@@ -21,8 +21,8 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
-      - name: Run proofgate
-        uses: amos-labs/proofgate@v0   # or a local path / pinned SHA
+      - name: Run plumbline
+        uses: amos-labs/plumbline@v0   # or a local path / pinned SHA
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}

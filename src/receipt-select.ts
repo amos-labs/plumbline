@@ -1,6 +1,6 @@
 /**
  * Choosing the right receipt when a PR's diff contains MORE THAN ONE
- * `.proofgate/receipts/<task_id>.json`.
+ * `.plumbline/receipts/<task_id>.json` (or legacy `.proofgate/`).
  *
  * This happens in practice when a merge re-adds an old branch's receipt
  * alongside the PR's real one. The old behaviour ("use the first") could
@@ -16,7 +16,7 @@
  *   3. throw — fail loudly rather than evaluate the wrong receipt.
  */
 export interface ReceiptCandidate {
-  /** Path as it appears in the diff, e.g. `.proofgate/receipts/foo.json`. */
+  /** Path as it appears in the diff, e.g. `.plumbline/receipts/foo.json`. */
   path: string;
   /** `task_id` field from the receipt JSON, if readable. */
   taskId?: string;
@@ -29,7 +29,7 @@ export function pickReceipt(
   ctx: { branch?: string; actualSha?: string },
 ): string {
   if (candidates.length === 0) {
-    throw new Error("proofgate: no candidate receipts to choose from");
+    throw new Error("plumb: no candidate receipts to choose from");
   }
   if (candidates.length === 1) return candidates[0].path;
 
@@ -52,10 +52,10 @@ export function pickReceipt(
 
   // 3. Could not disambiguate → fail explicitly. Never silently pick one.
   throw new Error(
-    `proofgate: ${candidates.length} candidate receipts in the diff ` +
+    `plumb: ${candidates.length} candidate receipts in the diff ` +
       `(${candidates.map((c) => c.path).join(", ")}) — none uniquely matches the ` +
       `PR branch (task_id) or this diff's content (diff_sha256). A merge may have ` +
       `re-added a stale receipt; ensure exactly one receipt under ` +
-      `.proofgate/receipts/ belongs to this PR (or pass --receipt to select it).`,
+      `the receipts/ dir belongs to this PR (or pass --receipt to select it).`,
   );
 }

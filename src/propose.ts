@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { matchesAny } from "./glob.js";
 
 /**
- * `proofgate propose` — the intake end of the loop (propose → work → prove →
+ * `plumb propose` — the intake end of the loop (propose → work → prove →
  * gate). One command births the GitHub issue and its OpenSpec change folder
  * ALREADY LINKED, so task_id ↔ contract-folder linkage can never drift — the
  * same reason `receipt --write` reuses the gate's own hash code.
@@ -63,7 +63,7 @@ export function tasksMd(title: string): string {
 
 - [ ] TODO — acceptance task 1 (each task should be provable by a command in the receipt's validation_plan)
 - [ ] TODO — acceptance task 2
-- [ ] receipt: \`proofgate receipt --write\`, fill judgment fields, \`proofgate check\`
+- [ ] receipt: \`plumb receipt --write\`, fill judgment fields, \`plumb check\`
 `;
 }
 
@@ -76,7 +76,7 @@ export function issueBody(opts: { body?: string; slug?: string }): string {
 
 ## Acceptance
 - [ ] Contract sections (Why / What Changes / Scope) filled and approved
-- [ ] Work lands with a proof receipt (\`proofgate receipt --write\`) bound to this issue${contract}
+- [ ] Work lands with a proof receipt (\`plumb receipt --write\`) bound to this issue${contract}
 `;
 }
 
@@ -214,7 +214,7 @@ export function runPropose(opts: ProposeOptions): ProposeResult {
   // 4. Informational prediction (the receipt derives the real value from the diff).
   if (prediction.selfModifying) {
     log(`prediction: this work will likely be self_modifying — ${prediction.reasons.join("; ")}`);
-    log("  (informational only — `proofgate receipt --write` derives the real value from the actual diff)");
+    log("  (informational only — `plumb receipt --write` derives the real value from the actual diff)");
   }
   return result;
 }

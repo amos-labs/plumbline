@@ -2,7 +2,7 @@
 
 <!--
 This file is the constitution for AI-agent work in this repository.
-The proofgate semantic reviewer judges every agent PR against it.
+The plumbline semantic reviewer judges every agent PR against it.
 Write it for a reviewer, not a marketer: concrete invariants beat vibes.
 -->
 
@@ -27,12 +27,12 @@ Write it for a reviewer, not a marketer: concrete invariants beat vibes.
 
 <!-- Changes here must declare self_modifying: true in the receipt and can
      never auto-approve — a human always decides. Keep in sync with
-     protected_paths in .proofgate/policy.json. Examples:
+     protected_paths in .plumbline/policy.json. Examples:
 
 - Authentication, authorization, or permission logic
 - Payment and billing code
 - Database migrations
-- This file and .proofgate/** (the gate must not weaken itself)
+- This file and .plumbline/** (the gate must not weaken itself)
 -->
 
 ## Validation expectations

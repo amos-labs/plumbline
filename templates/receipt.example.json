@@ -4,7 +4,7 @@
   "agent_id": "claude-code-main",
   "intent": "Add server-side validation for course enrollment dates so that enrollments cannot be created with an end date before the start date, per ISSUE-142.",
   "self_modifying": false,
-  "policy_refs": [".proofgate/MISSION.md"],
+  "policy_refs": [".plumbline/MISSION.md"],
   "validation_plan": [
     {
       "command": "bundle exec rspec spec/models/enrollment_spec.rb",

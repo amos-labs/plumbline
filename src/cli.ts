@@ -16,6 +16,7 @@ import { detectCi, reportToCi } from "./ci.js";
 import { pickReceipt, type ReceiptCandidate } from "./receipt-select.js";
 import { runInit, sanitizeTaskId, newReceipt, formatSchemaReference } from "./scaffold.js";
 import { detectBaseRef } from "./base.js";
+import { baseDir, resolveDualPath } from "./basedir.js";
 import {
   protectedHits,
   refreshMechanical,
@@ -27,7 +28,7 @@ import { runPropose } from "./propose.js";
 
 function loadPolicy(path: string): Policy {
   if (!existsSync(path)) {
-    console.error(`proofgate: policy file not found at ${path} — using defaults`);
+    console.error(`plumb: policy file not found at ${path} — using defaults`);
     return PolicySchema.parse({ version: "1.0" });
   }
   return PolicySchema.parse(JSON.parse(readFileSync(path, "utf8")));
@@ -49,20 +50,22 @@ function getDiff(baseRef: string, cwd: string): string {
  *     `git diff <base>...HEAD`, so working-tree edits are NOT in diff_sha256.
  */
 function preflightWarnings(cwd: string, baseRef: string): void {
-  if (existsSync(join(cwd, ".proofgate", "receipt.json"))) {
-    console.error(
-      "proofgate ⚠️  legacy .proofgate/receipt.json present — use one file per PR at " +
-        ".proofgate/receipts/<task_id>.json (a shared receipt.json gets dragged forward " +
-        "across branches and conflicts). `proofgate new` creates the per-PR file.",
-    );
+  for (const d of [".plumbline", ".proofgate"]) {
+    if (existsSync(join(cwd, d, "receipt.json"))) {
+      console.error(
+        `plumb ⚠️  legacy ${d}/receipt.json present — use one file per PR at ` +
+          `${d}/receipts/<task_id>.json (a shared receipt.json gets dragged forward ` +
+          "across branches and conflicts). `plumb new` creates the per-PR file.",
+      );
+    }
   }
   try {
     const dirty = execFileSync("git", ["status", "--porcelain"], { cwd, encoding: "utf8" }).trim();
     if (dirty) {
       console.error(
-        `proofgate ⚠️  uncommitted changes present. The gate binds the COMMITTED HEAD via ` +
+        `plumb ⚠️  uncommitted changes present. The gate binds the COMMITTED HEAD via ` +
           `\`git diff ${baseRef}...HEAD\` (3-dot) — uncommitted edits are NOT in diff_sha256. ` +
-          `Commit, then re-run \`proofgate stamp\` so the hash matches what CI computes.`,
+          `Commit, then re-run \`plumb receipt --write\` so the hash matches what CI computes.`,
       );
     }
   } catch {
@@ -70,7 +73,9 @@ function preflightWarnings(cwd: string, baseRef: string): void {
   }
 }
 
-const DEFAULT_RECEIPT = ".proofgate/receipt.json";
+function defaultReceipt(dir: string): string {
+  return `${dir}/receipt.json`;
+}
 
 /**
  * Locate the receipt for THIS PR. Per-PR receipts live at
@@ -86,9 +91,10 @@ function resolveReceiptPath(
   baseRef: string | undefined,
   cwd: string,
   skipGit: boolean,
+  fallback: string,
 ): string {
-  if (explicit !== DEFAULT_RECEIPT) return explicit;
-  if (skipGit || !baseRef) return DEFAULT_RECEIPT;
+  if (explicit !== fallback) return explicit;
+  if (skipGit || !baseRef) return fallback;
   let changed: string[] = [];
   try {
     changed = execFileSync(
@@ -98,9 +104,9 @@ function resolveReceiptPath(
     )
       .split("\n")
       .map((l) => l.trim())
-      .filter((f) => /^\.proofgate\/receipts\/[^/]+\.json$/.test(f));
+      .filter((f) => /^\.(?:plumbline|proofgate)\/receipts\/[^/]+\.json$/.test(f));
   } catch {
-    return DEFAULT_RECEIPT;
+    return fallback;
   }
   if (changed.length === 1) return changed[0];
   if (changed.length > 1) {
@@ -132,7 +138,7 @@ function resolveReceiptPath(
     const branch = process.env.GITHUB_HEAD_REF || undefined;
     return pickReceipt(candidates, { branch, actualSha });
   }
-  return DEFAULT_RECEIPT;
+  return fallback;
 }
 
 function arg(name: string, fallback?: string): string | undefined {
@@ -151,40 +157,58 @@ async function main(): Promise<number> {
   const cmd = process.argv[2];
   const ci = detectCi();
   const cwd = arg("cwd", process.cwd())!;
-  const policyPath = arg("policy", ".proofgate/policy.json")!;
+  // `.plumbline/` is canonical; `.proofgate/` (the pre-rename dir) still fully
+  // works — reads and writes follow whichever the repo already has.
+  const dir = baseDir(cwd);
+  const DEFAULT_RECEIPT = defaultReceipt(dir);
+  const policyPath = resolveDualPath(cwd, arg("policy", `${dir}/policy.json`)!);
   const baseRef = arg("base", ci.baseRef ?? detectBaseRef(cwd))!;
   const skipGit = flag("no-git");
   // init/new don't operate on an existing receipt — skip resolution (and its
   // git call, which would print a spurious diff error in a fresh repo).
+  // "auto" (and either dir's legacy default path — what pinned actions pass)
+  // means "discover the per-PR receipt"; anything else is an explicit override.
+  const receiptArg = arg("receipt", "auto")!;
+  const receiptIsDefault =
+    receiptArg === "auto" ||
+    receiptArg === ".plumbline/receipt.json" ||
+    receiptArg === ".proofgate/receipt.json";
   const receiptPath =
     cmd === "init" || cmd === "new" || cmd === "schema" || cmd === "propose"
       ? DEFAULT_RECEIPT
-      : resolveReceiptPath(arg("receipt", DEFAULT_RECEIPT)!, skipGit ? undefined : baseRef, cwd, skipGit);
+      : resolveReceiptPath(
+          receiptIsDefault ? DEFAULT_RECEIPT : receiptArg,
+          skipGit ? undefined : baseRef,
+          cwd,
+          skipGit,
+          DEFAULT_RECEIPT,
+        );
 
   if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check", "receipt", "propose"].includes(cmd)) {
-    console.log(`proofgate — proof-carrying gate for AI agent work
+    console.log(`plumbline — the plumb line for AI agent work (Amos 7:7-8): proof-carrying gate
 
 usage:
-  proofgate init    (scaffold workflow + .proofgate/ + AGENTS.md into this repo — start here)
-  proofgate propose "<title>" [--body text] [--repo owner/name] [--lite] [--task id]
-                    (intake: open the GitHub issue + scaffold openspec/changes/<slug>/ born linked;
-                     --lite = plain issue, no contract folder — for trivial work)
-  proofgate new     [--task id] [--agent id] [--base ref]   (scaffold a fresh per-PR receipt, diff-stamped)
-  proofgate receipt --write [--task id] [--agent id]   (one idempotent step: scaffold if absent, else refresh
-                    the mechanical fields — diff_sha256, changed_files, self_modifying — judgment fields untouched)
-  proofgate receipt --check   (mechanical staleness only; exit 1 if stale — pre-push-hook friendly)
-  proofgate schema  (print the receipt field reference — every field + allowed enum values)
-  proofgate stamp   [--receipt path] [--base ref]   (fill diff_sha256 + changed_files from the real diff)
-  proofgate check   [--receipt path] [--policy path] [--base ref]   (local pre-flight: shape + diff_sha256, prints the capsule)
-  proofgate shape   [--receipt path] [--policy path] [--base ref] [--no-git]
-  proofgate review  [--receipt path] [--policy path] [--base ref] [--mission path]
-  proofgate run     [--receipt path] [--policy path] [--base ref]   (shape + review + PR comment in CI)
+  plumb init    (scaffold workflow + .plumbline/ + AGENTS.md into this repo — start here)
+  plumb propose "<title>" [--body text] [--repo owner/name] [--lite] [--task id]
+                (intake: open the GitHub issue + scaffold openspec/changes/<slug>/ born linked;
+                 --lite = plain issue, no contract folder — for trivial work)
+  plumb new     [--task id] [--agent id] [--base ref]   (scaffold a fresh per-PR receipt, diff-stamped)
+  plumb receipt --write [--task id] [--agent id]   (one idempotent step: scaffold if absent, else refresh
+                the mechanical fields — diff_sha256, changed_files, self_modifying — judgment fields untouched)
+  plumb receipt --check   (mechanical staleness only; exit 1 if stale — pre-push-hook friendly)
+  plumb schema  (print the receipt field reference — every field + allowed enum values)
+  plumb stamp   [--receipt path] [--base ref]   (fill diff_sha256 + changed_files from the real diff)
+  plumb check   [--receipt path] [--policy path] [--base ref]   (local pre-flight: shape + diff_sha256, prints the capsule)
+  plumb shape   [--receipt path] [--policy path] [--base ref] [--no-git]
+  plumb review  [--receipt path] [--policy path] [--base ref] [--mission path]
+  plumb run     [--receipt path] [--policy path] [--base ref]   (shape + review + PR comment in CI)
 
-receipt: auto-discovered from the PR diff at .proofgate/receipts/<task_id>.json
-         (one file per PR — no conflicts); falls back to .proofgate/receipt.json.
-         Pass --receipt to override.
-policy default:  .proofgate/policy.json
-env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (comment), PROOFGATE_MODEL (override)`);
+receipt: auto-discovered from the PR diff at .plumbline/receipts/<task_id>.json
+         (one file per PR — no conflicts); falls back to <dir>/receipt.json.
+         Legacy .proofgate/ repos work unchanged. Pass --receipt to override.
+policy default:  .plumbline/policy.json (or .proofgate/policy.json when that's what exists)
+env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (comment),
+     PLUMBLINE_MODEL / PROOFGATE_MODEL (override)`);
     return cmd ? 2 : 0;
   }
 
@@ -200,10 +224,10 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
       console.error(`  ${it.created ? "created" : "skip   "} ${it.dest}${it.note ? `  (${it.note})` : ""}`);
     }
     console.error(
-      `\nproofgate initialized. Next:\n` +
-        `  1. Read .proofgate/AGENTS.md (the agent guide)\n` +
-        `  2. proofgate new  →  fill the receipt  →  proofgate stamp  →  proofgate check\n` +
-        `  3. (human) make 'proofgate' a required check + add the ANTHROPIC_API_KEY secret — steps in AGENTS.md`,
+      `\nplumbline initialized. Next:\n` +
+        `  1. Read ${dir}/AGENTS.md (the agent guide)\n` +
+        `  2. plumb receipt --write  →  fill the judgment fields  →  plumb check\n` +
+        `  3. (human) make 'plumbline' a required check + add the ANTHROPIC_API_KEY secret — steps in AGENTS.md`,
     );
     return 0;
   }
@@ -215,7 +239,7 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
   if (cmd === "propose") {
     const title = process.argv[3] && !process.argv[3].startsWith("--") ? process.argv[3] : undefined;
     if (!title) {
-      console.error(`proofgate propose: a title is required — proofgate propose "<the ask>" [--body text] [--repo owner/name] [--lite] [--task id]`);
+      console.error(`plumb propose: a title is required — plumb propose "<the ask>" [--body text] [--repo owner/name] [--lite] [--task id]`);
       return 2;
     }
     const proposePolicy = loadPolicy(policyPath);
@@ -231,7 +255,7 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
     if (res.folder) {
       console.error(
         `\nNext: fill ${res.folder}/proposal.md (Why / What Changes / Scope) + tasks.md, get the contract approved, ` +
-          `then work → 'proofgate receipt --write'${res.issueNumber ? ` (task_id ${res.issueNumber} is already linked)` : ""}.`,
+          `then work → 'plumb receipt --write'${res.issueNumber ? ` (task_id ${res.issueNumber} is already linked)` : ""}.`,
       );
     }
     return 0;
@@ -251,7 +275,7 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
       }
     }
     const taskId = sanitizeTaskId(arg("task", branch || "TASK")!);
-    const agentId = arg("agent", process.env.PROOFGATE_AGENT_ID || "agent")!;
+    const agentId = arg("agent", process.env.PLUMBLINE_AGENT_ID || process.env.PROOFGATE_AGENT_ID || "agent")!;
     let diffSha: string | undefined;
     let changed: string[] | undefined;
     if (!skipGit && baseRef) {
@@ -259,14 +283,14 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
         diffSha = computeDiffSha256(gitDiffExcludingReceipt(baseRef, cwd));
         changed = gitChangedFiles(baseRef, cwd).filter((f) => !isReceiptPath(f));
       } catch {
-        /* leave placeholders; author runs `proofgate stamp` later */
+        /* leave placeholders; author runs `plumb receipt --write` later */
       }
     }
-    const dest = join(cwd, ".proofgate", "receipts", `${taskId}.json`);
+    const dest = join(cwd, dir, "receipts", `${taskId}.json`);
     if (existsSync(dest)) {
       console.error(
-        `proofgate new: .proofgate/receipts/${taskId}.json already exists — left as-is. ` +
-          `Edit it, then run 'proofgate stamp' + 'proofgate check'.`,
+        `plumb new: ${dir}/receipts/${taskId}.json already exists — left as-is. ` +
+          `Edit it, then run 'plumb receipt --write' + 'plumb check'.`,
       );
       return 0;
     }
@@ -274,8 +298,8 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
     const receipt = newReceipt({ taskId, agentId, diffSha256: diffSha, changedFiles: changed });
     writeFileSync(dest, `${JSON.stringify(receipt, null, 2)}\n`);
     console.error(
-      `created .proofgate/receipts/${taskId}.json (diff-stamped: ${diffSha ? "yes" : "no — run 'proofgate stamp'"})\n` +
-        `Fill intent / validation_plan / execution_evidence / result_summary, then: proofgate stamp && proofgate check`,
+      `created ${dir}/receipts/${taskId}.json (diff-stamped: ${diffSha ? "yes" : "no — run 'plumb receipt --write'"})\n` +
+        `Fill intent / validation_plan / execution_evidence / result_summary, then: plumb receipt --write && plumb check`,
     );
     return 0;
   }
@@ -294,11 +318,11 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
     const write = flag("write");
     const checkOnly = flag("check");
     if (write === checkOnly) {
-      console.error("proofgate receipt: pass exactly one of --write | --check");
+      console.error("plumb receipt: pass exactly one of --write | --check");
       return 2;
     }
     if (skipGit || !baseRef) {
-      console.error("proofgate receipt: needs git + a base ref to compute the diff");
+      console.error("plumb receipt: needs git + a base ref to compute the diff");
       return 1;
     }
     let mech: MechanicalFields;
@@ -310,7 +334,7 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
         hits: protectedHits(changed, policy.protected_paths),
       };
     } catch (e) {
-      console.error(`proofgate receipt: git failed: ${String(e)}`);
+      console.error(`plumb receipt: git failed: ${String(e)}`);
       return 1;
     }
 
@@ -329,20 +353,20 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
         }
       }
       const taskId = sanitizeTaskId(arg("task", branch || "TASK")!);
-      dest = join(".proofgate", "receipts", `${taskId}.json`);
+      dest = join(dir, "receipts", `${taskId}.json`);
     }
     const destAbs = join(cwd, dest);
 
     if (checkOnly) {
       if (!existsSync(destAbs)) {
-        console.error(`proofgate receipt --check: no receipt at ${dest} — run 'proofgate receipt --write'`);
+        console.error(`plumb receipt --check: no receipt at ${dest} — run 'plumb receipt --write'`);
         return 1;
       }
       let obj: Record<string, unknown>;
       try {
         obj = JSON.parse(readFileSync(destAbs, "utf8"));
       } catch (e) {
-        console.error(`proofgate receipt --check: ${dest} is not valid JSON: ${String(e)}`);
+        console.error(`plumb receipt --check: ${dest} is not valid JSON: ${String(e)}`);
         return 1;
       }
       const report = checkMechanical(obj, mech);
@@ -351,14 +375,14 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
         return 0;
       }
       for (const p of report.problems) console.error(`stale ❌ ${p}`);
-      console.error("✗ receipt is stale — run 'proofgate receipt --write' to refresh, then commit.");
+      console.error("✗ receipt is stale — run 'plumb receipt --write' to refresh, then commit.");
       return 1;
     }
 
     // --write
     if (!existsSync(destAbs)) {
       const taskId = sanitizeTaskId(arg("task", dest.replace(/^.*\/|\.json$/g, ""))!);
-      const agentId = arg("agent", process.env.PROOFGATE_AGENT_ID || "agent")!;
+      const agentId = arg("agent", process.env.PLUMBLINE_AGENT_ID || process.env.PROOFGATE_AGENT_ID || "agent")!;
       const receipt = newReceipt({
         taskId,
         agentId,
@@ -381,7 +405,7 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
       try {
         obj = JSON.parse(readFileSync(destAbs, "utf8"));
       } catch (e) {
-        console.error(`proofgate receipt --write: ${dest} is not valid JSON: ${String(e)}`);
+        console.error(`plumb receipt --write: ${dest} is not valid JSON: ${String(e)}`);
         return 1;
       }
       const { receipt, notes, changed } = refreshMechanical(obj, mech);
@@ -395,13 +419,13 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
     }
     console.error(`\nNow fill the judgment fields (the tool never writes these):`);
     for (const j of JUDGMENT_CHECKLIST) console.error(`  · ${j}`);
-    console.error(`\nThen: git add ${dest} && commit && push  (pre-check: proofgate check)`);
+    console.error(`\nThen: git add ${dest} && commit && push  (pre-check: plumb check)`);
     return 0;
   }
 
   if (!existsSync(receiptPath)) {
     console.error(
-      `proofgate: no receipt found at ${receiptPath}.\n` +
+      `plumb: no receipt found at ${receiptPath}.\n` +
         `Agent work must ship with a proof receipt. See templates/receipt.example.json.`,
     );
     return 1;
@@ -414,14 +438,14 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
   // so the author never hand-maintains them or fails the gate on a stale hash.
   if (cmd === "stamp") {
     if (skipGit || !baseRef) {
-      console.error("proofgate stamp: needs git + a --base ref to compute the diff");
+      console.error("plumb stamp: needs git + a --base ref to compute the diff");
       return 1;
     }
     let receiptObj: Record<string, unknown>;
     try {
       receiptObj = JSON.parse(rawReceipt);
     } catch (e) {
-      console.error(`proofgate stamp: receipt is not valid JSON: ${String(e)}`);
+      console.error(`plumb stamp: receipt is not valid JSON: ${String(e)}`);
       return 1;
     }
     let diffSha: string;
@@ -430,7 +454,7 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
       diffSha = computeDiffSha256(gitDiffExcludingReceipt(baseRef, cwd));
       changed = gitChangedFiles(baseRef, cwd).filter((f) => !isReceiptPath(f));
     } catch (e) {
-      console.error(`proofgate stamp: git failed: ${String(e)}`);
+      console.error(`plumb stamp: git failed: ${String(e)}`);
       return 1;
     }
     const prevSha = receiptObj.diff_sha256;
@@ -469,7 +493,7 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
     console.error(
       shape.pass
         ? "✓ pre-flight PASS — shape + diff_sha256 OK. Safe to push (semantic review still runs in CI)."
-        : "✗ pre-flight FAIL — fix the above before pushing. Tip: `proofgate stamp` fixes diff_sha256/changed_files.",
+        : "✗ pre-flight FAIL — fix the above before pushing. Tip: `plumb receipt --write` fixes diff_sha256/changed_files.",
     );
     return shape.pass ? 0 : 1;
   }
@@ -535,14 +559,14 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
     gate.final = "revise";
     gate.reasons.push("semantic review skipped: shape gate failed — fix shape errors first");
   } else {
-    const missionPath = arg("mission", policy.mission_file)!;
+    const missionPath = resolveDualPath(cwd, arg("mission", policy.mission_file)!);
     if (!existsSync(missionPath)) {
-      console.error(`proofgate: mission file not found at ${missionPath}`);
+      console.error(`plumb: mission file not found at ${missionPath}`);
       return 1;
     }
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
-      console.error("proofgate: ANTHROPIC_API_KEY is required for semantic review");
+      console.error("plumb: ANTHROPIC_API_KEY is required for semantic review");
       return 1;
     }
     const mission = readFileSync(missionPath, "utf8");
@@ -560,8 +584,9 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
 
   // --- CI reporting ---
   if (cmd === "run") {
-    if (ci.prNumber !== undefined && process.env.PROOFGATE_PR_NUMBER) {
-      ci.prNumber = Number(process.env.PROOFGATE_PR_NUMBER);
+    const prOverride = process.env.PLUMBLINE_PR_NUMBER || process.env.PROOFGATE_PR_NUMBER;
+    if (ci.prNumber !== undefined && prOverride) {
+      ci.prNumber = Number(prOverride);
     }
     const posted = await reportToCi(
       ci,
@@ -569,13 +594,13 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
       gate.final === "approve",
       renderCiSummary(gate),
     ).catch((e) => {
-      console.error(`proofgate: failed to post CI comment: ${e?.message ?? e}`);
+      console.error(`plumb: failed to post CI comment: ${e?.message ?? e}`);
       return false;
     });
     if (posted) {
       console.error(`posted gate result to PR #${ci.prNumber} (${ci.provider})`);
     } else {
-      console.error("proofgate: no PR context detected — printing comment:\n");
+      console.error("plumb: no PR context detected — printing comment:\n");
       console.log(renderComment(gate));
     }
   } else {
@@ -589,7 +614,7 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
 main().then(
   (code) => process.exit(code),
   (err) => {
-    console.error(`proofgate: ${err?.message ?? err}`);
+    console.error(`plumb: ${err?.message ?? err}`);
     process.exit(1);
   },
 );

@@ -32,7 +32,7 @@ test("proposalMd: front-matter + TODO judgment sections, tool never fills them",
 });
 
 test("tasksMd carries the receipt hand-off step", () => {
-  assert.match(tasksMd("X"), /proofgate receipt --write/);
+  assert.match(tasksMd("X"), /plumb receipt --write/);
 });
 
 test("issueBody: contract pointer present unless lite (no slug)", () => {

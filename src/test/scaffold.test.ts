@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInit, sanitizeTaskId, newReceipt } from "../scaffold.js";
@@ -27,29 +27,38 @@ test("newReceipt: has the required receipt fields + defaults", () => {
 });
 
 test("runInit: scaffolds the expected files and is idempotent (never clobbers)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "proofgate-init-"));
+  const dir = mkdtempSync(join(tmpdir(), "plumbline-init-"));
   const first = runInit(dir);
-  // Key artifacts land.
+  // Key artifacts land under the canonical .plumbline/ on a fresh repo.
   for (const p of [
-    ".github/workflows/proofgate.yml",
-    ".proofgate/policy.json",
-    ".proofgate/MISSION.md",
-    ".proofgate/AGENTS.md",
-    ".proofgate/receipts/EXAMPLE.json",
+    ".github/workflows/plumbline.yml",
+    ".plumbline/policy.json",
+    ".plumbline/MISSION.md",
+    ".plumbline/AGENTS.md",
+    ".plumbline/receipts/EXAMPLE.json",
   ]) {
     assert.ok(existsSync(join(dir, p)), `expected ${p} to be created`);
   }
   // All files reported created on a fresh repo.
-  assert.ok(first.some((i) => i.dest === ".proofgate/AGENTS.md" && i.created));
+  assert.ok(first.some((i) => i.dest === ".plumbline/AGENTS.md" && i.created));
   // The scaffolded workflow had its "# Copy to …" hint stripped.
-  const wf = readFileSync(join(dir, ".github/workflows/proofgate.yml"), "utf8");
+  const wf = readFileSync(join(dir, ".github/workflows/plumbline.yml"), "utf8");
   assert.ok(!/^# Copy to /.test(wf));
-  assert.match(wf, /amos-labs\/proofgate@v0/);
+  assert.match(wf, /amos-labs\/plumbline@v0/);
 
   // Idempotency: modify a file, re-run, confirm it's left as-is (not clobbered).
-  const policyPath = join(dir, ".proofgate/policy.json");
+  const policyPath = join(dir, ".plumbline/policy.json");
   writeFileSync(policyPath, '{"version":"1.0","custom":true}\n');
   const second = runInit(dir);
   assert.equal(readFileSync(policyPath, "utf8"), '{"version":"1.0","custom":true}\n');
   assert.ok(second.every((i) => !i.created), "re-run should create nothing");
+});
+
+test("runInit: a legacy .proofgate/ repo keeps its dir (back-compat, no dual tree)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "plumbline-legacy-init-"));
+  mkdirSync(join(dir, ".proofgate"), { recursive: true });
+  runInit(dir);
+  // Scaffolds into the existing legacy dir — never creates a second config tree.
+  assert.ok(existsSync(join(dir, ".proofgate/policy.json")));
+  assert.ok(!existsSync(join(dir, ".plumbline")), "must not create .plumbline beside .proofgate");
 });
