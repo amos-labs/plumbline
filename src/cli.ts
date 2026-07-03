@@ -16,6 +16,13 @@ import { detectCi, reportToCi } from "./ci.js";
 import { pickReceipt, type ReceiptCandidate } from "./receipt-select.js";
 import { runInit, sanitizeTaskId, newReceipt, formatSchemaReference } from "./scaffold.js";
 import { detectBaseRef } from "./base.js";
+import {
+  protectedHits,
+  refreshMechanical,
+  checkMechanical,
+  JUDGMENT_CHECKLIST,
+  type MechanicalFields,
+} from "./receipt-write.js";
 
 function loadPolicy(path: string): Policy {
   if (!existsSync(path)) {
@@ -153,12 +160,15 @@ async function main(): Promise<number> {
       ? DEFAULT_RECEIPT
       : resolveReceiptPath(arg("receipt", DEFAULT_RECEIPT)!, skipGit ? undefined : baseRef, cwd, skipGit);
 
-  if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check"].includes(cmd)) {
+  if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check", "receipt"].includes(cmd)) {
     console.log(`proofgate — proof-carrying gate for AI agent work
 
 usage:
   proofgate init    (scaffold workflow + .proofgate/ + AGENTS.md into this repo — start here)
   proofgate new     [--task id] [--agent id] [--base ref]   (scaffold a fresh per-PR receipt, diff-stamped)
+  proofgate receipt --write [--task id] [--agent id]   (one idempotent step: scaffold if absent, else refresh
+                    the mechanical fields — diff_sha256, changed_files, self_modifying — judgment fields untouched)
+  proofgate receipt --check   (mechanical staleness only; exit 1 if stale — pre-push-hook friendly)
   proofgate schema  (print the receipt field reference — every field + allowed enum values)
   proofgate stamp   [--receipt path] [--base ref]   (fill diff_sha256 + changed_files from the real diff)
   proofgate check   [--receipt path] [--policy path] [--base ref]   (local pre-flight: shape + diff_sha256, prints the capsule)
@@ -238,6 +248,123 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
   }
 
   const policy = loadPolicy(policyPath);
+
+  // --- receipt: automate the mechanical half (bookkeeping), never the judgment ---
+  // `--write` is idempotent: scaffold the per-PR receipt if absent, else refresh
+  // ONLY diff_sha256 / changed_files / self_modifying (judgment fields preserved
+  // byte-for-byte). `--check` verifies mechanical freshness (exit 1 when stale) —
+  // small enough for a pre-push hook. self_modifying is DERIVED from
+  // policy.protected_paths with the gate's own glob matcher, so scaffold and
+  // gate can never disagree — hand-computing these fields is the entire failure
+  // class this command removes.
+  if (cmd === "receipt") {
+    const write = flag("write");
+    const checkOnly = flag("check");
+    if (write === checkOnly) {
+      console.error("proofgate receipt: pass exactly one of --write | --check");
+      return 2;
+    }
+    if (skipGit || !baseRef) {
+      console.error("proofgate receipt: needs git + a base ref to compute the diff");
+      return 1;
+    }
+    let mech: MechanicalFields;
+    try {
+      const changed = gitChangedFiles(baseRef, cwd).filter((f) => !isReceiptPath(f));
+      mech = {
+        diffSha256: computeDiffSha256(gitDiffExcludingReceipt(baseRef, cwd)),
+        changedFiles: changed,
+        hits: protectedHits(changed, policy.protected_paths),
+      };
+    } catch (e) {
+      console.error(`proofgate receipt: git failed: ${String(e)}`);
+      return 1;
+    }
+
+    // Target: the PR's discovered receipt; never the legacy shared receipt.json.
+    let dest = receiptPath;
+    if (dest === DEFAULT_RECEIPT) {
+      let branch = process.env.GITHUB_HEAD_REF || "";
+      if (!branch) {
+        try {
+          branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+            cwd,
+            encoding: "utf8",
+          }).trim();
+        } catch {
+          /* detached/no git — sanitizeTaskId falls back to TASK */
+        }
+      }
+      const taskId = sanitizeTaskId(arg("task", branch || "TASK")!);
+      dest = join(".proofgate", "receipts", `${taskId}.json`);
+    }
+    const destAbs = join(cwd, dest);
+
+    if (checkOnly) {
+      if (!existsSync(destAbs)) {
+        console.error(`proofgate receipt --check: no receipt at ${dest} — run 'proofgate receipt --write'`);
+        return 1;
+      }
+      let obj: Record<string, unknown>;
+      try {
+        obj = JSON.parse(readFileSync(destAbs, "utf8"));
+      } catch (e) {
+        console.error(`proofgate receipt --check: ${dest} is not valid JSON: ${String(e)}`);
+        return 1;
+      }
+      const report = checkMechanical(obj, mech);
+      if (report.fresh) {
+        console.error(`✓ ${dest} mechanical fields are fresh (diff_sha256 matches the committed diff)`);
+        return 0;
+      }
+      for (const p of report.problems) console.error(`stale ❌ ${p}`);
+      console.error("✗ receipt is stale — run 'proofgate receipt --write' to refresh, then commit.");
+      return 1;
+    }
+
+    // --write
+    if (!existsSync(destAbs)) {
+      const taskId = sanitizeTaskId(arg("task", dest.replace(/^.*\/|\.json$/g, ""))!);
+      const agentId = arg("agent", process.env.PROOFGATE_AGENT_ID || "agent")!;
+      const receipt = newReceipt({
+        taskId,
+        agentId,
+        diffSha256: mech.diffSha256,
+        changedFiles: mech.changedFiles,
+      });
+      if (mech.hits.length > 0) {
+        receipt.self_modifying = true;
+        console.error(
+          `self_modifying: true (protected paths touched: ${mech.hits
+            .map((h) => `${h.file} matches ${h.glob}`)
+            .join(", ")})`,
+        );
+      }
+      mkdirSync(dirname(destAbs), { recursive: true });
+      writeFileSync(destAbs, `${JSON.stringify(receipt, null, 2)}\n`);
+      console.error(`created ${dest} — mechanical fields filled from the real diff (base ${baseRef}).`);
+    } else {
+      let obj: Record<string, unknown>;
+      try {
+        obj = JSON.parse(readFileSync(destAbs, "utf8"));
+      } catch (e) {
+        console.error(`proofgate receipt --write: ${dest} is not valid JSON: ${String(e)}`);
+        return 1;
+      }
+      const { receipt, notes, changed } = refreshMechanical(obj, mech);
+      if (changed) writeFileSync(destAbs, `${JSON.stringify(receipt, null, 2)}\n`);
+      for (const n of notes) console.error(`  ${n}`);
+      console.error(
+        changed
+          ? `refreshed ${dest} — mechanical fields updated; judgment fields untouched.`
+          : `${dest} already fresh — nothing to do.`,
+      );
+    }
+    console.error(`\nNow fill the judgment fields (the tool never writes these):`);
+    for (const j of JUDGMENT_CHECKLIST) console.error(`  · ${j}`);
+    console.error(`\nThen: git add ${dest} && commit && push  (pre-check: proofgate check)`);
+    return 0;
+  }
 
   if (!existsSync(receiptPath)) {
     console.error(
