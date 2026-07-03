@@ -16,11 +16,22 @@ npx github:amos-labs/proofgate init   # scaffold .github/workflows + .proofgate/
 Then the per-PR loop (no human needed after one-time setup):
 
 ```bash
-npx github:amos-labs/proofgate new     # scaffold .proofgate/receipts/<branch>.json, diff-stamped
-# …fill intent / validation_plan / execution_evidence / result_summary…
-npx github:amos-labs/proofgate stamp   # refresh diff_sha256 + changed_files after edits/rebase
-npx github:amos-labs/proofgate check   # local pre-flight — same shape+diff checks as CI; must PASS before push
+npx github:amos-labs/proofgate receipt --write   # one idempotent step: scaffold .proofgate/receipts/<branch>.json
+                                                 # (or refresh it) with ALL mechanical fields computed —
+                                                 # diff_sha256, changed_files, and self_modifying derived from
+                                                 # the policy's protected paths. Judgment fields never touched.
+# …fill intent / validation_plan / execution_evidence / result_summary (the judgment half — yours to assert)…
+npx github:amos-labs/proofgate check             # local pre-flight — same shape+diff checks as CI; must PASS before push
 ```
+
+After more commits or a rebase, just run `receipt --write` again — it refreshes the
+mechanical fields and preserves everything you wrote. `receipt --check` (exit 1 when
+stale) is small enough for a pre-push hook. One receipt file per PR at
+`.proofgate/receipts/<task>.json` — never a shared `receipt.json`.
+The split is deliberate: **automate the bookkeeping, never the judgment** — the tool
+computes what's derivable (hashes, file lists, protected-path escalation) and refuses
+to write what only the author can assert. (`new` and `stamp` remain as the underlying
+single-purpose commands.)
 
 `init` prints the two human-only steps (make `proofgate` a required check; add the
 `ANTHROPIC_API_KEY` secret) — also spelled out in `.proofgate/AGENTS.md`. See that
