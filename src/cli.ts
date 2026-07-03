@@ -23,6 +23,7 @@ import {
   JUDGMENT_CHECKLIST,
   type MechanicalFields,
 } from "./receipt-write.js";
+import { runPropose } from "./propose.js";
 
 function loadPolicy(path: string): Policy {
   if (!existsSync(path)) {
@@ -156,15 +157,18 @@ async function main(): Promise<number> {
   // init/new don't operate on an existing receipt — skip resolution (and its
   // git call, which would print a spurious diff error in a fresh repo).
   const receiptPath =
-    cmd === "init" || cmd === "new" || cmd === "schema"
+    cmd === "init" || cmd === "new" || cmd === "schema" || cmd === "propose"
       ? DEFAULT_RECEIPT
       : resolveReceiptPath(arg("receipt", DEFAULT_RECEIPT)!, skipGit ? undefined : baseRef, cwd, skipGit);
 
-  if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check", "receipt"].includes(cmd)) {
+  if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check", "receipt", "propose"].includes(cmd)) {
     console.log(`proofgate — proof-carrying gate for AI agent work
 
 usage:
   proofgate init    (scaffold workflow + .proofgate/ + AGENTS.md into this repo — start here)
+  proofgate propose "<title>" [--body text] [--repo owner/name] [--lite] [--task id]
+                    (intake: open the GitHub issue + scaffold openspec/changes/<slug>/ born linked;
+                     --lite = plain issue, no contract folder — for trivial work)
   proofgate new     [--task id] [--agent id] [--base ref]   (scaffold a fresh per-PR receipt, diff-stamped)
   proofgate receipt --write [--task id] [--agent id]   (one idempotent step: scaffold if absent, else refresh
                     the mechanical fields — diff_sha256, changed_files, self_modifying — judgment fields untouched)
@@ -201,6 +205,35 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
         `  2. proofgate new  →  fill the receipt  →  proofgate stamp  →  proofgate check\n` +
         `  3. (human) make 'proofgate' a required check + add the ANTHROPIC_API_KEY secret — steps in AGENTS.md`,
     );
+    return 0;
+  }
+
+  // --- propose: intake — issue + OpenSpec contract folder, born linked ---
+  // The upstream end of the loop (propose → work → prove → gate). Deterministic
+  // scaffolding only: folder, stubs, issue, linkage, an informational
+  // self_modifying prediction. Spec content stays TODO — authored, never generated.
+  if (cmd === "propose") {
+    const title = process.argv[3] && !process.argv[3].startsWith("--") ? process.argv[3] : undefined;
+    if (!title) {
+      console.error(`proofgate propose: a title is required — proofgate propose "<the ask>" [--body text] [--repo owner/name] [--lite] [--task id]`);
+      return 2;
+    }
+    const proposePolicy = loadPolicy(policyPath);
+    const res = runPropose({
+      title,
+      body: arg("body"),
+      repo: arg("repo"),
+      lite: flag("lite"),
+      task: arg("task"),
+      cwd,
+      protectedPaths: proposePolicy.protected_paths,
+    });
+    if (res.folder) {
+      console.error(
+        `\nNext: fill ${res.folder}/proposal.md (Why / What Changes / Scope) + tasks.md, get the contract approved, ` +
+          `then work → 'proofgate receipt --write'${res.issueNumber ? ` (task_id ${res.issueNumber} is already linked)` : ""}.`,
+      );
+    }
     return 0;
   }
 

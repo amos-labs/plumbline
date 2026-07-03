@@ -13,6 +13,18 @@ One command scaffolds the workflow, policy, mission, an example receipt, and an
 npx github:amos-labs/proofgate init   # scaffold .github/workflows + .proofgate/ + AGENTS.md
 ```
 
+Then the full lifecycle — **propose → work → prove → gate** — starts at intake:
+
+```bash
+npx github:amos-labs/proofgate propose "Rotate auth session tokens" --body "Tokens never expire today."
+# → opens the GitHub issue AND scaffolds openspec/changes/rotate-auth-session-tokens/
+#   (proposal.md + specs/ + tasks.md), born linked: the issue number is written into the
+#   proposal's task_id front-matter, the issue body carries the contract path. Prints an
+#   informational self_modifying prediction from the policy's protected paths.
+#   --lite = plain issue, no contract folder (typo-fix-grade work).
+# …fill the contract's Why / What Changes / Scope (judgment — yours), get it approved, do the work…
+```
+
 Then the per-PR loop (no human needed after one-time setup):
 
 ```bash
