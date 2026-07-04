@@ -6,6 +6,8 @@
 
 Extracted from the [AMOS](https://github.com/amos-labs) proof-carrying autonomous loop. Apache 2.0.
 
+**Plumbline gates Plumbline.** This repo runs its own gate on every PR — self-modifying changes to the gate itself escalate to human review. The loop is proven on the tool that implements it.
+
 **Compatible with [OpenSpec](https://github.com/Fission-AI/OpenSpec). Dependent on nothing.** The intake and archive ends of the loop follow OpenSpec's format and lifecycle conventions (MIT — see `THIRD-PARTY.md`), so existing `openspec/` folders just work — and every stage is adoptable on its own.
 
 ## Three ways in — adopt what you want
