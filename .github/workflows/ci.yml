@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: read
+
+jobs:
+  test:
+    # The job name is bound by .plumbline/policy.json `ci_evidence_checks`:
+    # the gate corroborates receipts against THIS check-run's real conclusion.
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run build
+      - run: npm test
+
+  plumbline:
+    # Self-hosting: the gate gates the gate, always running the PR's own code
+    # (uses: ./) so enforcement changes are exercised by the PR that makes them.
+    name: plumbline
+    # Same-repo PRs only: the gate needs ANTHROPIC_API_KEY, and running `uses: ./`
+    # on fork PRs would hand untrusted code a secret-bearing job (gate finding #1).
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    # ci_evidence_checks corroborates the `test` check-run's conclusion —
+    # it must have finished before the gate reads it.
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # PR HEAD, not the synthetic merge ref — diff_sha256 binds the branch head.
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Run plumbline on itself
+        uses: ./
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}

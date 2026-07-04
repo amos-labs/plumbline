@@ -1,0 +1,54 @@
+{
+  "receipt_version": "1.0",
+  "task_id": "feat-self-host",
+  "agent_id": "claude-fable-5",
+  "intent": "Self-host the gate: give the plumbline repo its own .plumbline/ policy + mission, a CI pipeline (test job: tsc, build, full suite; plumbline job: the gate running this PR's own code via uses: ./), and contributor docs for the receipt loop. Scope: repo configuration and docs only \u2014 no changes to enforcement source code. This PR touches protected surfaces (.plumbline/**, .github/workflows/**) by definition, so it is self-modifying and must be human-reviewed.",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json"
+  ],
+  "validation_plan": [
+    {
+      "command": "npx tsc --noEmit",
+      "reason": "repo must still type-check with the new config files present",
+      "required": true
+    },
+    {
+      "command": "npm test",
+      "reason": "full suite (101 tests) \u2014 proves the gate code this CI will execute is green",
+      "required": true
+    },
+    {
+      "command": "node dist/cli.js check",
+      "reason": "the gate's own local pre-flight passes on this very receipt (self-host proof)",
+      "required": true
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npx tsc --noEmit",
+      "status": "passed",
+      "output_ref": "clean, no diagnostics"
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "# tests 101 # pass 101 # fail 0 (also CI 'test' job on this PR \u2014 ci_evidence_checks corroborates)"
+    },
+    {
+      "command": "node dist/cli.js check",
+      "status": "passed",
+      "output_ref": "shape gate: PASS on this receipt (run locally before push)"
+    }
+  ],
+  "changed_files": [
+    ".github/workflows/ci.yml",
+    ".plumbline/AGENTS.md",
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json",
+    "CONTRIBUTING.md"
+  ],
+  "diff_sha256": "963e579417028ecd37a3933d3c7a8e91882ef61fc012789c9507f559459fede3",
+  "result_summary": "plumbline now gates itself: strict policy (enforcement core + workflows + .plumbline/** protected, ci_evidence bound to the test job), a one-page MISSION encoding the automate-bookkeeping-never-judgment law and the hard floor as reviewable invariants, CI (test + gate-on-own-code), and CONTRIBUTING. Verified by tsc + the 101-test suite + plumb check passing on this receipt. Rework round 1: added the same-repo guard the gate's own review flagged (fork secret exposure) and the receipt trailing newline."
+}
