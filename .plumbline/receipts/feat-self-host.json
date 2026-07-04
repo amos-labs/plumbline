@@ -49,6 +49,6 @@
     ".plumbline/policy.json",
     "CONTRIBUTING.md"
   ],
-  "diff_sha256": "c595aa69549da1e3b6f6f1f476ce5585053de0041bb93aecb54f84545c1e46a4",
-  "result_summary": "plumbline now gates itself: strict policy (enforcement core + workflows + .plumbline/** protected, ci_evidence bound to the test job), a one-page MISSION encoding the automate-bookkeeping-never-judgment law and the hard floor as reviewable invariants, CI (test + gate-on-own-code), and CONTRIBUTING. Verified by tsc + the 101-test suite + plumb check passing on this receipt."
+  "diff_sha256": "963e579417028ecd37a3933d3c7a8e91882ef61fc012789c9507f559459fede3",
+  "result_summary": "plumbline now gates itself: strict policy (enforcement core + workflows + .plumbline/** protected, ci_evidence bound to the test job), a one-page MISSION encoding the automate-bookkeeping-never-judgment law and the hard floor as reviewable invariants, CI (test + gate-on-own-code), and CONTRIBUTING. Verified by tsc + the 101-test suite + plumb check passing on this receipt. Rework round 1: added the same-repo guard the gate's own review flagged (fork secret exposure) and the receipt trailing newline."
 }
