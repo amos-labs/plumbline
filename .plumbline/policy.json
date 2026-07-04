@@ -1,0 +1,21 @@
+{
+  "version": "1.0",
+  "mission_file": ".plumbline/MISSION.md",
+  "required_checks": ["npm test"],
+  "ci_evidence_checks": ["test"],
+  "protected_paths": [
+    "src/shape.ts",
+    "src/severity.ts",
+    "src/github.ts",
+    "src/types.ts",
+    "action.yml",
+    ".plumbline/**",
+    ".github/workflows/**"
+  ],
+  "min_review_confidence": 0.8,
+  "human_review_level": "balanced",
+  "review_model": "claude-sonnet-4-6",
+  "max_receipt_bytes": 262144,
+  "strictness": "strict",
+  "check_severity": {}
+}
