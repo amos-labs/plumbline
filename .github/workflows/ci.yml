@@ -32,7 +32,9 @@ jobs:
     # Self-hosting: the gate gates the gate, always running the PR's own code
     # (uses: ./) so enforcement changes are exercised by the PR that makes them.
     name: plumbline
-    if: github.event_name == 'pull_request'
+    # Same-repo PRs only: the gate needs ANTHROPIC_API_KEY, and running `uses: ./`
+    # on fork PRs would hand untrusted code a secret-bearing job (gate finding #1).
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     # ci_evidence_checks corroborates the `test` check-run's conclusion —
     # it must have finished before the gate reads it.
     needs: test
