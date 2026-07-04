@@ -6,6 +6,16 @@
 
 Extracted from the [AMOS](https://github.com/amos-labs) proof-carrying autonomous loop. Apache 2.0.
 
+**Compatible with [OpenSpec](https://github.com/Fission-AI/OpenSpec). Dependent on nothing.** The intake and archive ends of the loop follow OpenSpec's format and lifecycle conventions (MIT — see `THIRD-PARTY.md`), so existing `openspec/` folders just work — and every stage is adoptable on its own.
+
+## Three ways in — adopt what you want
+
+Every stage stands alone; none requires the previous one.
+
+1. **Gate-only (5 minutes).** `plumb init`, make `plumbline` a required check, agents ship receipts via `plumb receipt --write`. You get the proof half: every PR hash-bound to a receipt, judged against your mission.
+2. **The full loop.** `propose → work → receipt --write → check → gate → archive` — intake contracts, proof, and living specs, one tool end to end.
+3. **Bring your OpenSpec.** Already spec-driven? Your `openspec/changes/` folders are the contract: `plumb receipt --write` binds the diff to them and `plumb archive` applies your deltas to `openspec/specs/` — no workflow change.
+
 ## Quick start (agent-installable)
 
 One command scaffolds the workflow, policy, mission, an example receipt, and an
@@ -15,7 +25,7 @@ One command scaffolds the workflow, policy, mission, an example receipt, and an
 npx github:amos-labs/plumbline init   # scaffold .github/workflows + .plumbline/ + AGENTS.md
 ```
 
-Then the full lifecycle — **propose → work → prove → gate** — starts at intake:
+Then the full lifecycle — **propose → work → prove → gate → archive** — starts at intake:
 
 ```bash
 npx github:amos-labs/plumbline propose "Rotate auth session tokens" --body "Tokens never expire today."
@@ -46,6 +56,16 @@ The split is deliberate: **automate the bookkeeping, never the judgment** — th
 computes what's derivable (hashes, file lists, protected-path escalation) and refuses
 to write what only the author can assert. (`new` and `stamp` remain as the underlying
 single-purpose commands.)
+
+And once the PR is merged, close the loop — recorded truth:
+
+```bash
+npx github:amos-labs/plumbline archive rotate-auth-session-tokens
+# → applies the change's ADDED/MODIFIED/REMOVED spec deltas to openspec/specs/ (the living
+#   source of truth a fresh agent reads to know how the system behaves), then moves the
+#   change to openspec/changes/archive/<date>-rotate-auth-session-tokens/ with full context.
+#   Refuses unless the change's receipt passes the gate — proof precedes truth (--force overrides, loudly).
+```
 
 `init` prints the two human-only steps (make `plumbline` a required check; add the
 `ANTHROPIC_API_KEY` secret) — also spelled out in `.plumbline/AGENTS.md`. See that
@@ -95,12 +115,25 @@ always need a human).
 
 ## CLI
 
+The complete command set, in lifecycle order:
+
 ```bash
-plumb stamp    # fill diff_sha256 + changed_files from the real diff (do this before committing)
-plumb check    # local pre-flight: shape + diff_sha256, prints the would-be capsule — no push needed
-plumb shape    # deterministic checks only — fast, no API key needed
-plumb review   # shape + semantic review, prints JSON verdict
-plumb run      # CI mode: shape + review + posts/updates the PR comment
+plumb init             # scaffold the gate into a repo: workflow + .plumbline/ + AGENTS.md — start here
+plumb propose "<ask>"  # intake: GitHub issue + openspec/changes/<slug>/ contract folder, born linked
+                       #   (--lite = plain issue, no folder — typo-fix-grade work)
+plumb receipt --write  # one idempotent step: scaffold or refresh the per-PR receipt's mechanical fields
+                       #   (diff_sha256, changed_files, self_modifying) — judgment fields never touched
+plumb receipt --check  # mechanical staleness only; exit 1 if stale — pre-push-hook friendly
+plumb new              # lower-level: scaffold a fresh per-PR receipt (receipt --write supersedes)
+plumb stamp            # lower-level: fill diff_sha256 + changed_files only (receipt --write supersedes)
+plumb check            # local pre-flight: shape + diff_sha256, prints the would-be capsule — no push needed
+plumb shape            # deterministic checks only — fast, no API key needed
+plumb review           # shape + semantic review, prints JSON verdict
+plumb run              # CI mode: shape + review + posts/updates the PR comment
+plumb archive <slug>   # close the loop: apply the change's spec deltas to openspec/specs/ (the living
+                       #   source of truth), move it to openspec/changes/archive/<date>-<slug>/;
+                       #   refuses unless the receipt passes the gate (--force overrides, loudly)
+plumb schema           # print the receipt field reference
 ```
 
 `stamp` + `check` close the loop in the working tree: `stamp` generates the two most error-prone,

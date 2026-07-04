@@ -13,7 +13,8 @@
     "templates",
     "action.yml",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "THIRD-PARTY.md"
   ],
   "scripts": {
     "build": "tsc",
