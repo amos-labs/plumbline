@@ -25,6 +25,7 @@ import {
   type MechanicalFields,
 } from "./receipt-write.js";
 import { runPropose } from "./propose.js";
+import { runArchive } from "./archive.js";
 
 function loadPolicy(path: string): Policy {
   if (!existsSync(path)) {
@@ -174,7 +175,7 @@ async function main(): Promise<number> {
     receiptArg === ".plumbline/receipt.json" ||
     receiptArg === ".proofgate/receipt.json";
   const receiptPath =
-    cmd === "init" || cmd === "new" || cmd === "schema" || cmd === "propose"
+    cmd === "init" || cmd === "new" || cmd === "schema" || cmd === "propose" || cmd === "archive"
       ? DEFAULT_RECEIPT
       : resolveReceiptPath(
           receiptIsDefault ? DEFAULT_RECEIPT : receiptArg,
@@ -184,7 +185,7 @@ async function main(): Promise<number> {
           DEFAULT_RECEIPT,
         );
 
-  if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check", "receipt", "propose"].includes(cmd)) {
+  if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check", "receipt", "propose", "archive"].includes(cmd)) {
     console.log(`plumbline — the plumb line for AI agent work (Amos 7:7-8): proof-carrying gate
 
 usage:
@@ -202,6 +203,9 @@ usage:
   plumb shape   [--receipt path] [--policy path] [--base ref] [--no-git]
   plumb review  [--receipt path] [--policy path] [--base ref] [--mission path]
   plumb run     [--receipt path] [--policy path] [--base ref]   (shape + review + PR comment in CI)
+  plumb archive <slug> [--force] [--date YYYY-MM-DD]   (apply the change's spec deltas to the living
+                openspec/specs/, move the change to openspec/changes/archive/<date>-<slug>/;
+                refuses unless the change's receipt passes the gate — --force overrides with a warning)
 
 receipt: auto-discovered from the PR diff at .plumbline/receipts/<task_id>.json
          (one file per PR — no conflicts); falls back to <dir>/receipt.json.
@@ -259,6 +263,29 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
       );
     }
     return 0;
+  }
+
+  // --- archive: close the loop — apply spec deltas to living specs, move the change ---
+  // Gate-before-archive: only proven work becomes recorded truth. Deterministic
+  // merges per OpenSpec semantics (ADDED append / MODIFIED replace / REMOVED delete).
+  if (cmd === "archive") {
+    const slug = process.argv[3] && !process.argv[3].startsWith("--") ? process.argv[3] : undefined;
+    if (!slug) {
+      console.error("plumb archive: a change slug is required — plumb archive <slug> [--force] [--date YYYY-MM-DD]");
+      return 2;
+    }
+    const res = runArchive({
+      slug,
+      cwd,
+      force: flag("force"),
+      policy: loadPolicy(policyPath),
+      date: arg("date"),
+    });
+    for (const e of res.errors) console.error(`plumb archive ❌ ${e}`);
+    if (res.ok) {
+      console.error(`\nCommit the archive: git add openspec/ && git commit -m "chore(openspec): archive ${slug}"`);
+    }
+    return res.ok ? 0 : 1;
   }
 
   // --- new: scaffold a fresh per-PR receipt, stamped to the current diff ---

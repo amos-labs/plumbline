@@ -67,6 +67,48 @@ export function tasksMd(title: string): string {
 `;
 }
 
+/**
+ * specs/README.md — teaches the OpenSpec delta-spec format (MIT, see
+ * THIRD-PARTY.md) the author fills in. One folder per capability touched;
+ * `plumb archive` applies these deltas to the living `openspec/specs/`.
+ */
+export function specsReadme(): string {
+  return `# Delta specs
+
+One folder per capability this change touches: \`specs/<capability>/spec.md\`
+(matching \`openspec/specs/<capability>/spec.md\`, the living source of truth).
+On \`plumb archive\`, ADDED requirements are appended to the living spec,
+MODIFIED replace the same-named requirement, REMOVED are deleted.
+
+Format (OpenSpec convention):
+
+\`\`\`markdown
+## ADDED Requirements
+
+### Requirement: Session Timeout
+The system SHALL expire a session after 30 minutes of inactivity.
+
+#### Scenario: Idle timeout
+- GIVEN an authenticated session
+- WHEN 30 minutes pass with no activity
+- THEN the session is invalidated and the user must re-authenticate
+
+## MODIFIED Requirements
+
+### Requirement: <existing name — full new version>
+...
+
+## REMOVED Requirements
+
+### Requirement: <existing name>
+Reason: <one line on why this behavior is going away>
+\`\`\`
+
+One observable behavior per requirement (one SHALL/MUST); every requirement
+gets at least one GIVEN/WHEN/THEN scenario that exercises it.
+`;
+}
+
 /** The issue body: proposal summary + checklist + the contract pointer line. */
 export function issueBody(opts: { body?: string; slug?: string }): string {
   const contract = opts.slug
@@ -167,10 +209,7 @@ export function runPropose(opts: ProposeOptions): ProposeResult {
       proposalPath = join(abs, "proposal.md");
       writeFileSync(proposalPath, proposalMd({ title: opts.title, body: opts.body, taskId: opts.task }));
       writeFileSync(join(abs, "tasks.md"), tasksMd(opts.title));
-      writeFileSync(
-        join(abs, "specs", ".gitkeep"),
-        "", // specs are authored per-capability once the contract is agreed
-      );
+      writeFileSync(join(abs, "specs", "README.md"), specsReadme());
       log(`created ${folder}/ (proposal.md + tasks.md + specs/) — fill the TODO sections; the tool never writes judgment content.`);
     }
   }
