@@ -41,11 +41,12 @@ export const ReceiptSchema = z.object({
     .string()
     .regex(/^[0-9a-f]{64}$/, "diff_sha256 must be a 64-char lowercase hex SHA-256")
     .describe(
-      "sha256 of `git diff <base>...HEAD -- . ':(exclude).proofgate/receipt.json' " +
+      "sha256 of `git diff <base>...HEAD -- . ':(exclude).plumbline/receipt.json' " +
+        "':(exclude).plumbline/receipts/*.json' ':(exclude).proofgate/receipt.json' " +
         "':(exclude).proofgate/receipts/*.json'` — binds the receipt to the diff " +
         "content. The receipt file(s) are excluded so it's computable BEFORE " +
         "committing the receipt (a commit can never contain its own SHA), and so " +
-        "the per-PR receipt at .proofgate/receipts/<task_id>.json doesn't affect it.",
+        "the per-PR receipt at .plumbline/receipts/<task_id>.json (or legacy .proofgate/) doesn't affect it.",
     ),
   result_summary: z.string().min(40),
 });
@@ -55,7 +56,7 @@ export type Receipt = z.infer<typeof ReceiptSchema>;
 /** Machine-readable gate policy: the deterministic half of the constitution. */
 export const PolicySchema = z.object({
   version: z.literal("1.0"),
-  mission_file: z.string().default(".proofgate/MISSION.md"),
+  mission_file: z.string().default(".plumbline/MISSION.md"),
   /** Commands that MUST appear (as required steps) in every validation plan. */
   required_checks: z.array(z.string()).default([]),
   /**

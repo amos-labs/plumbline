@@ -1,5 +1,5 @@
-# proofgate for Azure DevOps Pipelines.
-# Copy into your repo (e.g. pipelines/proofgate.yml) and add it as a PR build
+# plumbline for Azure DevOps Pipelines.
+# Copy into your repo (e.g. pipelines/plumbline.yml) and add it as a PR build
 # validation policy on your target branch (Repos > Branches > Branch policies).
 #
 # Setup:
@@ -27,18 +27,18 @@ steps:
     inputs:
       versionSpec: "20.x"
 
-  # Until proofgate is published to npm, clone it. Afterwards: npx proofgate run
+  # Until plumbline is published to npm, clone it. Afterwards: npx plumb run
   - script: |
-      git clone --depth 1 https://github.com/amos-labs/proofgate.git $(Agent.TempDirectory)/proofgate
-      cd $(Agent.TempDirectory)/proofgate
+      git clone --depth 1 https://github.com/amos-labs/plumbline.git $(Agent.TempDirectory)/plumbline
+      cd $(Agent.TempDirectory)/plumbline
       npm ci && npm run build
-    displayName: Install proofgate
+    displayName: Install plumbline
 
   - script: |
       TARGET=$(echo "$SYSTEM_PULLREQUEST_TARGETBRANCH" | sed 's#refs/heads/##')
       git fetch origin "$TARGET" --depth=200 || true
-      node $(Agent.TempDirectory)/proofgate/dist/cli.js run --base "origin/$TARGET"
-    displayName: Run proofgate
+      node $(Agent.TempDirectory)/plumbline/dist/cli.js run --base "origin/$TARGET"
+    displayName: Run plumbline
     env:
       ANTHROPIC_API_KEY: $(ANTHROPIC_API_KEY)
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)

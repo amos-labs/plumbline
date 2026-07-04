@@ -7,7 +7,7 @@ import { matchesAny } from "./glob.js";
 /**
  * Turn a zod issue into a self-correcting message: for any constrained field
  * (enum, literal, min-length, min-items, regex) the message NAMES the allowed
- * set + what was received, so a failed `proofgate check` tells the agent exactly
+ * set + what was received, so a failed `plumb check` tells the agent exactly
  * what to write — no learning a constraint by failing the gate. (The concrete
  * trap that motivated this: `execution_evidence[].status` only accepts
  * passed|failed|skipped, but an author used "deferred-to-ci".)
@@ -39,20 +39,30 @@ export function formatZodIssue(issue: ZodIssue): string {
  * head_sha binding was unsatisfiable for an in-repo receipt.
  *
  * Both the legacy single-file path and the per-PR receipts directory are
- * excluded. The directory form (`.proofgate/receipts/<task_id>.json`, one
- * file per PR) is what lets many PRs be open at once without ever
- * conflicting on a shared receipt file.
+ * excluded, under BOTH config dirs — `.plumbline/` (canonical) and
+ * `.proofgate/` (legacy; the tool's pre-rename name). Excluding a path that
+ * doesn't exist is a git no-op, so adding the `.plumbline` excludes does not
+ * change the hash for existing `.proofgate/` repos — gate parity holds across
+ * the rename. The directory form (`<dir>/receipts/<task_id>.json`, one file
+ * per PR) is what lets many PRs be open at once without ever conflicting on
+ * a shared receipt file.
  */
 export const RECEIPT_DIFF_SPEC = [
   "--",
   ".",
+  ":(exclude).plumbline/receipt.json",
+  ":(exclude).plumbline/receipts/*.json",
   ":(exclude).proofgate/receipt.json",
   ":(exclude).proofgate/receipts/*.json",
 ] as const;
 
 /** True for any path that is itself a proof receipt (not real changed work). */
 export function isReceiptPath(file: string): boolean {
-  return file === ".proofgate/receipt.json" || /^\.proofgate\/receipts\/[^/]+\.json$/.test(file);
+  return (
+    file === ".plumbline/receipt.json" ||
+    file === ".proofgate/receipt.json" ||
+    /^\.(?:plumbline|proofgate)\/receipts\/[^/]+\.json$/.test(file)
+  );
 }
 
 export function computeDiffSha256(diff: string): string {
@@ -212,12 +222,12 @@ export function shapeCheck(
         if (actualHash !== receipt.diff_sha256) {
           errors.push(
             `diff_sha256 mismatch: receipt=${receipt.diff_sha256} actual=${actualHash} ` +
-              `(compute with: git diff ${opts.baseRef}...HEAD -- . ':(exclude).proofgate/receipt.json' ':(exclude).proofgate/receipts/*.json' | sha256)`,
+              `(compute with: git diff ${opts.baseRef}...HEAD -- . ':(exclude).plumbline/receipt.json' ':(exclude).plumbline/receipts/*.json' ':(exclude).proofgate/receipt.json' ':(exclude).proofgate/receipts/*.json' | sha256 — or just: plumb receipt --write)`,
           );
         }
         // The receipt file(s) themselves are never "changed work" — exclude
         // them so an agent never has to declare its own receipt (circular)
-        // and so a receipt under .proofgate/ doesn't trip the protected-path
+        // and so a receipt under .plumbline/ or .proofgate/ doesn't trip the protected-path
         // rule and force self_modifying on otherwise-ordinary PRs.
         const actual = gitChangedFiles(opts.baseRef, cwd).filter((f) => !isReceiptPath(f));
         const declared = new Set(receipt.changed_files);

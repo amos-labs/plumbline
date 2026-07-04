@@ -1,7 +1,7 @@
 import { matchesAny } from "./glob.js";
 
 /**
- * `proofgate receipt --write/--check` — the mechanical half of a receipt,
+ * `plumb receipt --write/--check` — the mechanical half of a receipt,
  * automated end-to-end. Everything here is derivable bookkeeping (diff hash,
  * file list, protected-path escalation); the judgment fields (intent,
  * validation_plan, execution_evidence, result_summary) are NEVER generated —

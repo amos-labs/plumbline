@@ -1,5 +1,5 @@
-name: "proofgate"
-description: "Proof-carrying gate for AI agent work: receipt shape check + LLM semantic review + failure-capsule rework loop."
+name: "plumbline"
+description: "Plumbline (the plumb line of Amos 7:7-8) — proof-carrying gate for AI agent work: receipt shape check + LLM semantic review + failure-capsule rework loop."
 author: "AMOS Labs"
 branding:
   icon: "shield"
@@ -14,13 +14,13 @@ inputs:
     required: true
     default: ${{ github.token }}
   receipt:
-    description: "Path to the proof receipt. Leave as default to auto-discover the per-PR receipt at .proofgate/receipts/<task_id>.json (one file per PR — avoids conflicts); falls back to .proofgate/receipt.json."
+    description: "Path to the proof receipt. Leave as default (auto) to discover the per-PR receipt at .plumbline/receipts/<task_id>.json — legacy .proofgate/ repos work unchanged."
     required: false
-    default: ".proofgate/receipt.json"
+    default: "auto"
   policy:
-    description: "Path to the gate policy"
+    description: "Path to the gate policy (auto-resolves .plumbline/ or legacy .proofgate/)"
     required: false
-    default: ".proofgate/policy.json"
+    default: ".plumbline/policy.json"
 
 runs:
   using: "composite"
@@ -35,7 +35,7 @@ runs:
       run: |
         git fetch origin "${{ github.base_ref }}" --depth=200 || true
 
-    - name: Build proofgate
+    - name: Build plumbline
       shell: bash
       working-directory: ${{ github.action_path }}
       run: npm ci && npm run build
@@ -45,7 +45,7 @@ runs:
       env:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
-        PROOFGATE_PR_NUMBER: ${{ github.event.pull_request.number }}
+        PLUMBLINE_PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
         node "${{ github.action_path }}/dist/cli.js" run \
           --receipt "${{ inputs.receipt }}" \

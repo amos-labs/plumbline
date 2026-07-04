@@ -5,7 +5,7 @@ export function renderComment(result: GateResult): string {
   const icon =
     result.final === "approve" ? "✅" : result.final === "revise" ? "🔁" : "⚠️";
   const lines: string[] = [];
-  lines.push(`## ${icon} proofgate: ${result.final.toUpperCase()}`);
+  lines.push(`## ${icon} plumbline: ${result.final.toUpperCase()}`);
   lines.push("");
 
   // Action banner — make WHO must act unambiguous. `revise` and `escalate`
@@ -98,7 +98,7 @@ export function renderComment(result: GateResult): string {
   }
 
   lines.push("");
-  lines.push("<sub>proofgate · proof-carrying gate for agent work</sub>");
+  lines.push("<sub>plumbline · proof-carrying gate for agent work</sub>");
   return lines.join("\n");
 }
 
@@ -119,7 +119,7 @@ export function renderCiSummary(result: GateResult): CiAnnotation {
   if (result.final === "approve") {
     return {
       level: "notice",
-      title: "proofgate: APPROVE",
+      title: "plumbline: APPROVE",
       message: "Receipt passed shape + semantic review. Merging automatically — no action needed.",
     };
   }
@@ -142,7 +142,7 @@ export function renderCiSummary(result: GateResult): CiAnnotation {
 
   return {
     level: result.final === "revise" ? "error" : "warning",
-    title: `proofgate: ${result.final.toUpperCase()}`,
+    title: `plumbline: ${result.final.toUpperCase()}`,
     message: parts.join(" "),
   };
 }
@@ -251,11 +251,15 @@ export async function postPrComment(
     "content-type": "application/json",
   };
 
-  // Find an existing proofgate comment to update instead of stacking.
+  // Find an existing plumbline (or legacy proofgate) comment to update instead of stacking.
   const list = await fetch(`${api}?per_page=100`, { headers });
   if (list.ok) {
     const comments = (await list.json()) as Array<{ id: number; body: string }>;
-    const mine = comments.find((c) => c.body.includes("proofgate · proof-carrying gate"));
+    const mine = comments.find(
+      (c) =>
+        c.body.includes("plumbline · proof-carrying gate") ||
+        c.body.includes("proofgate · proof-carrying gate"),
+    );
     if (mine) {
       const upd = await fetch(
         `https://api.github.com/repos/${repo}/issues/comments/${mine.id}`,

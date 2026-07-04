@@ -28,7 +28,7 @@ function writeGitHubStepSummary(markdown: string): void {
 }
 
 /**
- * CI adapter — proofgate core is CI-agnostic; only PR context discovery and
+ * CI adapter — plumbline core is CI-agnostic; only PR context discovery and
  * comment posting differ per provider. Supported: GitHub Actions, Azure
  * DevOps Pipelines. Anything else falls back to stdout.
  */
@@ -45,6 +45,7 @@ export interface CiContext {
 export function detectCi(): CiContext {
   if (process.env.GITHUB_ACTIONS === "true") {
     const prNumber = Number(
+      process.env.PLUMBLINE_PR_NUMBER ||
       process.env.PROOFGATE_PR_NUMBER ||
         (process.env.GITHUB_REF?.match(/refs\/pull\/(\d+)\//)?.[1] ?? NaN),
     );
@@ -70,7 +71,9 @@ export function detectCi(): CiContext {
   return { provider: "none" };
 }
 
-const MARKER = "proofgate · proof-carrying gate";
+const MARKER = "plumbline · proof-carrying gate";
+/** Pre-rename marker — still matched so old PR threads get updated, not stacked. */
+const LEGACY_MARKER = "proofgate · proof-carrying gate";
 
 interface AzureThread {
   id: number;
@@ -106,12 +109,12 @@ export async function postAzureComment(
   // 1 = active (needs attention), 2 = fixed/resolved.
   const status = approved ? 2 : 1;
 
-  // Update existing proofgate thread if present.
+  // Update existing plumbline (or legacy) thread if present.
   const list = await fetch(`${base}?api-version=7.1`, { headers });
   if (list.ok) {
     const data = (await list.json()) as { value: AzureThread[] };
     const mine = data.value.find((t) =>
-      t.comments?.some((c) => c.content?.includes(MARKER)),
+      t.comments?.some((c) => c.content?.includes(MARKER) || c.content?.includes(LEGACY_MARKER)),
     );
     if (mine) {
       const commentId = mine.comments[0].id;

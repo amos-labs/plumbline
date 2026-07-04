@@ -98,7 +98,7 @@ export async function semanticReview(
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: process.env.PROOFGATE_MODEL || policy.review_model,
+      model: process.env.PLUMBLINE_MODEL || process.env.PROOFGATE_MODEL || policy.review_model,
       // The capsule carries three prose notes + a failure capsule; 2000 was
       // tight enough that a thorough review got truncated mid-JSON and failed
       // to parse. Give it real headroom.
@@ -129,7 +129,7 @@ export async function semanticReview(
       validation_coverage_notes: "Not evaluated — the semantic-review response could not be parsed.",
       mission_alignment_notes: "Not evaluated — the semantic-review response could not be parsed.",
       risk_notes:
-        "proofgate could not read the review model's JSON (it was likely truncated at the token limit on a large diff/receipt, or wrapped in extra prose). This is a gate-internal hiccup — the review did NOT run to completion, so it is not a finding about your change.",
+        "plumbline could not read the review model's JSON (it was likely truncated at the token limit on a large diff/receipt, or wrapped in extra prose). This is a gate-internal hiccup — the review did NOT run to completion, so it is not a finding about your change.",
       failure_capsule: {
         failing_check: "semantic review output could not be parsed",
         suspected_cause:
@@ -153,12 +153,12 @@ export async function semanticReview(
   let verdict: Verdict = parsed.verdict;
   if (verdict === "approve" && parsed.confidence < policy.min_review_confidence) {
     verdict = "escalate";
-    parsed.risk_notes += ` [proofgate: approve downgraded to escalate — confidence ${parsed.confidence} below policy minimum ${policy.min_review_confidence}]`;
+    parsed.risk_notes += ` [plumbline: approve downgraded to escalate — confidence ${parsed.confidence} below policy minimum ${policy.min_review_confidence}]`;
   }
   if (verdict === "approve" && receipt.self_modifying) {
     verdict = "escalate";
     parsed.risk_notes +=
-      " [proofgate: self-modifying work has no auto-approve path — human review required]";
+      " [plumbline: self-modifying work has no auto-approve path — human review required]";
   }
 
   return { ...parsed, verdict };

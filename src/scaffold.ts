@@ -1,11 +1,12 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { baseDir } from "./basedir.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 /**
- * Agent-installable scaffolding: `proofgate init` lays down everything a repo
+ * Agent-installable scaffolding: `plumb init` lays down everything a repo
  * needs to be gated (workflow + policy + mission + AGENTS.md + an example
- * receipt), and `proofgate new` scaffolds a fresh per-PR receipt. The goal is
+ * receipt), and `plumb new` scaffolds a fresh per-PR receipt. The goal is
  * "pull it in, read AGENTS.md, go" — no reverse-engineering the receipt shape.
  */
 
@@ -29,14 +30,14 @@ interface InitEntry {
 
 /** What `init` lays down, in order. Dirs first, then files copied from templates. */
 export const INIT_PLAN: InitEntry[] = [
-  { dest: ".proofgate", dir: true },
-  { dest: ".proofgate/receipts", dir: true },
+  { dest: "<dir>", dir: true },
+  { dest: "<dir>/receipts", dir: true },
   { dest: ".github/workflows", dir: true },
-  { dest: ".github/workflows/proofgate.yml", src: "workflow.yml" },
-  { dest: ".proofgate/policy.json", src: "policy.json" },
-  { dest: ".proofgate/MISSION.md", src: "MISSION.md" },
-  { dest: ".proofgate/AGENTS.md", src: "AGENTS.md" },
-  { dest: ".proofgate/receipts/EXAMPLE.json", src: "receipt.example.json" },
+  { dest: ".github/workflows/plumbline.yml", src: "workflow.yml" },
+  { dest: "<dir>/policy.json", src: "policy.json" },
+  { dest: "<dir>/MISSION.md", src: "MISSION.md" },
+  { dest: "<dir>/AGENTS.md", src: "AGENTS.md" },
+  { dest: "<dir>/receipts/EXAMPLE.json", src: "receipt.example.json" },
 ];
 
 /** Copy the bundled templates into `cwd`. Idempotent: never clobbers an
@@ -44,31 +45,34 @@ export const INIT_PLAN: InitEntry[] = [
 export function runInit(cwd: string): ScaffoldItem[] {
   const tdir = templatesDir();
   const out: ScaffoldItem[] = [];
+  const dir = baseDir(cwd);
   for (const item of INIT_PLAN) {
-    const abs = join(cwd, item.dest);
+    const dest = item.dest.replace("<dir>", dir);
+    const abs = join(cwd, dest);
     if (existsSync(abs)) {
-      out.push({ dest: item.dest, created: false, note: "exists — left as-is" });
+      out.push({ dest, created: false, note: "exists — left as-is" });
       continue;
     }
     if (item.dir) {
       mkdirSync(abs, { recursive: true });
-      out.push({ dest: item.dest, created: true });
+      out.push({ dest, created: true });
       continue;
     }
-    let content = readFileSync(join(tdir, item.src!), "utf8");
+    // Templates are authored with the canonical dir; rewrite for legacy repos.
+    let content = readFileSync(join(tdir, item.src!), "utf8").replaceAll(".plumbline/", `${dir}/`);
     // The shipped workflow.yml carries a "# Copy to …" hint as its first line;
     // it's already in place once init writes it, so drop that line.
     if (item.src === "workflow.yml") content = content.replace(/^# Copy to [^\n]*\n/, "");
     mkdirSync(dirname(abs), { recursive: true });
     writeFileSync(abs, content);
-    out.push({ dest: item.dest, created: true });
+    out.push({ dest, created: true });
   }
   return out;
 }
 
 /**
  * Single source of truth for the receipt field contract. Drives three
- * discoverability surfaces so none can drift: `proofgate schema` (CLI), the
+ * discoverability surfaces so none can drift: `plumb schema` (CLI), the
  * `_help` block in a scaffolded receipt, and the AGENTS.md reference. The hard
  * rules themselves live in the zod schema (types.ts) — this describes them.
  */
@@ -91,8 +95,8 @@ export const RECEIPT_FIELD_REFERENCE: FieldRef[] = [
   { field: "validation_plan[].required", type: "boolean", required: true, allowed: ["true", "false"], note: "is this check mandatory" },
   { field: "execution_evidence", type: "object[] (≥1)", required: true, note: "each: { command, status, output_ref?, skip_reason? }" },
   { field: "execution_evidence[].status", type: "enum", required: true, allowed: ["passed", "failed", "skipped"], note: "required steps must be 'passed'; use skip_reason when 'skipped'" },
-  { field: "changed_files", type: "string[] (≥1)", required: true, note: "set by `proofgate stamp` — don't hand-edit" },
-  { field: "diff_sha256", type: "string (64-char lowercase hex)", required: true, note: "set by `proofgate stamp` — never hand-edit" },
+  { field: "changed_files", type: "string[] (≥1)", required: true, note: "set by `plumb receipt --write` — don't hand-edit" },
+  { field: "diff_sha256", type: "string (64-char lowercase hex)", required: true, note: "set by `plumb receipt --write` — never hand-edit" },
   { field: "result_summary", type: "string (≥40 chars)", required: true, note: "what changed + how it was verified" },
 ];
 
@@ -100,7 +104,7 @@ export const RECEIPT_FIELD_REFERENCE: FieldRef[] = [
  *  ignores unknown keys, so it's safe to leave in (or delete before commit). */
 export function schemaHelpBlock(): Record<string, string> {
   const help: Record<string, string> = {
-    _note: "Allowed values + requirements per field (this _help block is ignored by the gate — keep or delete). Run `proofgate schema` for the full reference.",
+    _note: "Allowed values + requirements per field (this _help block is ignored by the gate — keep or delete). Run `plumb schema` for the full reference.",
   };
   for (const f of RECEIPT_FIELD_REFERENCE) {
     const allowed = f.allowed ? `one of: ${f.allowed.join(" | ")} — ` : "";
@@ -109,10 +113,10 @@ export function schemaHelpBlock(): Record<string, string> {
   return help;
 }
 
-/** Human-readable receipt schema reference for `proofgate schema`. */
+/** Human-readable receipt schema reference for `plumb schema`. */
 export function formatSchemaReference(): string {
   const lines: string[] = [
-    "proofgate receipt schema (.proofgate/receipts/<task_id>.json)",
+    "plumbline receipt schema (.plumbline/receipts/<task_id>.json — legacy .proofgate/ also works)",
     "",
   ];
   const width = Math.max(...RECEIPT_FIELD_REFERENCE.map((f) => f.field.length));
@@ -123,8 +127,8 @@ export function formatSchemaReference(): string {
     lines.push(`  ${" ".repeat(width)}  ${f.note}`);
   }
   lines.push("");
-  lines.push("changed_files + diff_sha256 are filled by `proofgate stamp` (never hand-edit).");
-  lines.push("Scaffold one with: proofgate new   ·   validate locally with: proofgate check");
+  lines.push("changed_files + diff_sha256 are filled by `plumb receipt --write` (never hand-edit).");
+  lines.push("Scaffold one with: plumb receipt --write   ·   validate locally with: plumb check");
   return lines.join("\n");
 }
 
@@ -154,7 +158,7 @@ export function newReceipt(opts: {
     intent:
       "TODO: what is this change for and why, in plain language (≥40 chars). The semantic review reads this.",
     self_modifying: false,
-    policy_refs: [".proofgate/MISSION.md"],
+    policy_refs: [".plumbline/MISSION.md"],
     validation_plan: [
       {
         command: "TODO: the test/lint command that proves this change",
