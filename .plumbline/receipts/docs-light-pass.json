@@ -1,0 +1,55 @@
+{
+  "_help": {
+    "_note": "Allowed values + requirements per field (this _help block is ignored by the gate \u2014 keep or delete). Run `plumb schema` for the full reference.",
+    "receipt_version": "one of: 1.0 \u2014 required \u2014 schema version",
+    "task_id": "required \u2014 ticket/issue/branch id (also the receipt filename)",
+    "agent_id": "required \u2014 which agent or human did the work",
+    "intent": "required \u2014 what + why, plain language \u2014 the semantic review reads this",
+    "self_modifying": "one of: true | false \u2014 required \u2014 MUST be true if changed_files touch policy.protected_paths; touching one with false is a hard fail; true escalates to human review",
+    "policy_refs": "required \u2014 policy/mission docs you read",
+    "validation_plan": "required \u2014 each: { command, reason, required }",
+    "validation_plan[].required": "one of: true | false \u2014 required \u2014 is this check mandatory",
+    "execution_evidence": "required \u2014 each: { command, status, output_ref?, skip_reason? }",
+    "execution_evidence[].status": "one of: passed | failed | skipped \u2014 required \u2014 required steps must be 'passed'; use skip_reason when 'skipped'",
+    "changed_files": "required \u2014 set by `plumb receipt --write` \u2014 don't hand-edit",
+    "diff_sha256": "required \u2014 set by `plumb receipt --write` \u2014 never hand-edit",
+    "result_summary": "required \u2014 what changed + how it was verified"
+  },
+  "receipt_version": "1.0",
+  "task_id": "docs-light-pass",
+  "agent_id": "claude-fable-5",
+  "intent": "README-only: surface the self-hosting fact (plumbline gates plumbline) in the intro \u2014 it's the strongest proof point and was buried in CONTRIBUTING. No behavior change.",
+  "self_modifying": false,
+  "policy_refs": [
+    ".plumbline/MISSION.md"
+  ],
+  "validation_plan": [
+    {
+      "command": "npm test",
+      "reason": "the repo's required check \u2014 full suite must stay green (docs change is inert but the gate requires it declared)",
+      "required": true
+    },
+    {
+      "command": "git diff --stat",
+      "reason": "confirm README-only, no source/protected paths",
+      "required": false
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "101 tests, 0 failures (unchanged by a README edit)"
+    },
+    {
+      "command": "git diff --stat",
+      "status": "passed",
+      "output_ref": "README.md only (+3 lines)"
+    }
+  ],
+  "changed_files": [
+    "README.md"
+  ],
+  "diff_sha256": "4981aa04e4ae63a96ac579b19f17ded4256801d44fa8df8ecc4f05e8828b266d",
+  "result_summary": "Added a one-line self-hosting callout to the README intro; README-only, no protected paths, self_modifying false. Verified via git diff --stat."
+}
