@@ -3,6 +3,12 @@ import { createHash } from "node:crypto";
 import type { ZodIssue } from "zod";
 import { ReceiptSchema, type Policy, type Receipt, type ShapeResult } from "./types.js";
 import { matchesAny } from "./glob.js";
+import {
+  applySeverities,
+  resolveSeverity,
+  validateSeverityConfig,
+  type Finding,
+} from "./severity.js";
 
 /**
  * Turn a zod issue into a self-correcting message: for any constrained field
@@ -135,23 +141,31 @@ export function shapeCheck(
   policy: Policy,
   opts: ShapeOptions = {},
 ): { result: ShapeResult; receipt?: Receipt } {
-  const errors: string[] = [];
-  const warnings: string[] = [];
+  // Findings carry the check that produced them; severity (error/warn/off,
+  // per policy strictness + check_severity) is applied at the end. Intrinsic
+  // FYI notes stay plain warnings regardless of severity config.
+  const findings: Finding[] = [];
+  const warnings: string[] = validateSeverityConfig(policy);
 
   if (Buffer.byteLength(rawReceipt, "utf8") > policy.max_receipt_bytes) {
-    return {
-      result: {
-        pass: false,
-        errors: [`receipt exceeds max size of ${policy.max_receipt_bytes} bytes`],
-        warnings,
-      },
-    };
+    findings.push({
+      check: "receipt_size",
+      message: `receipt exceeds max size of ${policy.max_receipt_bytes} bytes`,
+    });
+    // Oversized but possibly parseable — only stop here when it still gates.
+    if (resolveSeverity("receipt_size", policy) === "error") {
+      const sized = applySeverities(findings, policy);
+      return {
+        result: { pass: false, errors: sized.errors, warnings: [...warnings, ...sized.warnings] },
+      };
+    }
   }
 
   let parsedJson: unknown;
   try {
     parsedJson = JSON.parse(rawReceipt);
   } catch (e) {
+    // "schema" is a protected check — an unparseable receipt always fails.
     return {
       result: { pass: false, errors: [`receipt is not valid JSON: ${String(e)}`], warnings },
     };
@@ -159,9 +173,7 @@ export function shapeCheck(
 
   const parsed = ReceiptSchema.safeParse(parsedJson);
   if (!parsed.success) {
-    for (const issue of parsed.error.issues) {
-      errors.push(`schema: ${formatZodIssue(issue)}`);
-    }
+    const errors = parsed.error.issues.map((issue) => `schema: ${formatZodIssue(issue)}`);
     return { result: { pass: false, errors, warnings } };
   }
   const receipt = parsed.data;
@@ -171,9 +183,9 @@ export function shapeCheck(
   for (const check of policy.required_checks) {
     const step = receipt.validation_plan.find((s) => commandMatchesCheck(s.command, check));
     if (!step) {
-      errors.push(`required check missing from validation_plan: "${check}"`);
+      findings.push({ check: "required_checks", message: `required check missing from validation_plan: "${check}"` });
     } else if (!step.required) {
-      errors.push(`required check is marked optional in validation_plan: "${check}"`);
+      findings.push({ check: "required_checks", message: `required check is marked optional in validation_plan: "${check}"` });
     }
   }
 
@@ -181,27 +193,33 @@ export function shapeCheck(
   for (const step of receipt.validation_plan) {
     const ev = receipt.execution_evidence.find((e) => evidenceSatisfiesStep(e.command, step.command));
     if (!ev) {
-      if (step.required) errors.push(`no execution evidence for required step: "${step.command}"`);
-      else warnings.push(`no execution evidence for optional step: "${step.command}"`);
+      if (step.required) {
+        findings.push({ check: "evidence_coverage", message: `no execution evidence for required step: "${step.command}"` });
+      } else {
+        warnings.push(`no execution evidence for optional step: "${step.command}"`);
+      }
       continue;
     }
     if (step.required && ev.status !== "passed") {
-      errors.push(
-        `required step "${step.command}" has status "${ev.status}"${ev.skip_reason ? ` (skip_reason: ${ev.skip_reason})` : ""}`,
-      );
+      findings.push({
+        check: "evidence_coverage",
+        message: `required step "${step.command}" has status "${ev.status}"${ev.skip_reason ? ` (skip_reason: ${ev.skip_reason})` : ""}`,
+      });
     }
   }
 
-  // 3. Protected paths require self_modifying: true.
+  // 3. Protected paths require self_modifying: true. ("protected_paths" is a
+  // protected check — severity config can never soften it.)
   const protectedHits: string[] = [];
   for (const f of receipt.changed_files) {
     const hit = matchesAny(f, policy.protected_paths);
     if (hit) protectedHits.push(`${f} (matches ${hit})`);
   }
   if (protectedHits.length > 0 && !receipt.self_modifying) {
-    errors.push(
-      `changed files touch protected paths but self_modifying is false: ${protectedHits.join(", ")}`,
-    );
+    findings.push({
+      check: "protected_paths",
+      message: `changed files touch protected paths but self_modifying is false: ${protectedHits.join(", ")}`,
+    });
   }
   if (receipt.self_modifying && protectedHits.length === 0) {
     warnings.push("self_modifying is true but no changed files match protected paths");
@@ -211,6 +229,7 @@ export function shapeCheck(
   // binding is a content hash of the diff (receipt file excluded), so
   // it survives both the receipt's own commit and GitHub's synthetic
   // merge-ref checkout — neither of which a head SHA could.
+  // ("diff_integrity" is protected — never downgradable.)
   if (!opts.skipGit) {
     const cwd = opts.cwd ?? process.cwd();
     try {
@@ -220,10 +239,12 @@ export function shapeCheck(
       if (opts.baseRef) {
         const actualHash = computeDiffSha256(gitDiffExcludingReceipt(opts.baseRef, cwd));
         if (actualHash !== receipt.diff_sha256) {
-          errors.push(
-            `diff_sha256 mismatch: receipt=${receipt.diff_sha256} actual=${actualHash} ` +
+          findings.push({
+            check: "diff_integrity",
+            message:
+              `diff_sha256 mismatch: receipt=${receipt.diff_sha256} actual=${actualHash} ` +
               `(compute with: git diff ${opts.baseRef}...HEAD -- . ':(exclude).plumbline/receipt.json' ':(exclude).plumbline/receipts/*.json' ':(exclude).proofgate/receipt.json' ':(exclude).proofgate/receipts/*.json' | sha256 — or just: plumb receipt --write)`,
-          );
+          });
         }
         // The receipt file(s) themselves are never "changed work" — exclude
         // them so an agent never has to declare its own receipt (circular)
@@ -233,7 +254,10 @@ export function shapeCheck(
         const declared = new Set(receipt.changed_files);
         const undeclared = actual.filter((f) => !declared.has(f));
         if (undeclared.length > 0) {
-          errors.push(`files changed but not declared in receipt: ${undeclared.join(", ")}`);
+          findings.push({
+            check: "undeclared_files",
+            message: `files changed but not declared in receipt: ${undeclared.join(", ")}`,
+          });
         }
         const phantom = receipt.changed_files.filter((f) => !actual.includes(f));
         if (phantom.length > 0) {
@@ -243,14 +267,21 @@ export function shapeCheck(
         for (const f of actual) {
           const hit = matchesAny(f, policy.protected_paths);
           if (hit && !receipt.self_modifying) {
-            errors.push(`actual diff touches protected path ${f} (matches ${hit}) but self_modifying is false`);
+            findings.push({
+              check: "protected_paths",
+              message: `actual diff touches protected path ${f} (matches ${hit}) but self_modifying is false`,
+            });
           }
         }
       }
     } catch (e) {
-      errors.push(`git check failed: ${String(e)}`);
+      findings.push({ check: "diff_integrity", message: `git check failed: ${String(e)}` });
     }
   }
+
+  const applied = applySeverities(findings, policy);
+  const errors = applied.errors;
+  warnings.push(...applied.warnings);
 
   return { result: { pass: errors.length === 0, errors, warnings }, receipt };
 }

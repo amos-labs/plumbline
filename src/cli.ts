@@ -26,6 +26,7 @@ import {
 } from "./receipt-write.js";
 import { runPropose } from "./propose.js";
 import { runArchive } from "./archive.js";
+import { resolveSeverity } from "./severity.js";
 
 function loadPolicy(path: string): Policy {
   if (!existsSync(path)) {
@@ -548,32 +549,39 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
   // Don't trust the receipt's self-reported execution_evidence for these — read
   // the actual check-run conclusions for the PR head and require success. The
   // agent need not self-report status for these; CI is the source of truth.
-  if (cmd === "run" && policy.ci_evidence_checks.length > 0) {
+  const ciEvidenceSeverity = resolveSeverity("ci_evidence", policy);
+  if (cmd === "run" && policy.ci_evidence_checks.length > 0 && ciEvidenceSeverity === "off") {
+    console.error(`ci-evidence: severity "off" in policy — verification skipped`);
+    gate.reasons.push("CI evidence check is off in policy — not verified.");
+  } else if (cmd === "run" && policy.ci_evidence_checks.length > 0) {
     const repo = process.env.GITHUB_REPOSITORY;
     const token = process.env.GITHUB_TOKEN;
+    // At "warn" severity a failure surfaces in the comment but doesn't gate.
+    const fail = (msg: string): void => {
+      console.error(`ci-evidence ❌ ${msg}`);
+      if (ciEvidenceSeverity === "error") {
+        shape.errors.push(msg);
+        shape.pass = false;
+        gate.final = "revise";
+      } else {
+        shape.warnings.push(`[ci_evidence: warn] ${msg}`);
+      }
+    };
     if (ci.provider === "github" && repo && token && ci.prNumber !== undefined) {
       try {
         const ev = await verifyCiEvidence(repo, ci.prNumber, token, policy.ci_evidence_checks);
         for (const n of ev.notes) console.error(`ci-evidence ✓ ${n}`);
-        for (const e of ev.errors) {
-          console.error(`ci-evidence ❌ ${e}`);
-          shape.errors.push(e);
-        }
-        console.error(`ci-evidence gate: ${ev.pass ? "PASS" : "FAIL"}`);
-        if (!ev.pass) {
-          shape.pass = false;
-          gate.final = "revise";
-        } else {
+        for (const e of ev.errors) fail(e);
+        console.error(
+          `ci-evidence gate: ${ev.pass ? "PASS" : ciEvidenceSeverity === "error" ? "FAIL" : "FAIL (warn — not gating)"}`,
+        );
+        if (ev.pass) {
           gate.reasons.push(
             `CI evidence corroborated against the real run (${ev.notes.join(", ")}) — not self-reported.`,
           );
         }
       } catch (e) {
-        const msg = `ci-evidence: could not verify CI checks: ${String(e)}`;
-        console.error(`ci-evidence ❌ ${msg}`);
-        shape.errors.push(msg);
-        shape.pass = false;
-        gate.final = "revise";
+        fail(`ci-evidence: could not verify CI checks: ${String(e)}`);
       }
     } else {
       console.error("ci-evidence: configured but no GitHub PR context/token — skipped");

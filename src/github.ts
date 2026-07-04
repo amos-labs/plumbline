@@ -237,6 +237,67 @@ export async function verifyCiEvidence(
   return evaluateCiEvidence(runs, required);
 }
 
+// ── Attempt history: reruns keep context instead of overwriting it ─────────
+//
+// The gate comment is updated in place on every run (no comment-stacking),
+// which used to ERASE the prior capsule — so a multi-round fix lost the
+// context of what attempt #1 failed on. Now the previous "current" section is
+// archived into a collapsed details block, newest first, capped — the fixing
+// agent (fresh session or not) sees the whole trajectory in one comment.
+
+const HISTORY_MARKER = "<!-- plumbline:attempt-history -->";
+const ATTEMPT_DELIM = "<!-- plumbline:attempt -->";
+
+/** Cap on archived attempts and on each archived attempt's size. */
+export const HISTORY_CAP = 5;
+const ATTEMPT_MAX_CHARS = 4000;
+
+/** Truncate, then re-balance any `<details>` cut open by the truncation. */
+function truncateBalanced(s: string, max: number): string {
+  if (s.length <= max) return s;
+  let out = `${s.slice(0, max)}\n… (truncated)`;
+  const opens = (out.match(/<details/g) ?? []).length;
+  const closes = (out.match(/<\/details>/g) ?? []).length;
+  for (let i = closes; i < opens; i++) out += "\n</details>";
+  return out;
+}
+
+/**
+ * Merge the fresh gate comment with the existing one: the new result on top,
+ * the existing result archived into the attempt-history details (prior
+ * history carried forward, newest first, capped at HISTORY_CAP). Pure —
+ * unit-testable without network.
+ */
+export function appendAttemptHistory(
+  newBody: string,
+  existingBody: string,
+  now: Date = new Date(),
+): string {
+  const idx = existingBody.indexOf(HISTORY_MARKER);
+  const existingCurrent = (idx >= 0 ? existingBody.slice(0, idx) : existingBody).trim();
+  const historyPart = idx >= 0 ? existingBody.slice(idx) : "";
+
+  // Prior archived attempts, each introduced by ATTEMPT_DELIM. The final
+  // block carries the outer wrapper's closing </details> — strip exactly one.
+  const priorBlocks = historyPart
+    .split(ATTEMPT_DELIM)
+    .slice(1)
+    .map((b, i, arr) => (i === arr.length - 1 ? b.replace(/\s*<\/details>\s*$/, "") : b).trim())
+    .filter(Boolean);
+
+  const verdict = existingCurrent.match(/^##\s*\S+\s*plumbline:\s*(\w+)/m)?.[1] ?? "PRIOR";
+  const when = `${now.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+  const archived = `<details><summary>${verdict} — superseded ${when}</summary>\n\n${truncateBalanced(existingCurrent, ATTEMPT_MAX_CHARS)}\n\n</details>`;
+
+  const blocks = [archived, ...priorBlocks].slice(0, HISTORY_CAP);
+  return (
+    `${newBody}\n\n${HISTORY_MARKER}\n` +
+    `<details><summary>📜 Attempt history (${blocks.length})</summary>\n\n` +
+    blocks.map((b) => `${ATTEMPT_DELIM}\n${b}`).join("\n\n") +
+    `\n</details>`
+  );
+}
+
 /** Post (or update) the gate comment on a PR. Requires GITHUB_TOKEN. */
 export async function postPrComment(
   repo: string, // "owner/name"
@@ -261,9 +322,11 @@ export async function postPrComment(
         c.body.includes("proofgate · proof-carrying gate"),
     );
     if (mine) {
+      // Rerun: keep the prior attempt's context instead of erasing it.
+      const merged = appendAttemptHistory(body, mine.body);
       const upd = await fetch(
         `https://api.github.com/repos/${repo}/issues/comments/${mine.id}`,
-        { method: "PATCH", headers, body: JSON.stringify({ body }) },
+        { method: "PATCH", headers, body: JSON.stringify({ body: merged }) },
       );
       if (upd.ok) return;
     }
