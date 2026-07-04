@@ -90,6 +90,24 @@ export const PolicySchema = z.object({
   review_model: z.string().default("claude-sonnet-4-6"),
   /** Max receipt size in bytes (anti garbage-dump). */
   max_receipt_bytes: z.number().default(262144),
+  /**
+   * Strictness preset — how much of the shape gate hard-fails vs warns:
+   *   "strict"   (default) every finding is an error — today's behavior.
+   *   "standard" `undeclared_files` + `receipt_size` warn instead of block.
+   *   "lenient"  additionally `required_checks`, `evidence_coverage`,
+   *              `ci_evidence` warn — only the un-downgradable floor blocks.
+   * Per-check overrides live in `check_severity`. The floor (schema,
+   * diff_integrity, protected_paths) can NEVER be relaxed by either knob.
+   */
+  strictness: z.enum(["strict", "standard", "lenient"]).default("strict"),
+  /**
+   * Per-check severity overrides: { "<check>": "error" | "warn" | "off" }.
+   * Wins over the preset. Check names: schema, receipt_size, required_checks,
+   * evidence_coverage, protected_paths, diff_integrity, undeclared_files,
+   * ci_evidence. warn = shown in the PR comment, doesn't fail the gate;
+   * off = suppressed with a note. Protected checks refuse downgrades.
+   */
+  check_severity: z.record(z.enum(["error", "warn", "off"])).default({}),
 });
 
 export type Policy = z.infer<typeof PolicySchema>;

@@ -156,6 +156,39 @@ fails if a required check didn't pass — so a receipt can't claim a passing sui
 run. The receipt declares the *plan*; CI *proves* it. (Agents needn't fuss over self-reporting
 status for these — CI is the source of truth, and an optimistic receipt is caught.)
 
+### Tuning strictness (`strictness` / `check_severity`)
+
+How much of the gate hard-fails is **policy, not code**. Two knobs in `policy.json`:
+
+```jsonc
+{
+  "strictness": "standard",                        // strict (default) | standard | lenient
+  "check_severity": { "undeclared_files": "off" }  // per-check override: error | warn | off
+}
+```
+
+Every finding belongs to a named check: `schema`, `receipt_size`, `required_checks`,
+`evidence_coverage`, `protected_paths`, `diff_integrity`, `undeclared_files`, `ci_evidence`.
+Resolution: error (base) → preset → `check_severity` override. `warn` shows in the PR
+comment without failing the gate; `off` suppresses with a note.
+
+| Preset | Relaxes (→ warn) |
+|---|---|
+| `strict` (default) | nothing — every finding is an error |
+| `standard` | `undeclared_files`, `receipt_size` |
+| `lenient` | those + `required_checks`, `evidence_coverage`, `ci_evidence` |
+
+**The floor never moves:** `schema`, `diff_integrity` (the hash binding), and
+`protected_paths` (the `self_modifying` human-review escalation) can never be downgraded —
+a policy that tries gets a warning and they stay errors. They are the point of the tool.
+
+### Attempt history (reruns keep context)
+
+The gate updates a single PR comment in place — but a rerun no longer erases the previous
+result. Prior attempts are archived, newest first, in a collapsed **📜 Attempt history**
+section (capped at 5), so an agent picking up a multi-round fix sees the whole trajectory —
+what attempt #1 failed on, what changed — in one comment.
+
 ## The receipt
 
 The contract an agent must satisfy (`templates/receipt.example.json`):
