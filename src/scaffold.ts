@@ -89,7 +89,7 @@ export const RECEIPT_FIELD_REFERENCE: FieldRef[] = [
   { field: "task_id", type: "string", required: true, note: "ticket/issue/branch id (also the receipt filename)" },
   { field: "agent_id", type: "string", required: true, note: "which agent or human did the work" },
   { field: "intent", type: "string (≥40 chars)", required: true, note: "what + why, plain language — the semantic review reads this" },
-  { field: "self_modifying", type: "boolean", required: true, allowed: ["true", "false"], note: "MUST be true if changed_files touch policy.protected_paths; touching one with false is a hard fail; true escalates to human review" },
+  { field: "self_modifying", type: "boolean", required: true, allowed: ["true", "false"], note: "MUST be true if changed_files touch policy.protected_paths; touching one with false is a hard fail; true routes to human review" },
   { field: "policy_refs", type: "string[] (≥1)", required: true, note: "policy/mission docs you read" },
   { field: "validation_plan", type: "object[] (≥1)", required: true, note: "each: { command, reason, required }" },
   { field: "validation_plan[].required", type: "boolean", required: true, allowed: ["true", "false"], note: "is this check mandatory" },

@@ -510,7 +510,7 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
     });
     const gate: GateResult = {
       shape,
-      final: shape.pass ? "approve" : "revise",
+      final: shape.pass ? "approve" : "rework",
       reasons: [],
     };
     // Print the same capsule CI would post, so the author sees exactly what the
@@ -539,7 +539,7 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
 
   const gate: GateResult = {
     shape,
-    final: shape.pass ? "approve" : "revise",
+    final: shape.pass ? "approve" : "rework",
     reasons: [],
   };
 
@@ -562,7 +562,7 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
       if (ciEvidenceSeverity === "error") {
         shape.errors.push(msg);
         shape.pass = false;
-        gate.final = "revise";
+        gate.final = "rework";
       } else {
         shape.warnings.push(`[ci_evidence: warn] ${msg}`);
       }
@@ -591,7 +591,7 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
 
   // --- Semantic review ---
   if (!shape.pass || !receipt) {
-    gate.final = "revise";
+    gate.final = "rework";
     gate.reasons.push("semantic review skipped: shape gate failed — fix shape errors first");
   } else {
     const missionPath = resolveDualPath(cwd, arg("mission", policy.mission_file)!);

@@ -40,7 +40,7 @@ pass — no red-CI round-trips. (Semantic review still runs server-side in CI.)
 - `self_modifying` — **`true` if the diff touches plumbline's own config or
   guardrails** (`.plumbline/**`, `.github/workflows/**`, or whatever the repo's
   `protected_paths` lists). Touching a protected path with `self_modifying:false`
-  is a hard fail. When `true`, the gate escalates to **human review** — it will
+  is a hard fail. When `true`, the gate routes to **human review** — it will
   not auto-approve.
 - `validation_plan` — the checks you intend to run; each is
   `{ command, reason, required }` where **`required` is a boolean** (`true`/`false`).

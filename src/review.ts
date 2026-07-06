@@ -49,7 +49,7 @@ Judge the work on exactly these dimensions:
 
 Respond with ONLY a JSON object, no markdown fence, with this exact shape:
 {
-  "verdict": "approve" | "revise" | "escalate",
+  "verdict": "approve" | "rework" | "review",
   "confidence": <0.0-1.0>,
   "validation_coverage_notes": "<specific assessment>",
   "mission_alignment_notes": "<specific assessment>",
@@ -61,19 +61,19 @@ Respond with ONLY a JSON object, no markdown fence, with this exact shape:
     "agent_actions": ["<concrete fixes an AGENT can do now — code/security/tests/docs; [] if none>"],
     "human_actions": ["<decisions only a HUMAN can make — protected/billing override, real trade-off, ambiguous intent; [] if none>"],
     "changed_files_implicated": ["<paths>"],
-    "severity": "fixable" | "fatal" | "escalation"
+    "severity": "fixable" | "fatal" | "review"
   }
 }
 
 Separate the work by WHO must act — they are independent, and a single PR can have BOTH:
-- agent_actions: anything an agent could reasonably do right now. ALWAYS list these when they exist, even on "escalate" — never claim "nothing for the agent to do" if an agent could improve the change.
+- agent_actions: anything an agent could reasonably do right now. ALWAYS list these when they exist, even on "review" — never claim "nothing for the agent to do" if an agent could improve the change.
 - human_actions: only what truly needs a human.
 ${levelGuidance}
 
 Rules:
 - "approve" only when validation coverage is adequate AND no invariant is at risk (agent_actions and human_actions both empty).
-- "revise" when human_actions is empty and the agent_actions would resolve it — the failure_capsule is the agent's rework prompt; make next_action_requested concrete and minimal.
-- "escalate" when human_actions is non-empty: an invariant trade-off, ambiguous intent, protected-surface changes, or anything you cannot verify. STILL populate agent_actions so the agent-doable parts can proceed in parallel.
+- "rework" when human_actions is empty and the agent_actions would resolve it — the failure_capsule is the agent's rework prompt; make next_action_requested concrete and minimal.
+- "review" when human_actions is non-empty: an invariant trade-off, ambiguous intent, protected-surface changes, or anything you cannot verify. STILL populate agent_actions so the agent-doable parts can proceed in parallel.
 - Omit failure_capsule only for "approve".`;
 }
 
@@ -122,9 +122,9 @@ export async function semanticReview(
   // happened?". Instead, surface a clear, self-describing verdict so the
   // comment always reflects reality: the review didn't complete, here's why,
   // here's what to do.
-  if (!parsed || !["approve", "revise", "escalate"].includes(parsed.verdict)) {
+  if (!parsed || !["approve", "rework", "review"].includes(parsed.verdict)) {
     return {
-      verdict: "revise",
+      verdict: "rework",
       confidence: 0,
       validation_coverage_notes: "Not evaluated — the semantic-review response could not be parsed.",
       mission_alignment_notes: "Not evaluated — the semantic-review response could not be parsed.",
@@ -152,11 +152,11 @@ export async function semanticReview(
   // low confidence never auto-approves; self-modifying never auto-approves.
   let verdict: Verdict = parsed.verdict;
   if (verdict === "approve" && parsed.confidence < policy.min_review_confidence) {
-    verdict = "escalate";
-    parsed.risk_notes += ` [plumbline: approve downgraded to escalate — confidence ${parsed.confidence} below policy minimum ${policy.min_review_confidence}]`;
+    verdict = "review";
+    parsed.risk_notes += ` [plumbline: approve downgraded to review — confidence ${parsed.confidence} below policy minimum ${policy.min_review_confidence}]`;
   }
   if (verdict === "approve" && receipt.self_modifying) {
-    verdict = "escalate";
+    verdict = "review";
     parsed.risk_notes +=
       " [plumbline: self-modifying work has no auto-approve path — human review required]";
   }

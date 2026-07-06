@@ -70,19 +70,19 @@ export const PolicySchema = z.object({
   ci_evidence_checks: z.array(z.string()).default([]),
   /**
    * Glob patterns for protected surfaces. Changes matching these require
-   * self_modifying: true and always escalate to a human — no auto-approve.
+   * self_modifying: true and always route to human review — no auto-approve.
    */
   protected_paths: z.array(z.string()).default([]),
-  /** Semantic review verdicts below this confidence are downgraded to escalate. */
+  /** Semantic review verdicts below this confidence are downgraded to review. */
   min_review_confidence: z.number().min(0).max(1).default(0.8),
   /**
    * How readily the semantic gate routes judgment calls to a HUMAN vs. lets an
    * AGENT handle them — the user's "how much goes to human review" dial:
-   *   "low"      — escalate only what genuinely needs a human; prefer agent_actions.
-   *   "balanced" — escalate real trade-offs/ambiguity (default).
+   *   "low"      — send to human review only what genuinely needs a human; prefer agent_actions.
+   *   "balanced" — send real trade-offs/ambiguity to human review (default).
    *   "high"     — when in doubt, send it to a human.
    * This tunes the human_actions/agent_actions split ONLY. It never lowers the
-   * hard floor: protected_paths + self_modifying always require a human,
+   * hard floor: protected_paths + self_modifying always require a human review,
    * regardless of this setting.
    */
   human_review_level: z.enum(["low", "balanced", "high"]).default("balanced"),
@@ -119,9 +119,9 @@ export interface FailureCapsule {
   next_action_requested: string;
   /**
    * Concrete fixes an AGENT can do right now — code, security, tests, docs.
-   * Populated independently of verdict: an escalated PR can still carry a list
-   * of agent-actionable items to tackle in parallel while a human decides the
-   * human_actions. `[]` when there's genuinely nothing for an agent to do.
+   * Populated independently of verdict: a PR sent to human review can still
+   * carry a list of agent-actionable items to tackle in parallel while a human
+   * decides the human_actions. `[]` when there's genuinely nothing for an agent to do.
    */
   agent_actions?: string[];
   /**
@@ -132,10 +132,10 @@ export interface FailureCapsule {
   human_actions?: string[];
   changed_files_implicated: string[];
   relevant_excerpt?: string;
-  severity: "fixable" | "fatal" | "escalation";
+  severity: "fixable" | "fatal" | "review";
 }
 
-export type Verdict = "approve" | "revise" | "escalate";
+export type Verdict = "approve" | "rework" | "review";
 
 export interface ShapeResult {
   pass: boolean;

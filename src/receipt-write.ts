@@ -3,7 +3,7 @@ import { matchesAny } from "./glob.js";
 /**
  * `plumb receipt --write/--check` — the mechanical half of a receipt,
  * automated end-to-end. Everything here is derivable bookkeeping (diff hash,
- * file list, protected-path escalation); the judgment fields (intent,
+ * file list, protected-path human-review flag); the judgment fields (intent,
  * validation_plan, execution_evidence, result_summary) are NEVER generated —
  * automating those would defeat proof-carrying work. Automate the bookkeeping,
  * never the judgment.
@@ -46,7 +46,7 @@ export interface RefreshResult {
  * Refresh ONLY the mechanical fields of an existing receipt, preserving every
  * human-authored (judgment) field byte-for-byte. self_modifying is upgraded to
  * true when the diff touches protected paths; a voluntary `true` with no
- * protected hits is PRESERVED (the author may be escalating on purpose —
+ * protected hits is PRESERVED (the author may be requesting review on purpose —
  * downgrading silently would remove a human-review request).
  */
 export function refreshMechanical(
@@ -82,7 +82,7 @@ export function refreshMechanical(
     changed = true;
   } else if (!derived && out.self_modifying === true) {
     notes.push(
-      "self_modifying: left true (no protected paths touched — preserved as a voluntary escalation; set false yourself if unintended)",
+      "self_modifying: left true (no protected paths touched — preserved as a voluntary human-review request; set false yourself if unintended)",
     );
   }
 
