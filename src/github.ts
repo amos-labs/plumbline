@@ -3,12 +3,12 @@ import type { GateResult } from "./types.js";
 /** Render the gate result as a PR comment (GitHub-flavored markdown). */
 export function renderComment(result: GateResult): string {
   const icon =
-    result.final === "approve" ? "✅" : result.final === "revise" ? "🔁" : "⚠️";
+    result.final === "approve" ? "✅" : result.final === "rework" ? "🔁" : "⚠️";
   const lines: string[] = [];
   lines.push(`## ${icon} plumbline: ${result.final.toUpperCase()}`);
   lines.push("");
 
-  // Action banner — make WHO must act unambiguous. `revise` and `escalate`
+  // Action banner — make WHO must act unambiguous. `rework` and `review`
   // both produce a red required-check, which previously looked identical and
   // left maintainers unsure whether the agent needed to fix something or they
   // just needed to approve. Spell it out.
@@ -18,12 +18,12 @@ export function renderComment(result: GateResult): string {
 
   if (result.final === "approve") {
     lines.push("> **✅ Passed — merging automatically. No action needed.**");
-  } else if (result.final === "revise") {
+  } else if (result.final === "rework") {
     lines.push(
       "> **🔁 Rework needed — the agent fixes the 🤖 items below and re-pushes. No human action required.**",
     );
   } else if (agentActions.length > 0) {
-    // Escalate, but there's ALSO agent-doable work — don't pretend otherwise.
+    // Review, but there's ALSO agent-doable work — don't pretend otherwise.
     lines.push(
       "> **⚠️ Human review required — and there are agent-fixable items too.** A maintainer decides the 🧑 items; an agent can address the 🤖 items now (in parallel). Override-merge when ready: `gh pr merge <PR> --squash --admin`.",
     );
@@ -112,7 +112,7 @@ export interface CiAnnotation {
 /**
  * A compact one-liner for the GitHub Actions Checks UI (annotation), so the
  * verdict AND the fact that there's substantive feedback are visible without
- * opening the PR comment. revise→error (agent must fix), escalate→warning
+ * opening the PR comment. rework→error (agent must fix), review→warning
  * (human judgment, distinct from "broken"), approve→notice.
  */
 export function renderCiSummary(result: GateResult): CiAnnotation {
@@ -127,7 +127,7 @@ export function renderCiSummary(result: GateResult): CiAnnotation {
   const cap = result.review?.failure_capsule;
   const parts: string[] = [];
 
-  if (result.final === "revise") {
+  if (result.final === "rework") {
     parts.push("Rework needed — the agent fixes the items in the PR comment and re-pushes.");
   } else {
     parts.push("Human approval required (protected/billing surface) — NOT a rubber stamp.");
@@ -141,7 +141,7 @@ export function renderCiSummary(result: GateResult): CiAnnotation {
   }
 
   return {
-    level: result.final === "revise" ? "error" : "warning",
+    level: result.final === "rework" ? "error" : "warning",
     title: `plumbline: ${result.final.toUpperCase()}`,
     message: parts.join(" "),
   };

@@ -6,7 +6,7 @@
 
 Extracted from the [AMOS](https://github.com/amos-labs) proof-carrying autonomous loop. Apache 2.0.
 
-**Plumbline gates Plumbline.** This repo runs its own gate on every PR — self-modifying changes to the gate itself escalate to human review. The loop is proven on the tool that implements it.
+**Plumbline gates Plumbline.** This repo runs its own gate on every PR — self-modifying changes to the gate itself route to human review. The loop is proven on the tool that implements it.
 
 **Compatible with [OpenSpec](https://github.com/Fission-AI/OpenSpec). Dependent on nothing.** The intake and archive ends of the loop follow OpenSpec's format and lifecycle conventions (MIT — see `THIRD-PARTY.md`), so existing `openspec/` folders just work — and every stage is adoptable on its own.
 
@@ -55,7 +55,7 @@ mechanical fields and preserves everything you wrote. `receipt --check` (exit 1 
 stale) is small enough for a pre-push hook. One receipt file per PR at
 `.plumbline/receipts/<task>.json` — never a shared `receipt.json`. (Legacy `.proofgate/` repos work unchanged — the tool reads both.)
 The split is deliberate: **automate the bookkeeping, never the judgment** — the tool
-computes what's derivable (hashes, file lists, protected-path escalation) and refuses
+computes what's derivable (hashes, file lists, protected-path human-review routing) and refuses
 to write what only the author can assert. (`new` and `stamp` remain as the underlying
 single-purpose commands.)
 
@@ -86,15 +86,15 @@ agent does work
   -> semantic review                  one LLM call vs your MISSION.md: coverage, alignment, risk
   -> verdict
        approve   -> CI check green, merges automatically
-       revise    -> capsule's 🤖 agent_actions; agent reworks and resubmits (no human needed)
-       escalate  -> capsule's 🧑 human_actions; a human decides (always for self-modifying)
+       rework    -> capsule's 🤖 agent_actions; agent reworks and resubmits (no human needed)
+       review    -> capsule's 🧑 human_actions; a human decides (always for self-modifying)
 ```
 
 Two-tier validation, on purpose: the shape gate never pretends to understand meaning, and the reviewer never re-does deterministic checks.
 
 **The capsule splits who must act.** Every failure capsule separates `agent_actions`
 (concrete fixes an agent can do now) from `human_actions` (decisions only a human can
-make) — and a PR can carry **both**. An `escalate` still lists `agent_actions` so the
+make) — and a PR can carry **both**. A `review` still lists `agent_actions` so the
 agent-fixable parts proceed in parallel while a human decides the rest; it no longer
 pretends "there's nothing for the agent to do." How aggressively work routes to humans
 is the `human_review_level` dial (`low` / `balanced` / `high`) in `policy.json` — it
@@ -109,7 +109,7 @@ always need a human).
 
 3. **Add the CI hook.**
    - **GitHub:** copy `templates/workflow.yml` to `.github/workflows/plumbline.yml`, add `ANTHROPIC_API_KEY` to repo secrets, make the check required in branch protection.
-   - **Azure DevOps:** copy `templates/azure-pipelines.yml`, add `ANTHROPIC_API_KEY` as a secret variable, grant the build service "Contribute to pull requests", and add the pipeline as a required build validation policy. The gate posts/updates a PR thread (active on revise/escalate, resolved on approve).
+   - **Azure DevOps:** copy `templates/azure-pipelines.yml`, add `ANTHROPIC_API_KEY` as a secret variable, grant the build service "Contribute to pull requests", and add the pipeline as a required build validation policy. The gate posts/updates a PR thread (active on rework/review, resolved on approve).
 
 4. **Teach your agent the contract.** Add to your `CLAUDE.md` / agent instructions: every PR must include a receipt conforming to `templates/receipt.example.json`, with real evidence from commands actually run.
 
@@ -181,7 +181,7 @@ comment without failing the gate; `off` suppresses with a note.
 | `lenient` | those + `required_checks`, `evidence_coverage`, `ci_evidence` |
 
 **The floor never moves:** `schema`, `diff_integrity` (the hash binding), and
-`protected_paths` (the `self_modifying` human-review escalation) can never be downgraded —
+`protected_paths` (the `self_modifying` human-review routing) can never be downgraded —
 a policy that tries gets a warning and they stay errors. They are the point of the tool.
 
 ### Attempt history (reruns keep context)
@@ -209,8 +209,8 @@ The contract an agent must satisfy (`templates/receipt.example.json`):
 ## Design rules inherited from AMOS
 
 - **Self-modifying work has no override path.** Changes to auth, payments, migrations, the gate itself — whatever you mark protected — always require a human, regardless of how good the review looks.
-- **Low confidence never auto-approves.** Verdicts below `min_review_confidence` are downgraded to escalate.
-- **Failure capsules, not log dumps.** A revise verdict includes the failing check, suspected cause, implicated files, and a single concrete next action — structured to be fed straight back to the agent.
+- **Low confidence never auto-approves.** Verdicts below `min_review_confidence` are downgraded to review.
+- **Failure capsules, not log dumps.** A rework verdict includes the failing check, suspected cause, implicated files, and a single concrete next action — structured to be fed straight back to the agent.
 - **The gate protects itself.** `.plumbline/**` (and legacy `.proofgate/**`) and your workflows belong in `protected_paths`.
 
 ## Running agents at scale
@@ -219,7 +219,7 @@ Plumbline is the *gate*; pair it with an issue-tracker queue + an executor and y
 an autonomous delivery loop. See **[docs/AGENTS_ON_A_MISSION.md](docs/AGENTS_ON_A_MISSION.md)** —
 a harness-agnostic pattern: queue in your issue tracker (a human-applied `agent-ready`
 label), progress in a checkpoint file, discipline in hooks, judgment in this gate. Two
-human checkpoints (apply `agent-ready` on intake; `self_modifying`/escalate on output)
+human checkpoints (apply `agent-ready` on intake; `self_modifying`/review on output)
 let the middle run unattended.
 
 ## Operating notes (learned in production)

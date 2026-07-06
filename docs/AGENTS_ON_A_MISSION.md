@@ -31,8 +31,8 @@ issue (needs-spec) ──human triage──▶ agent-ready          ← human ch
 implement (test-first) ─▶ adversarial self/2nd-agent review ─▶ PR with a proof receipt
    ▼ plumbline
    ├─ approve   → auto-merge (squash)
-   ├─ revise    → 🤖 agent fixes the capsule's agent_actions, re-pushes
-   └─ escalate  → 🧑 human decides human_actions                 ← human checkpoint #2 (output)
+   ├─ rework    → 🤖 agent fixes the capsule's agent_actions, re-pushes
+   └─ review    → 🧑 human decides human_actions                 ← human checkpoint #2 (output)
    ▼ merge → deploy → verify live → close issue → next batch
 ```
 
@@ -42,7 +42,7 @@ The failure capsule plumbline returns is **split by who must act** — and a sin
 can have both:
 
 - **`agent_actions`** — concrete fixes an agent can do now (code, security, tests).
-  Populated even on `escalate`, so an escalated PR still hands the agent its
+  Populated even on `review`, so a PR sent to human review still hands the agent its
   actionable list to work in parallel.
 - **`human_actions`** — decisions only a human can make (protected/billing override,
   a real trade-off, ambiguous intent).

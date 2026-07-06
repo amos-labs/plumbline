@@ -37,8 +37,8 @@ result summary) are authored by the human or agent doing the work and verified
 
 ## Protected surfaces (self-modifying work)
 
-Changes here must declare `self_modifying: true` and always escalate to a
-human — the gate must not weaken itself:
+Changes here must declare `self_modifying: true` and always route to human
+review — the gate must not weaken itself:
 
 - `src/shape.ts`, `src/severity.ts`, `src/github.ts`, `src/types.ts` —
   the enforcement core (checks, severity floor, CI evidence, schemas)

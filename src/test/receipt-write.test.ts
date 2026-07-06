@@ -65,7 +65,7 @@ test("refreshMechanical upgrades self_modifying on protected hits, never silentl
   assert.equal(up.receipt.self_modifying, true);
   assert.ok(up.notes.some((n) => n.includes("migrations/x.sql")));
 
-  // Voluntary true with no hits → preserved (author may be escalating on purpose).
+  // Voluntary true with no hits → preserved (author may be requesting review on purpose).
   const noHit = mech();
   const keep = refreshMechanical(
     { diff_sha256: noHit.diffSha256, changed_files: noHit.changedFiles, self_modifying: true },
@@ -73,7 +73,7 @@ test("refreshMechanical upgrades self_modifying on protected hits, never silentl
   );
   assert.equal(keep.receipt.self_modifying, true);
   assert.equal(keep.changed, false);
-  assert.ok(keep.notes.some((n) => n.includes("voluntary escalation")));
+  assert.ok(keep.notes.some((n) => n.includes("voluntary human-review request")));
 });
 
 test("checkMechanical reports staleness and missing self_modifying", () => {

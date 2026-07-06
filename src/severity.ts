@@ -11,7 +11,7 @@ import type { Policy } from "./types.js";
  *
  * HARD FLOOR — never downgradable, by design (they ARE the tool):
  *   - `diff_integrity`   the diff_sha256 binding: without it a receipt proves nothing
- *   - `protected_paths`  the self_modifying escalation: the human-review guarantee
+ *   - `protected_paths`  the self_modifying human-review routing: the human-review guarantee
  *   - `schema`           structural validity: an unparseable receipt can't be evaluated
  * A policy that tries to downgrade one gets a warning and stays "error".
  */
@@ -91,7 +91,7 @@ export function validateSeverityConfig(policy: Policy): string[] {
     }
     if (PROTECTED_CHECKS.includes(name as CheckName) && sev !== "error") {
       warnings.push(
-        `check_severity: "${name}" cannot be downgraded (diff integrity / self_modifying escalation / ` +
+        `check_severity: "${name}" cannot be downgraded (diff integrity / self_modifying human-review routing / ` +
           `schema validity are the point of the tool) — staying "error"`,
       );
     }

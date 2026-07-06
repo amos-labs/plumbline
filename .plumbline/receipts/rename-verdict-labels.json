@@ -1,0 +1,82 @@
+{
+  "_help": {
+    "_note": "Allowed values + requirements per field (this _help block is ignored by the gate — keep or delete). Run `plumb schema` for the full reference.",
+    "receipt_version": "one of: 1.0 — required — schema version",
+    "task_id": "required — ticket/issue/branch id (also the receipt filename)",
+    "agent_id": "required — which agent or human did the work",
+    "intent": "required — what + why, plain language — the semantic review reads this",
+    "self_modifying": "one of: true | false — required — MUST be true if changed_files touch policy.protected_paths; touching one with false is a hard fail; true routes to human review",
+    "policy_refs": "required — policy/mission docs you read",
+    "validation_plan": "required — each: { command, reason, required }",
+    "validation_plan[].required": "one of: true | false — required — is this check mandatory",
+    "execution_evidence": "required — each: { command, status, output_ref?, skip_reason? }",
+    "execution_evidence[].status": "one of: passed | failed | skipped — required — required steps must be 'passed'; use skip_reason when 'skipped'",
+    "changed_files": "required — set by `plumb receipt --write` — don't hand-edit",
+    "diff_sha256": "required — set by `plumb receipt --write` — never hand-edit",
+    "result_summary": "required — what changed + how it was verified"
+  },
+  "receipt_version": "1.0",
+  "task_id": "rename-verdict-labels",
+  "agent_id": "claude-opus-4-8",
+  "intent": "Rename two of the gate's three verdict labels for clarity, wording only — behavior is byte-for-byte identical. ESCALATE→REVIEW (a human signs off; 'escalate' alarmed users, sounding like an incident, while 'review' is a normal step) and REVISE→REWORK (the agent fixes it and re-pushes; 'revise'/'review' looked too alike, so revise→rework keeps the two distinct). APPROVE is unchanged. The Verdict type, the review prompt's allowed values + the parseReviewJson validation list, the confidence/self_modifying downgrade targets, the PR-comment headers (plumbline: REVIEW / plumbline: REWORK), the CI-annotation titles/levels, the failure-capsule severity value ('escalation'→'review'), and all prose in docs/README/MISSION/AGENTS are renamed consistently. Exit codes, gating logic, the --admin override-merge instruction, ci-evidence checks, self_modifying handling, and the poll-wait are untouched.",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json"
+  ],
+  "validation_plan": [
+    {
+      "command": "npx tsc --noEmit",
+      "reason": "The Verdict union type changed; type-check proves every match arm, comparison, and test fixture uses the new labels and nothing dangles on the old ones.",
+      "required": true
+    },
+    {
+      "command": "npm test",
+      "reason": "Full suite (101 tests) — asserts the rendered PR-comment headers, CI-annotation titles/levels, attempt-history archive labels, and parseReviewJson verdicts under the new wording; proves behavior is unchanged.",
+      "required": true
+    },
+    {
+      "command": "git diff master...HEAD -- src/",
+      "reason": "Manual behavioral diff to confirm ONLY string literals/identifiers changed — exit-code logic (approve-only pass), gating conditions, the --admin override instruction, ci-evidence, and self_modifying handling are structurally identical.",
+      "required": true
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npx tsc --noEmit",
+      "status": "passed",
+      "output_ref": "clean, no diagnostics"
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "# tests 101 # pass 101 # fail 0 (also the CI 'test' job on this PR — ci_evidence_checks corroborates)"
+    },
+    {
+      "command": "git diff master...HEAD -- src/",
+      "status": "passed",
+      "output_ref": "diff is rename-only: verdict string literals + one comment/prose word per site; no control flow, condition, exit code, or override-instruction changed"
+    }
+  ],
+  "changed_files": [
+    ".plumbline/AGENTS.md",
+    ".plumbline/MISSION.md",
+    "README.md",
+    "docs/AGENTS_ON_A_MISSION.md",
+    "package-lock.json",
+    "src/cli.ts",
+    "src/github.ts",
+    "src/receipt-write.ts",
+    "src/review.ts",
+    "src/scaffold.ts",
+    "src/severity.ts",
+    "src/test/attempt-history.test.ts",
+    "src/test/github.test.ts",
+    "src/test/receipt-write.test.ts",
+    "src/test/review.test.ts",
+    "src/types.ts",
+    "templates/AGENTS.md"
+  ],
+  "diff_sha256": "cf417e6e07694fdc177bc24bd0af7145889f37e183789ce8aa8830b691e66d6a",
+  "result_summary": "Renamed the two ambiguous verdict labels across source, machine-readable output, PR-comment/CI strings, tests, and docs: ESCALATE→REVIEW and REVISE→REWORK (APPROVE unchanged). Verified by tsc + the full 101-test suite (all green) and a manual src/ diff confirming behavior/exit-codes are identical — only human-facing wording changed. This PR touches protected surfaces (src/types.ts, src/github.ts, src/severity.ts, .plumbline/**) and changes the gate itself, so self_modifying: true — it correctly self-gates to REVIEW for human sign-off."
+}

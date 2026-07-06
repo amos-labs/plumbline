@@ -20,7 +20,7 @@ test("parseReviewJson: salvages JSON wrapped in prose", () => {
 });
 
 test("parseReviewJson: truncated JSON returns null (not a throw)", () => {
-  const truncated = '{"verdict":"revise","confidence":0.8,"risk_notes":"this got cut off mid-str';
+  const truncated = '{"verdict":"rework","confidence":0.8,"risk_notes":"this got cut off mid-str';
   assert.equal(parseReviewJson(truncated), null);
 });
 
@@ -30,7 +30,7 @@ test("parseReviewJson: no JSON at all returns null", () => {
 });
 
 test("parseReviewJson: braces inside strings don't fool the balancer", () => {
-  const tricky = '{"verdict":"revise","confidence":0.5,"risk_notes":"see foo() { return {a:1} }","validation_coverage_notes":"x","mission_alignment_notes":"y"}';
+  const tricky = '{"verdict":"rework","confidence":0.5,"risk_notes":"see foo() { return {a:1} }","validation_coverage_notes":"x","mission_alignment_notes":"y"}';
   const r = parseReviewJson(tricky);
-  assert.equal(r?.verdict, "revise");
+  assert.equal(r?.verdict, "rework");
 });

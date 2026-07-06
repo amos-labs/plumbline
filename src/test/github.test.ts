@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import { renderComment, renderCiSummary } from "../github.js";
 import type { GateResult } from "../types.js";
 
-function escalateResult(opts: { agent: string[]; human: string[] }): GateResult {
+function reviewResult(opts: { agent: string[]; human: string[] }): GateResult {
   return {
     shape: { pass: true, errors: [], warnings: [] },
     review: {
-      verdict: "escalate",
+      verdict: "review",
       confidence: 0.9,
       validation_coverage_notes: "ok",
       mission_alignment_notes: "ok",
@@ -19,17 +19,17 @@ function escalateResult(opts: { agent: string[]; human: string[] }): GateResult 
         agent_actions: opts.agent,
         human_actions: opts.human,
         changed_files_implicated: ["db/migrate/x.rb"],
-        severity: "escalation",
+        severity: "review",
       },
     },
-    final: "escalate",
+    final: "review",
     reasons: [],
   };
 }
 
-test("escalate WITH agent_actions: shows both lists, no 'nothing for the agent' claim", () => {
+test("review WITH agent_actions: shows both lists, no 'nothing for the agent' claim", () => {
   const md = renderComment(
-    escalateResult({ agent: ["Escape user input in the attribute"], human: ["Approve the migration"] }),
+    reviewResult({ agent: ["Escape user input in the attribute"], human: ["Approve the migration"] }),
   );
   assert.ok(md.includes("🧑 Human must decide"));
   assert.ok(md.includes("Approve the migration"));
@@ -39,11 +39,11 @@ test("escalate WITH agent_actions: shows both lists, no 'nothing for the agent' 
   assert.ok(!md.includes("nothing for the agent to fix"));
 });
 
-test("escalate with NO agent_actions: human-approval banner still flags findings to read", () => {
-  const md = renderComment(escalateResult({ agent: [], human: ["Override-merge the protected change"] }));
+test("review with NO agent_actions: human-approval banner still flags findings to read", () => {
+  const md = renderComment(reviewResult({ agent: [], human: ["Override-merge the protected change"] }));
   assert.ok(md.includes("Human approval required"));
   assert.ok(md.includes("no agent rework needed"));
-  // The whole point of this change: escalate must NOT read as a rubber stamp —
+  // The whole point of this change: review must NOT read as a rubber stamp —
   // it must point the human at the substantive findings.
   assert.ok(md.includes("NOT a rubber stamp"));
   assert.ok(md.includes("Review findings below"));
@@ -52,25 +52,25 @@ test("escalate with NO agent_actions: human-approval banner still flags findings
 });
 
 test("findings-at-a-glance: counts numbered risks for a non-approve verdict", () => {
-  const r = escalateResult({ agent: [], human: ["approve"] });
+  const r = reviewResult({ agent: [], human: ["approve"] });
   r.review!.risk_notes = "1) leak risk. 2) timezone bug. 3) missing FK.";
   const md = renderComment(r);
   assert.ok(md.includes("3 risk findings"));
   assert.ok(md.includes("Review findings below"));
 });
 
-test("renderCiSummary: escalate is a warning annotation that says read the findings", () => {
-  const s = renderCiSummary(escalateResult({ agent: [], human: ["approve"] }));
+test("renderCiSummary: review is a warning annotation that says read the findings", () => {
+  const s = renderCiSummary(reviewResult({ agent: [], human: ["approve"] }));
   assert.equal(s.level, "warning");
-  assert.ok(s.title.includes("ESCALATE"));
+  assert.ok(s.title.includes("REVIEW"));
   assert.ok(/rubber stamp|read the/i.test(s.message));
 });
 
-test("renderCiSummary: revise is an error annotation; approve is a notice", () => {
-  const revise: GateResult = {
+test("renderCiSummary: rework is an error annotation; approve is a notice", () => {
+  const rework: GateResult = {
     shape: { pass: true, errors: [], warnings: [] },
     review: {
-      verdict: "revise", confidence: 0.8,
+      verdict: "rework", confidence: 0.8,
       validation_coverage_notes: "ok", mission_alignment_notes: "ok", risk_notes: "ok",
       failure_capsule: {
         failing_check: "missing spec", suspected_cause: "no test",
@@ -78,9 +78,9 @@ test("renderCiSummary: revise is an error annotation; approve is a notice", () =
         changed_files_implicated: [], severity: "fixable",
       },
     },
-    final: "revise", reasons: [],
+    final: "rework", reasons: [],
   };
-  assert.equal(renderCiSummary(revise).level, "error");
+  assert.equal(renderCiSummary(rework).level, "error");
 
   const approve: GateResult = {
     shape: { pass: true, errors: [], warnings: [] },
