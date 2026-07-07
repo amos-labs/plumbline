@@ -77,6 +77,21 @@ Two habits cause almost every *false* shape REWORK — avoid both:
    diverges, `plumb check` names the exact mismatch (`evidence command does not
    match validation_plan step <id>: plan="…" evidence="…"`) so the fix is obvious.
 
+### Database migrations (if this repo has a `migrations/` directory)
+Three rules, enforced so parallel agent branches don't corrupt the schema:
+
+1. **Never edit an already-applied migration.** Once a migration has run
+   anywhere (prod, a teammate's DB, CI), its checksum is recorded; changing the
+   file makes the migrator refuse to start. Fix-forward with a NEW migration.
+2. **Version migrations with a full UTC timestamp**, not a hand-picked ordinal.
+   `sqlx migrate add -r <name>` does this; or `date -u +%Y%m%d%H%M%S`. Two
+   branches created seconds apart then get distinct, monotonic versions — a
+   short ordinal (`0007_…`) collides the moment two branches both pick it.
+3. **The `migration-guard` check rejects a new migration whose version is
+   `<= the base branch's max`.** A new migration must sort strictly AFTER
+   everything already merged. If the guard fails, don't renumber down —
+   re-stamp your migration with a fresh timestamp (rule 2) so it lands last.
+
 **Don't memorize this — run `plumb schema`** to print every field with its
 type, required/optional, and allowed enum values. A scaffolded receipt also
 carries an inline `_help` block listing the same (safe to leave or delete — the
@@ -126,17 +141,22 @@ is why the binding diff *excludes* the receipts directory.
 
 These need repo-admin rights an agent doesn't have. Ask the user to do them once:
 
-1. **Enable the gate as a required check** (so unproven PRs can't merge):
-   GitHub → repo **Settings → Branches → Branch protection rules** → add/edit a
-   rule for the default branch → check **"Require status checks to pass before
-   merging"** → search for and select **`plumbline`** (it appears after the
-   workflow runs once).
+1. **Make the gate a required, blocking check + enable auto-merge — in one command:**
+   ```bash
+   GITHUB_TOKEN=<admin token> plumb setup-protection --repo <owner/name>
+   ```
+   This makes the `plumbline` gate **and** the repo's CI checks REQUIRED on the
+   default branch (strict:false) and turns on auto-merge — the "blocking +
+   auto-merge on all green" shape. It's idempotent and prints exactly what it
+   changed. Needs a token with repo-admin scope. (The manual path is GitHub →
+   **Settings → Branches → Branch protection rules** → require `plumbline`; but
+   the command gets the shape right every time, which hand-setup reliably does not.)
 2. **Add the review API key secret** (semantic review needs it):
    GitHub → **Settings → Secrets and variables → Actions → New repository
    secret** → name **`ANTHROPIC_API_KEY`**, paste the key. (`GITHUB_TOKEN` is
    provided automatically.)
-3. **First run:** open any PR; the `plumbline` check runs and becomes selectable
-   in step 1.
+3. **First run:** open any PR; the `plumbline` check runs (and becomes selectable
+   as a required check if you set protection manually).
 
 That's it — once those are set, the loop is fully agent-driven: `new` → fill →
 `stamp` → `check` → push.

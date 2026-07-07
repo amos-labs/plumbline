@@ -16,7 +16,9 @@ import { shouldSkipReview, readReviewCache, writeReviewCache } from "./cost.js";
 import { renderComment, renderCiSummary, verifyCiEvidence } from "./github.js";
 import { detectCi, reportToCi } from "./ci.js";
 import { pickReceipt, type ReceiptCandidate } from "./receipt-select.js";
-import { runInit, sanitizeTaskId, newReceipt, formatSchemaReference } from "./scaffold.js";
+import { runInit, sanitizeTaskId, newReceipt, formatSchemaReference, resolveStack } from "./scaffold.js";
+import { isStackId, runMigrationGuard } from "./stack.js";
+import { setupProtection } from "./protection.js";
 import { detectBaseRef } from "./base.js";
 import { baseDir, resolveDualPath } from "./basedir.js";
 import {
@@ -178,7 +180,8 @@ async function main(): Promise<number> {
     receiptArg === ".plumbline/receipt.json" ||
     receiptArg === ".proofgate/receipt.json";
   const receiptPath =
-    cmd === "init" || cmd === "new" || cmd === "schema" || cmd === "propose" || cmd === "archive"
+    cmd === "init" || cmd === "new" || cmd === "schema" || cmd === "propose" || cmd === "archive" ||
+    cmd === "setup-protection" || cmd === "migration-guard"
       ? DEFAULT_RECEIPT
       : resolveReceiptPath(
           receiptIsDefault ? DEFAULT_RECEIPT : receiptArg,
@@ -188,11 +191,19 @@ async function main(): Promise<number> {
           DEFAULT_RECEIPT,
         );
 
-  if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check", "receipt", "propose", "archive"].includes(cmd)) {
+  if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check", "receipt", "propose", "archive", "setup-protection", "migration-guard"].includes(cmd)) {
     console.log(`plumbline — the plumb line for AI agent work (Amos 7:7-8): proof-carrying gate
 
 usage:
-  plumb init    (scaffold workflow + .plumbline/ + AGENTS.md into this repo — start here)
+  plumb init    [--stack rust-sqlx] [--no-stack] [--protect]   (scaffold the governed CI into this
+                repo: gate workflow WITH ci-evidence poll-wait + .plumbline/ + AGENTS.md, and — on a
+                detected stack — the stack preset (rust-sqlx: migration guard + rust-cache CI). Start here.)
+  plumb setup-protection --repo owner/name [--branch b] [--check name ...] [--dry-run]
+                (make the plumbline gate + the repo's CI checks REQUIRED on the default branch
+                 (strict:false) and enable auto-merge — the 'blocking + auto-merge on all green' shape.
+                 Idempotent; prints what it changed. Needs GITHUB_TOKEN with repo-admin scope.)
+  plumb migration-guard [--base ref] [--dir migrations]   (fail if a new migration's version <= the
+                base branch's max — the collision guard the rust-sqlx CI job runs)
   plumb propose "<title>" [--body text] [--repo owner/name] [--lite] [--task id]
                 (intake: open the GitHub issue + scaffold openspec/changes/<slug>/ born linked;
                  --lite = plain issue, no contract folder — for trivial work)
@@ -228,16 +239,110 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
 
   // --- init: scaffold the gate into this repo (no policy/receipt needed) ---
   if (cmd === "init") {
-    for (const it of runInit(cwd)) {
+    const stackArg = arg("stack");
+    if (stackArg && !isStackId(stackArg)) {
+      console.error(`plumb init: unknown --stack "${stackArg}" (known: rust-sqlx)`);
+      return 2;
+    }
+    const forced = stackArg && isStackId(stackArg) ? stackArg : undefined;
+    const noStack = flag("no-stack");
+    const stack = noStack ? undefined : resolveStack(cwd, forced);
+    if (stack) {
+      console.error(`stack: ${stack}${forced ? " (--stack)" : " (auto-detected)"}`);
+    } else if (!noStack) {
+      console.error(`stack: none detected (core-only) — force one with --stack rust-sqlx`);
+    }
+    for (const it of runInit(cwd, { stack: forced, noStack })) {
       console.error(`  ${it.created ? "created" : "skip   "} ${it.dest}${it.note ? `  (${it.note})` : ""}`);
+    }
+    // --protect: run setup-protection inline (needs a repo + admin token).
+    if (flag("protect")) {
+      const repo = arg("repo") ?? process.env.GITHUB_REPOSITORY;
+      const token = process.env.GITHUB_TOKEN;
+      if (!repo || !token) {
+        console.error(
+          `\nplumb init --protect: needs --repo owner/name (or GITHUB_REPOSITORY) and GITHUB_TOKEN with repo-admin scope. ` +
+            `Run 'plumb setup-protection --repo owner/name' once the workflow has run.`,
+        );
+      } else {
+        try {
+          const res = await setupProtection({ repo, token, gateCheck: "plumbline" });
+          console.error(`\nprotection on ${repo}@${res.branch}:`);
+          for (const c of res.changes) console.error(`  · ${c}`);
+        } catch (e) {
+          console.error(`\nplumb init --protect: ${String(e)}`);
+        }
+      }
     }
     console.error(
       `\nplumbline initialized. Next:\n` +
         `  1. Read ${dir}/AGENTS.md (the agent guide)\n` +
         `  2. plumb receipt --write  →  fill the judgment fields  →  plumb check\n` +
-        `  3. (human) make 'plumbline' a required check + add the ANTHROPIC_API_KEY secret — steps in AGENTS.md`,
+        `  3. (human) plumb setup-protection --repo owner/name  +  add the ANTHROPIC_API_KEY secret — steps in AGENTS.md`,
     );
     return 0;
+  }
+
+  // --- setup-protection: the human-only half, via the GitHub API ---
+  // Make the gate + the repo's CI checks REQUIRED on the default branch
+  // (strict:false) and enable auto-merge — the "blocking + auto-merge on all
+  // green" shape. Idempotent; prints the diff. Needs a repo-admin token.
+  if (cmd === "setup-protection") {
+    const repo = arg("repo") ?? process.env.GITHUB_REPOSITORY;
+    const token = process.env.GITHUB_TOKEN;
+    if (!repo) {
+      console.error("plumb setup-protection: --repo owner/name is required (or set GITHUB_REPOSITORY)");
+      return 2;
+    }
+    if (!token) {
+      console.error("plumb setup-protection: GITHUB_TOKEN with repo-admin scope is required");
+      return 2;
+    }
+    // Extra required checks: --check may repeat.
+    const checks: string[] = [];
+    for (let i = 0; i < process.argv.length; i++) {
+      if (process.argv[i] === "--check" && process.argv[i + 1] && !process.argv[i + 1].startsWith("--")) {
+        checks.push(process.argv[i + 1]);
+      }
+    }
+    try {
+      const res = await setupProtection({
+        repo,
+        token,
+        branch: arg("branch"),
+        checks,
+        gateCheck: arg("gate-check", "plumbline"),
+        dryRun: flag("dry-run"),
+      });
+      console.error(`${flag("dry-run") ? "[dry-run] " : ""}protection on ${repo}@${res.branch}:`);
+      for (const c of res.changes) console.error(`  · ${c}`);
+      console.error(
+        `\nrequired checks now: [${res.requiredChecks.join(", ")}] (strict:false) · auto-merge: ${res.autoMergeEnabled ? "enabled" : "off"}`,
+      );
+    } catch (e) {
+      console.error(`plumb setup-protection: ${String(e)}`);
+      return 1;
+    }
+    return 0;
+  }
+
+  // --- migration-guard: fail a PR whose new migration collides with base ---
+  // The pure logic lives in stack.ts (checkMigrationCollision) so it's unit-
+  // testable; here we read the two file lists from git and report.
+  if (cmd === "migration-guard") {
+    if (skipGit || !baseRef) {
+      console.error("plumb migration-guard: needs git + a --base ref");
+      return 1;
+    }
+    const res = runMigrationGuard(cwd, baseRef, arg("dir", "migrations")!);
+    if (res.ok) {
+      console.error(
+        `✓ migration-guard PASS — ${res.added.length} new migration(s), all sort after base max ${res.baseMax}.`,
+      );
+      return 0;
+    }
+    for (const e of res.errors) console.error(`migration-guard ❌ ${e}`);
+    return 1;
   }
 
   // --- propose: intake — issue + OpenSpec contract folder, born linked ---

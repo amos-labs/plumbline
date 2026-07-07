@@ -1,0 +1,65 @@
+# plumbline rust-sqlx preset — a well-configured Rust CI starting point.
+# This is scaffolded by `plumb init` on a detected rust-sqlx repo (Cargo.toml +
+# migrations/ + sqlx). It is a STARTING POINT — edit or delete freely.
+#
+# What it encodes (the things we set up by hand on every repo):
+#   * Swatinem/rust-cache on every job, so a cold compile of heavy deps
+#     (arrow/parquet/sqlx macros) doesn't repeat on every PR.
+#   * Parallelized jobs (fmt / clippy / test run concurrently — NO `needs:`
+#     chain), so a lint failure doesn't hide a test failure and the wall-clock
+#     is max(job) not sum(job).
+#   * The `test` job is named `test` so it matches policy.json
+#     `ci_evidence_checks: ["test"]` — the plumbline gate corroborates the
+#     receipt against this real run.
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    # Bound by .plumbline/policy.json `ci_evidence_checks: ["test"]`: the gate
+    # corroborates the receipt against THIS check-run's real conclusion. Keep
+    # the name in sync if you rename the job.
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # SQLX_OFFLINE keeps compile-time-checked queries from needing a live DB;
+      # commit `.sqlx/` with `cargo sqlx prepare`, or drop this + add a services:
+      # postgres block if you test against a real database.
+      - run: cargo test --all-features --workspace
+        env:
+          SQLX_OFFLINE: "true"

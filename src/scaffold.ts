@@ -2,12 +2,20 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { baseDir } from "./basedir.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { detectStack, hasDockerfile, type StackId } from "./stack.js";
 
 /**
  * Agent-installable scaffolding: `plumb init` lays down everything a repo
  * needs to be gated (workflow + policy + mission + AGENTS.md + an example
  * receipt), and `plumb new` scaffolds a fresh per-PR receipt. The goal is
  * "pull it in, read AGENTS.md, go" — no reverse-engineering the receipt shape.
+ *
+ * Batteries-included (#22): the scaffolded gate workflow ships WITH the
+ * ci-evidence poll-wait wired (so the gate never races CI), and a detected (or
+ * `--stack`-forced) stack preset layers stack-specific CI — for `rust-sqlx`, a
+ * migration-version-collision guard, rust-cache + parallelized test jobs, and
+ * (if a Dockerfile is present) a cargo-chef layering hint. Correct out of the
+ * box; everything is a plain file the repo can override or delete.
  */
 
 /** Bundled templates ship in the package (`files: ["templates"]`). From the
@@ -26,9 +34,13 @@ interface InitEntry {
   dest: string;
   src?: string;
   dir?: boolean;
+  /** When set, template is read from `templates/stack/<preset>/<src>`. */
+  stack?: StackId;
+  /** Optional guard: only include this entry when the predicate holds. */
+  when?: (cwd: string) => boolean;
 }
 
-/** What `init` lays down, in order. Dirs first, then files copied from templates. */
+/** The language-agnostic core `init` lays down, in order. */
 export const INIT_PLAN: InitEntry[] = [
   { dest: "<dir>", dir: true },
   { dest: "<dir>/receipts", dir: true },
@@ -40,13 +52,64 @@ export const INIT_PLAN: InitEntry[] = [
   { dest: "<dir>/receipts/EXAMPLE.json", src: "receipt.example.json" },
 ];
 
+/** Stack-preset entries, layered on top of the core plan when a stack is
+ *  detected or forced. Everything here is opt-in/overridable — plain files. */
+export const STACK_PLANS: Record<StackId, InitEntry[]> = {
+  "rust-sqlx": [
+    { dest: ".github/workflows/ci.yml", src: "ci.yml", stack: "rust-sqlx" },
+    { dest: ".github/workflows/migration-guard.yml", src: "migration-guard.yml", stack: "rust-sqlx" },
+    {
+      dest: "Dockerfile.cargo-chef.example",
+      src: "Dockerfile.cargo-chef.example",
+      stack: "rust-sqlx",
+      when: hasDockerfile,
+    },
+  ],
+};
+
+/** Which stack `init` will apply: an explicit `--stack` wins, else auto-detect,
+ *  else none (core-only). Returns undefined only when neither applies. */
+export function resolveStack(cwd: string, requested?: StackId): StackId | undefined {
+  return requested ?? detectStack(cwd);
+}
+
+export interface InitOptions {
+  /** Force a stack preset (overrides auto-detection). */
+  stack?: StackId;
+  /** Skip stack presets entirely (core-only init). */
+  noStack?: boolean;
+}
+
+/**
+ * The scaffolded policy.json, patched for the resolved stack. For `rust-sqlx`
+ * we bind `ci_evidence_checks` to the `test` + `migration-guard` jobs the
+ * preset's workflows define, so the gate corroborates the receipt against the
+ * REAL CI run out of the box (no hand-editing to wire ci-evidence — the thing
+ * that made the gate race CI on every hand-setup repo). Pure over the template
+ * text so it's unit-testable.
+ */
+export function policyForStack(rawPolicy: string, stack: StackId | undefined): string {
+  if (!stack) return rawPolicy;
+  const policy = JSON.parse(rawPolicy) as Record<string, unknown>;
+  if (stack === "rust-sqlx") {
+    const checks = new Set<string>(Array.isArray(policy.ci_evidence_checks) ? (policy.ci_evidence_checks as string[]) : []);
+    checks.add("test");
+    checks.add("migration-guard");
+    policy.ci_evidence_checks = [...checks];
+  }
+  return `${JSON.stringify(policy, null, 2)}\n`;
+}
+
 /** Copy the bundled templates into `cwd`. Idempotent: never clobbers an
  *  existing file/dir — records it as left-as-is so re-running is safe. */
-export function runInit(cwd: string): ScaffoldItem[] {
+export function runInit(cwd: string, opts: InitOptions = {}): ScaffoldItem[] {
   const tdir = templatesDir();
   const out: ScaffoldItem[] = [];
   const dir = baseDir(cwd);
-  for (const item of INIT_PLAN) {
+  const stack = opts.noStack ? undefined : resolveStack(cwd, opts.stack);
+  const plan: InitEntry[] = [...INIT_PLAN, ...(stack ? STACK_PLANS[stack] : [])];
+  for (const item of plan) {
+    if (item.when && !item.when(cwd)) continue;
     const dest = item.dest.replace("<dir>", dir);
     const abs = join(cwd, dest);
     if (existsSync(abs)) {
@@ -58,14 +121,17 @@ export function runInit(cwd: string): ScaffoldItem[] {
       out.push({ dest, created: true });
       continue;
     }
+    const srcPath = item.stack ? join(tdir, "stack", item.stack, item.src!) : join(tdir, item.src!);
     // Templates are authored with the canonical dir; rewrite for legacy repos.
-    let content = readFileSync(join(tdir, item.src!), "utf8").replaceAll(".plumbline/", `${dir}/`);
+    let content = readFileSync(srcPath, "utf8").replaceAll(".plumbline/", `${dir}/`);
     // The shipped workflow.yml carries a "# Copy to …" hint as its first line;
     // it's already in place once init writes it, so drop that line.
     if (item.src === "workflow.yml") content = content.replace(/^# Copy to [^\n]*\n/, "");
+    // Bind the policy's ci-evidence checks to the resolved stack's CI jobs.
+    if (item.dest === "<dir>/policy.json") content = policyForStack(content, stack);
     mkdirSync(dirname(abs), { recursive: true });
     writeFileSync(abs, content);
-    out.push({ dest, created: true });
+    out.push({ dest, created: true, note: item.stack ? `${item.stack} preset` : undefined });
   }
   return out;
 }
