@@ -4055,13 +4055,32 @@ var NEVER = INVALID;
 var ValidationStepSchema = external_exports.object({
   command: external_exports.string().min(1),
   reason: external_exports.string().min(1),
-  required: external_exports.boolean()
+  required: external_exports.boolean(),
+  /**
+   * Optional stable identifier for the step. When present, execution_evidence
+   * is matched to this step by `id` (via each evidence entry's `step`) instead
+   * of by byte-matching the `command` string — so a trivial whitespace/wording
+   * diff between plan and evidence no longer reads as "no execution evidence".
+   */
+  id: external_exports.string().min(1).optional(),
+  /**
+   * Mark a step as corroborated by the `ci-evidence` gate rather than by
+   * self-reported manual evidence. A step whose `command` maps to one of the
+   * policy's `ci_evidence_checks` is auto-recognized as CI-covered even without
+   * this flag — set it explicitly to be unambiguous. CI-covered required steps
+   * may be `skipped` (or have no manual evidence) in the sandbox: the gate
+   * reads the PR's real CI run in `run` mode, so demanding manual evidence here
+   * would just be redundant bookkeeping. See AGENTS.md "receipt authoring".
+   */
+  ci_covered: external_exports.boolean().optional()
 });
 var ExecutionEvidenceSchema = external_exports.object({
   command: external_exports.string().min(1),
   status: external_exports.enum(["passed", "failed", "skipped"]),
   output_ref: external_exports.string().optional(),
-  skip_reason: external_exports.string().optional()
+  skip_reason: external_exports.string().optional(),
+  /** Optional id of the validation_plan step this evidence is for (matches ValidationStep.id). */
+  step: external_exports.string().min(1).optional()
 });
 var ReceiptSchema = external_exports.object({
   receipt_version: external_exports.literal("1.0"),
@@ -4287,12 +4306,37 @@ function commandMatchesCheck(command, check) {
   const escaped = check.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(^|\\s)${escaped}(\\s|$)`).test(command);
 }
+function normalizeCommand(s) {
+  return s.replace(/\s+/g, " ").trim();
+}
 function evidenceSatisfiesStep(evidenceCommand, stepCommand) {
-  const ev = evidenceCommand.trim();
-  const step = stepCommand.trim();
+  const ev = normalizeCommand(evidenceCommand);
+  const step = normalizeCommand(stepCommand);
   if (ev === step) return true;
   if (!ev.startsWith(step)) return false;
   return /^\s*[(#]/.test(ev.slice(step.length));
+}
+function stepIsCiCovered(step, ciEvidenceChecks) {
+  if (step.ci_covered) return true;
+  return ciEvidenceChecks.some((check) => commandMatchesCheck(step.command, check));
+}
+function findEvidenceForStep(step, evidence) {
+  if (step.id) {
+    const byId = evidence.filter((e) => e.step === step.id);
+    if (byId.length > 0) {
+      const exact = byId.find((e) => evidenceSatisfiesStep(e.command, step.command));
+      if (exact) return { evidence: exact };
+      const stepNorm = normalizeCommand(step.command);
+      const evNorm = normalizeCommand(byId[0].command);
+      return {
+        evidence: byId[0],
+        mismatch: `evidence command does not match validation_plan step <${step.id}>: plan="${stepNorm}" evidence="${evNorm}" (matched by step id)`
+      };
+    }
+  }
+  const byCommand = evidence.find((e) => evidenceSatisfiesStep(e.command, step.command));
+  if (byCommand) return { evidence: byCommand };
+  return {};
 }
 function gitChangedFiles(baseRef, cwd) {
   const out = execFileSync(
@@ -4347,8 +4391,16 @@ function shapeCheck(rawReceipt, policy, opts = {}) {
     }
   }
   for (const step of receipt.validation_plan) {
-    const ev = receipt.execution_evidence.find((e) => evidenceSatisfiesStep(e.command, step.command));
+    const ciCovered = stepIsCiCovered(step, policy.ci_evidence_checks);
+    const { evidence: ev, mismatch } = findEvidenceForStep(step, receipt.execution_evidence);
+    if (mismatch) warnings.push(mismatch);
     if (!ev) {
+      if (ciCovered) {
+        warnings.push(
+          `validation_plan step "${step.command}" is corroborated by ci-evidence \u2014 not requiring self-reported manual evidence`
+        );
+        continue;
+      }
       if (step.required) {
         findings.push({ check: "evidence_coverage", message: `no execution evidence for required step: "${step.command}"` });
       } else {
@@ -4357,6 +4409,12 @@ function shapeCheck(rawReceipt, policy, opts = {}) {
       continue;
     }
     if (step.required && ev.status !== "passed") {
+      if (ciCovered && ev.status === "skipped") {
+        warnings.push(
+          `validation_plan step "${step.command}" is skipped locally but corroborated by ci-evidence` + (ev.skip_reason ? ` (skip_reason: ${ev.skip_reason})` : "")
+        );
+        continue;
+      }
       findings.push({
         check: "evidence_coverage",
         message: `required step "${step.command}" has status "${ev.status}"${ev.skip_reason ? ` (skip_reason: ${ev.skip_reason})` : ""}`
@@ -5004,10 +5062,13 @@ var RECEIPT_FIELD_REFERENCE = [
   { field: "intent", type: "string (\u226540 chars)", required: true, note: "what + why, plain language \u2014 the semantic review reads this" },
   { field: "self_modifying", type: "boolean", required: true, allowed: ["true", "false"], note: "MUST be true if changed_files touch policy.protected_paths; touching one with false is a hard fail; true routes to human review" },
   { field: "policy_refs", type: "string[] (\u22651)", required: true, note: "policy/mission docs you read" },
-  { field: "validation_plan", type: "object[] (\u22651)", required: true, note: "each: { command, reason, required }" },
+  { field: "validation_plan", type: "object[] (\u22651)", required: true, note: "each: { command, reason, required, id?, ci_covered? }" },
   { field: "validation_plan[].required", type: "boolean", required: true, allowed: ["true", "false"], note: "is this check mandatory" },
-  { field: "execution_evidence", type: "object[] (\u22651)", required: true, note: "each: { command, status, output_ref?, skip_reason? }" },
-  { field: "execution_evidence[].status", type: "enum", required: true, allowed: ["passed", "failed", "skipped"], note: "required steps must be 'passed'; use skip_reason when 'skipped'" },
+  { field: "validation_plan[].id", type: "string", required: false, note: "optional step id; evidence is matched to it via execution_evidence[].step (robust to a command wording diff)" },
+  { field: "validation_plan[].ci_covered", type: "boolean", required: false, allowed: ["true", "false"], note: "step is corroborated by the ci-evidence gate (real CI run), not manual evidence \u2014 may be 'skipped'; also auto-recognized when command matches a policy ci_evidence_checks entry" },
+  { field: "execution_evidence", type: "object[] (\u22651)", required: true, note: "each: { command, status, output_ref?, skip_reason?, step? }" },
+  { field: "execution_evidence[].status", type: "enum", required: true, allowed: ["passed", "failed", "skipped"], note: "required steps must be 'passed' (unless CI-covered); use skip_reason when 'skipped'" },
+  { field: "execution_evidence[].step", type: "string", required: false, note: "optional id of the validation_plan step this evidence is for (matches validation_plan[].id)" },
   { field: "changed_files", type: "string[] (\u22651)", required: true, note: "set by `plumb receipt --write` \u2014 don't hand-edit" },
   { field: "diff_sha256", type: "string (64-char lowercase hex)", required: true, note: "set by `plumb receipt --write` \u2014 never hand-edit" },
   { field: "result_summary", type: "string (\u226540 chars)", required: true, note: "what changed + how it was verified" }
