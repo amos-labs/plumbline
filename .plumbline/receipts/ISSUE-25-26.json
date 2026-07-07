@@ -1,0 +1,71 @@
+{
+  "receipt_version": "1.0",
+  "task_id": "ISSUE-25-26",
+  "agent_id": "claude-opus-4-8",
+  "intent": "Implement #25 (provider abstraction for the semantic review — pluggable LLM, not Anthropic-only) and #26 (LLM cost + determinism controls) as one PR, since both touch the semantic-review path. #25: put the review LLM call behind a small ReviewProvider interface (Anthropic default, unchanged env; plus an OpenAI-compatible provider selectable via PLUMBLINE_PROVIDER + PLUMBLINE_API_BASE/KEY or policy). The prompt and approve/rework/review verdict schema stay provider-independent. #26: opt-in skip for docs/config/small diffs (protected_paths & self_modifying are a hard floor and never skip), a verdict cache keyed by diff_sha256 scoped to provider+model+prompt version, a cheaper-model tier + informational per-PR spend cap, and pinned-low temperature with provider/model/prompt-version/temperature/cache recorded in the verdict for auditability. All new controls default to off so current behavior is preserved.",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json"
+  ],
+  "validation_plan": [
+    {
+      "command": "npx tsc --noEmit",
+      "reason": "Type-check the refactored review path plus the two new modules (provider.ts, cost.ts) and the extended Policy/ReviewResult types",
+      "required": true
+    },
+    {
+      "command": "npm run build",
+      "reason": "tsc must still emit dist/cli.js (npm bin) and dist/test/ — the refactor must not break the package build",
+      "required": true
+    },
+    {
+      "command": "npm test",
+      "reason": "Full suite (policy required_check). Covers new tests: provider selection (Anthropic default + OpenAI-compatible alt), skip-for-trivial and NOT-skipped for protected/self_modifying paths, diff_sha256 cache hit/miss, and that self_modifying still can never auto-approve after the refactor",
+      "required": true
+    },
+    {
+      "command": "npm run bundle && git diff --quiet -- dist/index.js",
+      "reason": "The committed action bundle must be byte-identical to a fresh rebuild (enforced by the dist-check CI job)",
+      "required": true
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npx tsc --noEmit",
+      "status": "passed",
+      "output_ref": "exit 0, no type errors"
+    },
+    {
+      "command": "npm run build",
+      "status": "passed",
+      "output_ref": "tsc exit 0; dist/cli.js and dist/test/ emitted"
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "131 tests, 131 pass, 0 fail (108 baseline + 23 new for #25/#26)"
+    },
+    {
+      "command": "npm run bundle && git diff --quiet -- dist/index.js",
+      "status": "passed",
+      "output_ref": "bundle rebuilt (dist/index.js 214.7kb); committed bundle matches fresh rebuild"
+    }
+  ],
+  "changed_files": [
+    ".gitignore",
+    "CHANGELOG.md",
+    "README.md",
+    "dist/index.js",
+    "src/cli.ts",
+    "src/cost.ts",
+    "src/provider.ts",
+    "src/review.ts",
+    "src/test/cost.test.ts",
+    "src/test/provider.test.ts",
+    "src/types.ts",
+    "templates/policy.json"
+  ],
+  "diff_sha256": "4a474988765e511b6678b6f5b81baa768f4b463bce5de6a7ee88964f81beacc7",
+  "result_summary": "Added src/provider.ts (ReviewProvider interface + AnthropicProvider, OpenAICompatibleProvider, selectProvider/resolveProviderId driven by PLUMBLINE_PROVIDER/PLUMBLINE_API_BASE/PLUMBLINE_API_KEY with policy fallbacks) and src/cost.ts (shouldSkipReview with a hard protected/self_modifying floor, diff_sha256 verdict cache scoped to provider+model+prompt version, resolveModel cheaper-tier). Refactored src/review.ts to call the provider (prompt + verdict schema unchanged), pin temperature low, stamp PROMPT_VERSION, and return audit metadata. Extended Policy (review_provider, review_api_base, skip_review, review_cache, budget, review_temperature) and ReviewResult.audit in src/types.ts. Wired skip + cache + budget notes into src/cli.ts run/gate path. Verified by tsc --noEmit, npm run build, and the full 131-test suite (23 new tests: provider selection incl. Anthropic default + OpenAI alt and missing-key/base errors; skip-for-trivial and never-skip-protected; cache hit and provider/model/prompt/sha misses; injected-provider audit + self_modifying-never-auto-approve). Docs updated (README provider + cost-control sections, templates/policy.json, CHANGELOG, .gitignore for the cache dir). All new controls default off; Anthropic env unchanged."
+}

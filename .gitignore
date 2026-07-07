@@ -3,3 +3,7 @@ node_modules/
 dist/*
 !dist/index.js
 .env
+# Semantic-review verdict cache (opt-in, keyed by diff_sha256) — a local
+# optimization, not source of truth.
+.plumbline/cache/
+.proofgate/cache/

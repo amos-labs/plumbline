@@ -105,8 +105,71 @@ export const PolicySchema = z.object({
    * regardless of this setting.
    */
   human_review_level: z.enum(["low", "balanced", "high"]).default("balanced"),
-  /** Anthropic model used for semantic review. */
+  /** Default model used for semantic review (provider-specific model id). */
   review_model: z.string().default("claude-sonnet-4-6"),
+  /**
+   * Which LLM provider backs the semantic review. "anthropic" (default) or
+   * "openai" (any OpenAI-compatible Chat Completions endpoint). The prompt and
+   * the approve/rework/review verdict schema are provider-independent — this
+   * only swaps the transport. Env var PLUMBLINE_PROVIDER overrides this.
+   * "no lock-in on intelligence": adopters can use their own vendor or a
+   * self-hosted model.
+   */
+  review_provider: z.enum(["anthropic", "openai"]).default("anthropic"),
+  /**
+   * Optional base URL for the review provider. Required for "openai" (e.g.
+   * https://api.openai.com/v1 or a self-hosted endpoint); an optional endpoint
+   * override for "anthropic" (proxy/gateway). Env var PLUMBLINE_API_BASE
+   * overrides this.
+   */
+  review_api_base: z.string().optional(),
+  /**
+   * Cost control (issue #26) — skip the LLM review for low-risk diffs, passing
+   * on the shape gate alone. ALL OPT-IN; defaults keep review running. The
+   * hard floor is never skippable: self_modifying / protected_paths changes
+   * always get a real semantic review regardless of these flags.
+   */
+  skip_review: z
+    .object({
+      /** Skip when every changed file is documentation (.md/.rst/.txt/…). */
+      docs_only: z.boolean().default(false),
+      /** Skip when every changed file is config (.json/.yaml/.toml/…) or docs. */
+      config_only: z.boolean().default(false),
+      /** Skip when the diff is smaller than this many characters. 0 = disabled. */
+      below_diff_chars: z.number().int().min(0).default(0),
+    })
+    .default({}),
+  /**
+   * Budget / model-tier control (issue #26). All opt-in.
+   *   use_cheap_model — when true and cheap_model set, use the cheaper model.
+   *   cheap_model     — a lower-cost model id for routine reviews.
+   *   max_usd_per_pr  — optional soft spend cap per PR (0 = no cap). Informational
+   *                     ceiling recorded for audit; the gate warns if exceeded.
+   */
+  budget: z
+    .object({
+      use_cheap_model: z.boolean().default(false),
+      cheap_model: z.string().optional(),
+      max_usd_per_pr: z.number().min(0).default(0),
+    })
+    .default({}),
+  /**
+   * Verdict cache (issue #26). When enabled, an identical diff (by diff_sha256,
+   * scoped to provider+model+prompt version) reuses the prior verdict instead
+   * of re-calling the LLM. Opt-in; disabled by default.
+   */
+  review_cache: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** Directory for cache files (relative to repo root). */
+      dir: z.string().default(".plumbline/cache/review"),
+    })
+    .default({}),
+  /**
+   * Sampling temperature for the review call. Pinned LOW by default for
+   * determinism + auditability. Recorded in the review output.
+   */
+  review_temperature: z.number().min(0).max(2).default(0),
   /** Max receipt size in bytes (anti garbage-dump). */
   max_receipt_bytes: z.number().default(262144),
   /**
@@ -169,6 +232,20 @@ export interface ReviewResult {
   mission_alignment_notes: string;
   risk_notes: string;
   failure_capsule?: FailureCapsule;
+  /**
+   * Determinism/audit metadata (issue #26) — recorded so a verdict is
+   * reproducible and explainable: which provider/model produced it, at what
+   * temperature, under which prompt version, and whether it was served from
+   * cache. Optional so older/hand-built ReviewResults stay valid.
+   */
+  audit?: {
+    provider?: string;
+    model?: string;
+    prompt_version?: string;
+    temperature?: number;
+    /** True when this verdict was reused from the diff_sha256 cache. */
+    cached?: boolean;
+  };
 }
 
 export interface GateResult {

@@ -209,6 +209,57 @@ comment without failing the gate; `off` suppresses with a note.
 `protected_paths` (the `self_modifying` human-review routing) can never be downgraded —
 a policy that tries gets a warning and they stay errors. They are the point of the tool.
 
+### Choosing a review provider (no lock-in on intelligence)
+
+The semantic review is one LLM call behind a small provider interface, so you are
+not tied to one vendor. **Anthropic is the default and its env is unchanged**
+(`ANTHROPIC_API_KEY`, `PLUMBLINE_MODEL`/`PROOFGATE_MODEL`). To point the gate at any
+OpenAI-compatible endpoint (OpenAI, Azure OpenAI, Together, Groq, vLLM, Ollama's
+OpenAI shim, LM Studio, a self-hosted model, …):
+
+```bash
+export PLUMBLINE_PROVIDER=openai
+export PLUMBLINE_API_BASE=https://api.openai.com/v1   # or your self-hosted endpoint
+export PLUMBLINE_API_KEY=sk-...                        # (PROOFGATE_API_KEY also accepted)
+export PLUMBLINE_MODEL=gpt-4o-mini                     # provider-specific model id
+```
+
+Or set it in `policy.json` (`"review_provider": "openai"`, `"review_api_base": "…"`);
+the env vars override the policy. The prompt and the `approve`/`rework`/`review`
+verdict schema are identical across providers — only the transport changes.
+
+### Cost + determinism controls (opt-in)
+
+The semantic review is the differentiated value, so nothing here makes judgment optional —
+these controls reduce spend without weakening the gate, and **all default to off** (review
+runs exactly as before). Configure in `policy.json`:
+
+```jsonc
+{
+  // Skip the LLM for low-risk diffs — pass on the shape gate alone.
+  // HARD FLOOR: self_modifying / protected_paths changes are NEVER skipped.
+  "skip_review": {
+    "docs_only": true,          // every changed file is documentation
+    "config_only": true,        // every changed file is config (or docs)
+    "below_diff_chars": 0       // skip diffs smaller than N chars (0 = off)
+  },
+  // Reuse a verdict for an identical diff (by diff_sha256, scoped to
+  // provider+model+prompt version) instead of re-calling the LLM.
+  "review_cache": { "enabled": true, "dir": ".plumbline/cache/review" },
+  // Budget / model tier.
+  "budget": {
+    "use_cheap_model": true,    // use cheap_model instead of review_model
+    "cheap_model": "claude-haiku-4-5",
+    "max_usd_per_pr": 0         // informational soft cap, recorded for audit
+  },
+  // Determinism: pinned low by default; recorded in the verdict for audit.
+  "review_temperature": 0
+}
+```
+
+Every verdict records its `audit` metadata (provider, model, prompt version, temperature,
+and whether it was cache-served) so a decision is reproducible and explainable.
+
 ### Attempt history (reruns keep context)
 
 The gate updates a single PR comment in place — but a rerun no longer erases the previous
