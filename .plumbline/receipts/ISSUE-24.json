@@ -1,0 +1,91 @@
+{
+  "_help": {
+    "_note": "Allowed values + requirements per field (this _help block is ignored by the gate — keep or delete). Run `plumb schema` for the full reference.",
+    "receipt_version": "one of: 1.0 — required — schema version",
+    "task_id": "required — ticket/issue/branch id (also the receipt filename)",
+    "agent_id": "required — which agent or human did the work",
+    "intent": "required — what + why, plain language — the semantic review reads this",
+    "self_modifying": "one of: true | false — required — MUST be true if changed_files touch policy.protected_paths; touching one with false is a hard fail; true routes to human review",
+    "policy_refs": "required — policy/mission docs you read",
+    "validation_plan": "required — each: { command, reason, required }",
+    "validation_plan[].required": "one of: true | false — required — is this check mandatory",
+    "execution_evidence": "required — each: { command, status, output_ref?, skip_reason? }",
+    "execution_evidence[].status": "one of: passed | failed | skipped — required — required steps must be 'passed'; use skip_reason when 'skipped'",
+    "changed_files": "required — set by `plumb receipt --write` — don't hand-edit",
+    "diff_sha256": "required — set by `plumb receipt --write` — never hand-edit",
+    "result_summary": "required — what changed + how it was verified"
+  },
+  "receipt_version": "1.0",
+  "task_id": "ISSUE-24",
+  "agent_id": "claude-code-main",
+  "intent": "Fix issue #24: the composite GitHub Action ran `npm ci && npm run build` on every invocation, adding install/build latency and flakiness to every gated PR across every adopter repo. Ship a prebuilt, self-contained bundle (dist/index.js, deps inlined) committed to the repo, and run it directly from action.yml so the gate step starts in seconds with no runtime install/build. Add a CI dist-check job so the bundle cannot drift from source. Inputs/outputs and gate/review logic are unchanged.",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json"
+  ],
+  "validation_plan": [
+    {
+      "command": "npx tsc --noEmit",
+      "reason": "Type-check the source that feeds the bundle — the bundle can only be trusted if src/ still type-checks",
+      "required": true
+    },
+    {
+      "command": "npm run build",
+      "reason": "tsc still produces dist/cli.js (the npm bin) and dist/test/ — bundling must not break the existing package build",
+      "required": true
+    },
+    {
+      "command": "npm test",
+      "reason": "Full suite (policy required_check) — proves no behavior regression in shape/review/CLI",
+      "required": true
+    },
+    {
+      "command": "npm run bundle && git diff --quiet -- dist/index.js",
+      "reason": "The committed bundle must be byte-identical to a fresh rebuild — this is exactly what the dist-check CI job enforces",
+      "required": true
+    },
+    {
+      "command": "node dist/index.js run --receipt auto --policy .plumbline/policy.json --base origin/master",
+      "reason": "Confirms the bundled artifact parses the same CLI args as the old dist/cli.js and reaches receipt discovery — inputs/outputs unchanged",
+      "required": true
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npx tsc --noEmit",
+      "status": "passed",
+      "output_ref": "exit 0, no type errors"
+    },
+    {
+      "command": "npm run build",
+      "status": "passed",
+      "output_ref": "tsc exit 0"
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "tests 101, pass 101, fail 0"
+    },
+    {
+      "command": "npm run bundle && git diff --quiet -- dist/index.js",
+      "status": "passed",
+      "output_ref": "rebuild is byte-identical, no diff (dist-check passes)"
+    },
+    {
+      "command": "node dist/index.js run --receipt auto --policy .plumbline/policy.json --base origin/master",
+      "status": "passed",
+      "output_ref": "args parsed, reached receipt discovery identically to dist/cli.js"
+    }
+  ],
+  "changed_files": [
+    ".github/workflows/ci.yml",
+    ".gitignore",
+    "action.yml",
+    "dist/index.js",
+    "package-lock.json",
+    "package.json"
+  ],
+  "diff_sha256": "54a99cd8925d34ccd08e739cdf387854d85d3c3f944f07f0812034b74fcd16bf",
+  "result_summary": "Added esbuild bundling (`npm run bundle` -> single self-contained dist/index.js with zod inlined; `npm run package` = build + bundle). action.yml now runs `node dist/index.js run ...` directly and no longer does `npm ci`/`npm run build` at runtime; the git base-ref fetch and all inputs/outputs are unchanged. Committed dist/index.js (un-ignored; tsc output stays ignored). Added a CI dist-check job that rebuilds the bundle and fails if it drifts from src/. Verified: tsc --noEmit clean, tsc build clean, 101/101 tests pass, rebuild is byte-identical to the committed bundle, and the bundled `run` command parses args identically to the old dist/cli.js. Gate/review logic, AGENTS.md, CHANGELOG, and package version were not touched."
+}

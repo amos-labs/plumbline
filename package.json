@@ -18,6 +18,8 @@
   ],
   "scripts": {
     "build": "tsc",
+    "bundle": "esbuild src/cli.ts --bundle --platform=node --target=node20 --format=esm --legal-comments=none --outfile=dist/index.js",
+    "package": "npm run build && npm run bundle",
     "prepare": "tsc",
     "check": "tsc --noEmit",
     "test": "node --test dist/test/"
@@ -30,6 +32,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
+    "esbuild": "^0.28.1",
     "typescript": "^5.5.0"
   }
 }

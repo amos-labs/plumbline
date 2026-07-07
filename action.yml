@@ -35,19 +35,18 @@ runs:
       run: |
         git fetch origin "${{ github.base_ref }}" --depth=200 || true
 
-    - name: Build plumbline
-      shell: bash
-      working-directory: ${{ github.action_path }}
-      run: npm ci && npm run build
-
     - name: Run gate
       shell: bash
       env:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         PLUMBLINE_PR_NUMBER: ${{ github.event.pull_request.number }}
+      # Runs the committed prebuilt bundle (dist/index.js) directly — no
+      # `npm ci` / `npm run build` at runtime. The bundle is self-contained
+      # (dependencies inlined) and kept in sync with src/ by the dist-check
+      # CI job.
       run: |
-        node "${{ github.action_path }}/dist/cli.js" run \
+        node "${{ github.action_path }}/dist/index.js" run \
           --receipt "${{ inputs.receipt }}" \
           --policy "${{ inputs.policy }}" \
           --base "origin/${{ github.base_ref }}"

@@ -1,3 +1,5 @@
 node_modules/
-dist/
+# tsc output is not committed, but the bundled action artifact (dist/index.js) is.
+dist/*
+!dist/index.js
 .env
