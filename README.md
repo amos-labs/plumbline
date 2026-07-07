@@ -115,6 +115,31 @@ always need a human).
 
    **Use one receipt file per PR: `.plumbline/receipts/<task_id>.json`** (e.g. `.plumbline/receipts/ISSUE-142.json`). Because each PR writes a *different* filename, many PRs can be open at once without ever conflicting on the receipt — essential for autonomous / parallel agent work. The gate auto-discovers the receipt added in the PR's diff. The legacy single-file receipt (and the whole `.proofgate/` dir from the tool’s pre-rename era) still works for one-PR-at-a-time repos.
 
+## Pinning a version
+
+**Pin a released tag, not `@master`.** In your workflow, reference the action by a
+released major tag:
+
+```yaml
+- name: Plumbline gate
+  uses: amos-labs/plumbline@v1   # released major tag — moves forward within v1 only
+```
+
+- **`@v1`** (a moving major tag) — tracks the latest `v1.x.y` release. Recommended for
+  most consumers: you get patches and non-breaking features automatically, and a major
+  bump (`v2`) is an explicit, deliberate opt-in.
+- **`@v0.2.0`** (an exact release) — fully pinned; nothing moves until you change it.
+  Use when you want a change to be a reviewed diff in your own repo.
+- **`@master`** — *don't.* Floating on the default branch means the gate's behavior can
+  change under you with no version bump — a supply-chain risk for a security-relevant
+  check, and the reason a `@v0`-pinned consumer (cuspr) got stuck behind the
+  REVIEW/REWORK rename with no newer tag to move to. Released tags let consumers
+  (managed-platform, 2.0, protocol, cuspr) upgrade **deliberately**.
+
+Releases are cut from semver tags and carry notes from
+[CHANGELOG.md](CHANGELOG.md). See **[RELEASING.md](RELEASING.md)** for how a maintainer
+cuts a release and moves the major tag.
+
 ## CLI
 
 The complete command set, in lifecycle order:
@@ -237,4 +262,8 @@ let the middle run unattended.
 
 ## Status
 
-v0. Single-repo, GitHub Actions + Anthropic API. Planned: drift monitoring (scheduled job sampling merged work against the mission), provider abstraction (Bedrock), check-runs API instead of comments, receipt signing.
+v0.2.0 — the first release cut from a semver tag with a [CHANGELOG](CHANGELOG.md) and a
+release process ([RELEASING.md](RELEASING.md)); [pin a released tag](#pinning-a-version),
+not `@master`. Single-repo, GitHub Actions + Anthropic API. Planned: drift monitoring
+(scheduled job sampling merged work against the mission), provider abstraction (Bedrock),
+check-runs API instead of comments, receipt signing.
