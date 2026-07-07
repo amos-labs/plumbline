@@ -1,0 +1,126 @@
+{
+  "_help": {
+    "_note": "Allowed values + requirements per field (this _help block is ignored by the gate — keep or delete). Run `plumb schema` for the full reference.",
+    "receipt_version": "one of: 1.0 — required — schema version",
+    "task_id": "required — ticket/issue/branch id (also the receipt filename)",
+    "agent_id": "required — which agent or human did the work",
+    "intent": "required — what + why, plain language — the semantic review reads this",
+    "self_modifying": "one of: true | false — required — MUST be true if changed_files touch policy.protected_paths; touching one with false is a hard fail; true routes to human review",
+    "policy_refs": "required — policy/mission docs you read",
+    "validation_plan": "required — each: { command, reason, required, id?, ci_covered? }",
+    "validation_plan[].required": "one of: true | false — required — is this check mandatory",
+    "validation_plan[].id": "optional — optional step id; evidence is matched to it via execution_evidence[].step (robust to a command wording diff)",
+    "validation_plan[].ci_covered": "one of: true | false — optional — step is corroborated by the ci-evidence gate (real CI run), not manual evidence — may be 'skipped'; also auto-recognized when command matches a policy ci_evidence_checks entry",
+    "execution_evidence": "required — each: { command, status, output_ref?, skip_reason?, step? }",
+    "execution_evidence[].status": "one of: passed | failed | skipped — required — required steps must be 'passed' (unless CI-covered); use skip_reason when 'skipped'",
+    "execution_evidence[].step": "optional — optional id of the validation_plan step this evidence is for (matches validation_plan[].id)",
+    "changed_files": "required — set by `plumb receipt --write` — don't hand-edit",
+    "diff_sha256": "required — set by `plumb receipt --write` — never hand-edit",
+    "result_summary": "required — what changed + how it was verified"
+  },
+  "receipt_version": "1.0",
+  "task_id": "feat-plumb-init-batteries-included-ci",
+  "agent_id": "claude-opus-4-8",
+  "intent": "Implement issue #22 (marketplace-launch prerequisite): make `plumb init` batteries-included so a repo gets a correct-by-default governed CI in one command, and add `plumb setup-protection` to make the gate a required, blocking check with auto-merge. Extends the scaffolded gate workflow with the ci-evidence poll-wait already wired (so the gate never races CI), adds the DB-migration conventions to AGENTS.md, and adds an auto-detected `rust-sqlx` stack preset (migration-version-collision guard, rust-cache + parallelized CI, policy ci_evidence binding, cargo-chef hint). All presets are opt-in/overridable plain files.",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/AGENTS.md",
+    ".plumbline/policy.json"
+  ],
+  "validation_plan": [
+    {
+      "id": "typecheck",
+      "command": "npx tsc --noEmit",
+      "reason": "New modules (stack.ts, protection.ts) and the extended scaffold/CLI must typecheck against the existing types.",
+      "required": true
+    },
+    {
+      "id": "build",
+      "command": "npm run build",
+      "reason": "The compiled output the tests and CLI run from must build cleanly.",
+      "required": true
+    },
+    {
+      "id": "unit",
+      "command": "npm test",
+      "reason": "Unit tests for the scaffolders (poll-wait + stack presets + idempotency), stack detection, the migration-guard collision logic, and setup-protection (mocked fetch) must pass.",
+      "required": true
+    },
+    {
+      "id": "bundle",
+      "command": "npm run bundle",
+      "reason": "The Action runs the committed prebuilt dist/index.js, which must not drift from src/ (the repo's dist-check job enforces this).",
+      "required": true
+    },
+    {
+      "id": "smoke",
+      "command": "node dist/index.js init  (in a scratch Cargo.toml + migrations/ + Dockerfile repo)",
+      "reason": "End-to-end: init on a rust-sqlx repo produces the gate workflow with poll-wait, the migration guard, rust-cache CI, and a policy with ci_evidence_checks bound to the CI jobs.",
+      "required": true
+    },
+    {
+      "command": "CI: dist-check + test",
+      "reason": "The repo's CI jobs corroborate the build and dist freshness on the real runner.",
+      "required": false,
+      "ci_covered": true
+    }
+  ],
+  "execution_evidence": [
+    {
+      "step": "typecheck",
+      "command": "npx tsc --noEmit",
+      "status": "passed",
+      "output_ref": "no errors (TSC_OK)"
+    },
+    {
+      "step": "build",
+      "command": "npm run build",
+      "status": "passed",
+      "output_ref": "tsc clean, no output"
+    },
+    {
+      "step": "unit",
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "tests 155, pass 155, fail 0 (24 new for stack/protection/scaffold; rest are baseline + #25/#26 tests after rebasing onto master)"
+    },
+    {
+      "step": "bundle",
+      "command": "npm run bundle",
+      "status": "passed",
+      "output_ref": "dist/index.js rebuilt and committed (in sync with src/)"
+    },
+    {
+      "step": "smoke",
+      "command": "node dist/index.js init  (in a scratch Cargo.toml + migrations/ + Dockerfile repo)",
+      "status": "passed",
+      "output_ref": "auto-detected rust-sqlx; created plumbline.yml (poll-wait present), ci.yml, migration-guard.yml, Dockerfile.cargo-chef.example; policy ci_evidence_checks bound. migration-guard exited 1 on a colliding version, 0 on a higher one."
+    },
+    {
+      "command": "CI: dist-check + test",
+      "status": "skipped",
+      "skip_reason": "CI-covered — corroborated by the gate's ci-evidence check against the real GitHub run.",
+      "step": "ci"
+    }
+  ],
+  "changed_files": [
+    "CHANGELOG.md",
+    "README.md",
+    "dist/index.js",
+    "src/cli.ts",
+    "src/protection.ts",
+    "src/scaffold.ts",
+    "src/stack.ts",
+    "src/test/protection.test.ts",
+    "src/test/scaffold.test.ts",
+    "src/test/stack.test.ts",
+    "templates/AGENTS.md",
+    "templates/stack/rust-sqlx/Dockerfile.cargo-chef.example",
+    "templates/stack/rust-sqlx/ci.yml",
+    "templates/stack/rust-sqlx/migration-guard.yml",
+    "templates/workflow.yml"
+  ],
+  "diff_sha256": "0d5f3228c57c6429022681759cab70ce03c75a4368f046170c16c9f46b32bfc9",
+  "result_summary": "Added src/stack.ts (rust-sqlx detection + pure migration-collision logic), src/protection.ts (GitHub-API branch protection + auto-merge, idempotent), extended src/scaffold.ts (poll-wait workflow, stack presets, policy binding) and src/cli.ts (init --stack/--no-stack/--protect, setup-protection, migration-guard). New templates: gate workflow with ci-evidence poll-wait, rust-sqlx CI (rust-cache + parallelized), migration-guard workflow, cargo-chef Dockerfile hint; AGENTS.md migration conventions. README now leads with the two-command onboarding. Rebased onto master (which now carries #25/#26 provider + cost controls); both feature sets coexist. Verified via typecheck + build + 155 passing unit tests (24 new) + an end-to-end init smoke test on a scratch rust-sqlx repo and a live migration-guard collision/pass run; dist bundle regenerated and byte-current against dist-check. self_modifying:true — touches the gate workflow templates and .plumbline conventions, so REVIEW is expected."
+}
