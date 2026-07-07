@@ -1,0 +1,98 @@
+{
+  "_help": {
+    "_note": "Allowed values + requirements per field (this _help block is ignored by the gate — keep or delete). Run `plumb schema` for the full reference.",
+    "receipt_version": "one of: 1.0 — required — schema version",
+    "task_id": "required — ticket/issue/branch id (also the receipt filename)",
+    "agent_id": "required — which agent or human did the work",
+    "intent": "required — what + why, plain language — the semantic review reads this",
+    "self_modifying": "one of: true | false — required — MUST be true if changed_files touch policy.protected_paths; touching one with false is a hard fail; true routes to human review",
+    "policy_refs": "required — policy/mission docs you read",
+    "validation_plan": "required — each: { command, reason, required, id?, ci_covered? }",
+    "validation_plan[].required": "one of: true | false — required — is this check mandatory",
+    "validation_plan[].id": "optional — optional step id; evidence is matched to it via execution_evidence[].step (robust to a command wording diff)",
+    "validation_plan[].ci_covered": "one of: true | false — optional — step is corroborated by the ci-evidence gate (real CI run), not manual evidence — may be 'skipped'; also auto-recognized when command matches a policy ci_evidence_checks entry",
+    "execution_evidence": "required — each: { command, status, output_ref?, skip_reason?, step? }",
+    "execution_evidence[].status": "one of: passed | failed | skipped — required — required steps must be 'passed' (unless CI-covered); use skip_reason when 'skipped'",
+    "execution_evidence[].step": "optional — optional id of the validation_plan step this evidence is for (matches validation_plan[].id)",
+    "changed_files": "required — set by `plumb receipt --write` — don't hand-edit",
+    "diff_sha256": "required — set by `plumb receipt --write` — never hand-edit",
+    "result_summary": "required — what changed + how it was verified"
+  },
+  "receipt_version": "1.0",
+  "task_id": "harden-gate-review-31-32",
+  "agent_id": "claude-opus-4-8",
+  "intent": "Harden the gate against the REVIEW findings its own self-hosting run raised on the just-merged #31 (provider + cost controls) and #32 (batteries-included init + setup-protection). Highest severity first: (1) setup-protection must not clobber existing branch protection — it now GETs current protection and PRESERVES required_pull_request_reviews + restrictions (only ADDS the required checks / auto-merge), and refuses to write when it can't read current protection unless --force; (2) the OpenAI-compatible provider must not fall back to ANTHROPIC_API_KEY (credential-leak to a third-party endpoint) — it now requires an explicit PLUMBLINE_API_KEY and errors clearly if missing; (3) temperature is omitted by default so Anthropic models that reject an explicit temperature don't break the gate; (4) a redundant self_modifying/protected-path floor runs in cli.ts before an approve on the review-skip path; (5) a cached verdict is only served after re-confirming receipt.diff_sha256 matches the real diff; (6) poll-wait self-detection keys on the workflow run id instead of a name substring so a renamed job or another 'plumbline'-named check can't deadlock it. Plus the missing failure-mode tests the review named. The github.ts headers->headers2 diff-integrity flag was investigated and found to be a pure esbuild bundling artifact (source github.ts was not modified in #32) — documented in the PR body.",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json"
+  ],
+  "validation_plan": [
+    {
+      "command": "npx tsc --noEmit",
+      "reason": "Type-check every changed module — the reworked protection.ts (preserve logic + normalizeForPut), provider.ts/review.ts (optional temperature, no Anthropic-key fallback), cli.ts (protectedFloorHit + cache validation), and the extended Policy type (review_temperature now optional).",
+      "required": true
+    },
+    {
+      "command": "npm run build",
+      "reason": "tsc must still emit dist/cli.js (the npm bin) and dist/test/ — the hardening must not break the package build.",
+      "required": true
+    },
+    {
+      "command": "npm test",
+      "reason": "Full suite (policy required_check) incl. the new failure-mode tests: setup-protection preserves reviewers + refuses/forces on unreadable protection + strict downgrade; openai never reads/leaks the Anthropic key + missing-key error + unknown-provider error; temperature omitted-by-default and PLUMBLINE_TEMPERATURE override; protectedFloor floor from the actual diff; PLUMBLINE_MODEL/PROOFGATE_MODEL override; budget soft-cap parse; isOwnGateRun run-id self-detection; runMigrationGuard CLI path.",
+      "required": true
+    },
+    {
+      "command": "npm run bundle && git diff --quiet -- dist/index.js",
+      "reason": "The committed action bundle must be byte-identical to a fresh rebuild — the dist-check CI job enforces this, and the Action runs the prebuilt dist/index.js directly.",
+      "required": true,
+      "ci_covered": true
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npx tsc --noEmit",
+      "status": "passed",
+      "output_ref": "exit 0, no type errors"
+    },
+    {
+      "command": "npm run build",
+      "status": "passed",
+      "output_ref": "tsc exit 0; dist/cli.js and dist/test/ emitted"
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "184 tests, 184 pass, 0 fail (was 145 baseline; 39 new/hardening tests added)"
+    },
+    {
+      "command": "npm run bundle && git diff --quiet -- dist/index.js",
+      "status": "passed",
+      "output_ref": "esbuild rebuilt dist/index.js (231.4kb); committed bundle matches a fresh rebuild (git diff clean)"
+    }
+  ],
+  "changed_files": [
+    "CHANGELOG.md",
+    "README.md",
+    "dist/index.js",
+    "src/cli.ts",
+    "src/cost.ts",
+    "src/github.ts",
+    "src/protection.ts",
+    "src/provider.ts",
+    "src/review.ts",
+    "src/test/cost.test.ts",
+    "src/test/github.test.ts",
+    "src/test/protection.test.ts",
+    "src/test/provider.test.ts",
+    "src/test/review.test.ts",
+    "src/test/stack.test.ts",
+    "src/types.ts",
+    "templates/AGENTS.md",
+    "templates/policy.json",
+    "templates/workflow.yml"
+  ],
+  "diff_sha256": "e24c515d57c963e6ca8a88b849e607a505b31f93030b845d221f5dc9d8699e5b",
+  "result_summary": "protection.ts: setupProtection now GETs the current branch protection, carries required_pull_request_reviews + restrictions + enforce_admins back into the PUT via a new normalizeForPut() (down-projects the GET's expanded users/teams/apps to the login/slug arrays the PUT accepts), and refuses to write when protection is unreadable (non-200/404) unless opts.force; CLI wires --force + updated help; AGENTS.md/README/CHANGELOG document exactly what it changes and preserves. provider.ts: OpenAICompatibleProvider selection no longer reads ANTHROPIC_API_KEY (requires PLUMBLINE_API_KEY/PROOFGATE_API_KEY, error names the leak risk); CompletionRequest.temperature is optional and both providers omit it from the body when undefined. review.ts: resolveReviewTemperature (PLUMBLINE_TEMPERATURE > policy > omit); types.ts review_temperature now optional; templates/policy.json drops the hardcoded 0. cli.ts: protectedFloorHit re-checks the self_modifying/protected floor from the ACTUAL git diff before any approve on the review-skip path; cache read/write is gated on an independent recompute of diff_sha256 matching the real diff. templates/workflow.yml + github.ts isOwnGateRun: poll-wait self-detection keys on context.runId embedded in the check-run details_url (name-substring only as a last-resort fallback, timeout still bounds it). Verified by tsc --noEmit, npm run build, and 184/184 tests (39 new: protection preserve/force/strict-downgrade, provider key-leak/missing-key/unknown-provider, temperature omit+override, protectedFloor, model override, budget cap, isOwnGateRun, runMigrationGuard). github.ts headers->headers2 investigated: pure esbuild artifact (esbuild renames github.ts/ci.ts local `const headers` to avoid colliding with protection.ts's hoisted top-level `function headers` in the merged bundle scope); src/github.ts was last modified in #21, not #32 — no source change to reconcile."
+}
