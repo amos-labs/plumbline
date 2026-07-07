@@ -86,6 +86,6 @@
     "package-lock.json",
     "package.json"
   ],
-  "diff_sha256": "9979feb1fcb9bade0aeba4f3491f2513815963b754aa6c9a3cff15fe1fbdf08d",
+  "diff_sha256": "54a99cd8925d34ccd08e739cdf387854d85d3c3f944f07f0812034b74fcd16bf",
   "result_summary": "Added esbuild bundling (`npm run bundle` -> single self-contained dist/index.js with zod inlined; `npm run package` = build + bundle). action.yml now runs `node dist/index.js run ...` directly and no longer does `npm ci`/`npm run build` at runtime; the git base-ref fetch and all inputs/outputs are unchanged. Committed dist/index.js (un-ignored; tsc output stays ignored). Added a CI dist-check job that rebuilds the bundle and fails if it drifts from src/. Verified: tsc --noEmit clean, tsc build clean, 101/101 tests pass, rebuild is byte-identical to the committed bundle, and the bundled `run` command parses args identically to the old dist/cli.js. Gate/review logic, AGENTS.md, CHANGELOG, and package version were not touched."
 }
