@@ -166,10 +166,13 @@ export const PolicySchema = z.object({
     })
     .default({}),
   /**
-   * Sampling temperature for the review call. Pinned LOW by default for
-   * determinism + auditability. Recorded in the review output.
+   * Sampling temperature for the review call. OPTIONAL and OMITTED by default:
+   * some Anthropic models reject an explicit `temperature`, so the gate sends
+   * none unless you set this — the backend then uses its own (low) default.
+   * Set it (e.g. 0) to pin determinism where the model supports it. Recorded in
+   * the review audit output. Env override: PLUMBLINE_TEMPERATURE.
    */
-  review_temperature: z.number().min(0).max(2).default(0),
+  review_temperature: z.number().min(0).max(2).optional(),
   /** Max receipt size in bytes (anti garbage-dump). */
   max_receipt_bytes: z.number().default(262144),
   /**

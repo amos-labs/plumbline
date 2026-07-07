@@ -10,6 +10,35 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
 
 ## [Unreleased]
 
+### Security / Hardening
+- **`setup-protection` no longer clobbers existing branch protection.** It now
+  GETs the current protection first and PRESERVES existing
+  `required_pull_request_reviews` (required reviewers, code-owner review) and
+  `restrictions` (push allow-lists) — it only ever ADDS the required status
+  checks + enables auto-merge, and never nulls those settings. If it can't read
+  the current protection (so preserving isn't possible), it refuses to write
+  unless `--force` is passed. CLI help + AGENTS.md document exactly what changes.
+- **OpenAI-compatible provider never falls back to `ANTHROPIC_API_KEY`.**
+  Sending an Anthropic key to a third-party/self-hosted OpenAI endpoint would
+  leak that credential; the provider now requires an explicit
+  `PLUMBLINE_API_KEY` (or `PROOFGATE_API_KEY`) and errors clearly when missing.
+- **Temperature is omitted by default** (was always sent as `0`). Some Anthropic
+  models reject an explicit `temperature`; the gate now sends none unless
+  `review_temperature` (policy) or `PLUMBLINE_TEMPERATURE` (env) is set —
+  keeping determinism where the model supports it without breaking those models.
+- **Redundant protected-path / `self_modifying` floor before auto-approve.** The
+  CLI re-checks the floor (from the ACTUAL diff, not just the receipt's
+  self-report) on the review-skip path, so a bug in `shouldSkipReview` can never
+  auto-approve a protected change.
+- **Cache verdicts are validated against the real diff.** Before serving a
+  cached verdict, the CLI recomputes the diff hash and confirms it matches
+  `receipt.diff_sha256`; a mismatch is a cache miss (live review) — so a
+  stale/wrong hash can't serve a mismatched cached verdict.
+- **Robust poll-wait self-detection** in the scaffolded workflow. Self is now
+  identified by this workflow run's id (embedded in the check-run's
+  `details_url`), not a name substring — surviving a job rename and never
+  self-waiting to timeout when another check merely contains "plumbline".
+
 ### Added
 - **Provider abstraction for the semantic review (#25).** The review LLM call is
   now behind a small `ReviewProvider` interface. Anthropic stays the default with
@@ -27,8 +56,9 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
     `diff_sha256`, scoped to provider + model + prompt version).
   - `budget` — optional cheaper-model tier (`use_cheap_model` / `cheap_model`) and an
     informational per-PR spend cap (`max_usd_per_pr`).
-  - Determinism: `review_temperature` pinned to `0` by default; the verdict records
-    `audit` metadata (provider, model, prompt version, temperature, cache hit) for
+  - Determinism: `review_temperature` is optional (see Security / Hardening — now
+    omitted by default rather than pinned to `0`); the verdict records `audit`
+    metadata (provider, model, prompt version, temperature, cache hit) for
     reproducibility.
 - **Batteries-included `plumb init` + `plumb setup-protection`** (#22) — two-layer,
   correct-by-default governed-CI setup so a new repo can't land the subtly-wrong

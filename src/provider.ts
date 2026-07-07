@@ -17,10 +17,14 @@ export interface CompletionRequest {
   /** Upper bound on output tokens. */
   maxTokens: number;
   /**
-   * Sampling temperature. The gate pins this LOW for determinism/auditability;
-   * a provider must honor it when the backend supports it.
+   * Sampling temperature. OPTIONAL: when undefined the provider must OMIT it
+   * from the request entirely (not send 0). Some Anthropic models reject an
+   * explicit `temperature` and would break the gate — so the default is to send
+   * no temperature and let the backend use its own low default. Only set when
+   * the adopter explicitly configures `review_temperature` in policy (or
+   * PLUMBLINE_TEMPERATURE). Where supported, an explicit value pins determinism.
    */
-  temperature: number;
+  temperature?: number;
 }
 
 export interface ReviewProvider {
@@ -58,7 +62,9 @@ export class AnthropicProvider implements ReviewProvider {
       body: JSON.stringify({
         model: req.model,
         max_tokens: req.maxTokens,
-        temperature: req.temperature,
+        // Omit temperature unless explicitly configured — some Anthropic models
+        // reject an explicit temperature.
+        ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
         messages: [{ role: "user", content: req.prompt }],
       }),
     });
@@ -100,7 +106,8 @@ export class OpenAICompatibleProvider implements ReviewProvider {
       body: JSON.stringify({
         model: req.model,
         max_tokens: req.maxTokens,
-        temperature: req.temperature,
+        // Same policy as the Anthropic path: omit unless explicitly configured.
+        ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
         messages: [{ role: "user", content: req.prompt }],
       }),
     });
@@ -157,10 +164,16 @@ export function selectProvider(policy: Pick<Policy, "review_provider" | "review_
   }
 
   if (id === "openai") {
-    const key = sharedKey || process.env[ENV.anthropicKey];
+    // SECURITY: do NOT fall back to ANTHROPIC_API_KEY here. An OpenAI-compatible
+    // provider points at a third-party/self-hosted endpoint; sending an
+    // Anthropic key there would leak that credential to a host that has no
+    // business seeing it. Require an explicit provider key.
+    const key = sharedKey;
     if (!key) {
       throw new Error(
-        `semantic review: no API key for provider "openai" — set ${ENV.apiKey} (or ${ENV.apiKeyLegacy}).`,
+        `semantic review: no API key for provider "openai" — set ${ENV.apiKey} (or ${ENV.apiKeyLegacy}). ` +
+          `The Anthropic key (${ENV.anthropicKey}) is intentionally NOT used for a non-Anthropic ` +
+          `endpoint — that would leak your Anthropic credential to a third-party host.`,
       );
     }
     const base = process.env[ENV.apiBase] || policy.review_api_base;

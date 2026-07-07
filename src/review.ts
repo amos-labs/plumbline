@@ -95,6 +95,22 @@ export function resolveReviewModel(policy: Policy): string {
 }
 
 /**
+ * Resolve the review temperature. Env PLUMBLINE_TEMPERATURE > policy.review_temperature
+ * > undefined (OMIT). Returns undefined when nothing is configured, so the
+ * provider sends no `temperature` at all — some Anthropic models reject an
+ * explicit temperature, and the gate must not break on those. An out-of-range
+ * or non-numeric env value is ignored (falls through to policy/omit).
+ */
+export function resolveReviewTemperature(policy: Policy): number | undefined {
+  const raw = process.env.PLUMBLINE_TEMPERATURE;
+  if (raw !== undefined && raw.trim() !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0 && n <= 2) return n;
+  }
+  return policy.review_temperature;
+}
+
+/**
  * Run the semantic review. The LLM call is delegated to a `ReviewProvider`
  * (Anthropic by default, any OpenAI-compatible endpoint via config) so the
  * prompt and verdict schema stay provider-independent. Pass an explicit
@@ -110,7 +126,7 @@ export async function semanticReview(
 ): Promise<ReviewResult> {
   const prompt = buildReviewPrompt(mission, receipt, diff, policy.human_review_level);
   const model = resolveReviewModel(policy);
-  const temperature = policy.review_temperature ?? 0;
+  const temperature = resolveReviewTemperature(policy);
   const prov = provider ?? selectProvider(policy);
 
   const audit: NonNullable<ReviewResult["audit"]> = {

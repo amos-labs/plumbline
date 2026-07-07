@@ -195,6 +195,30 @@ export async function getCheckRunsForSha(repo: string, sha: string, token: strin
 }
 
 /**
+ * Poll-wait self-detection (mirrors templates/workflow.yml). Given a check-run
+ * and THIS workflow run's id, decide whether the check-run is the gate's OWN
+ * run — which the poll-wait must skip (waiting on itself would deadlock until
+ * timeout). Robust: keys on the run id embedded in the check-run's
+ * details_url/html_url (survives a job rename, and won't match an unrelated
+ * repo check that merely contains "plumbline" in its name). Falls back to a
+ * bare name match ONLY when there is no url to key on.
+ *
+ * Kept in sync with the inline script in the scaffolded workflow so the logic
+ * is unit-testable here.
+ */
+export function isOwnGateRun(
+  run: { name?: string; details_url?: string | null; html_url?: string | null },
+  runId: string,
+): boolean {
+  const url = run.details_url || run.html_url || "";
+  if (url) {
+    return url.includes(`/runs/${runId}/`) || url.endsWith(`/runs/${runId}`);
+  }
+  const n = (run.name || "").toLowerCase();
+  return n === "plumbline" || n === "gate";
+}
+
+/**
  * Pure decision (no network): every required check-run name must have at least
  * one run that CONCLUDED `success` for the commit. A re-run that later succeeds
  * counts. Missing or not-passed → error. Kept pure so it's unit-testable.

@@ -8,6 +8,7 @@ import {
   readReviewCache,
   writeReviewCache,
   resolveModel,
+  protectedFloor,
 } from "../cost.js";
 import { PolicySchema, type Policy, type Receipt, type ReviewResult } from "../types.js";
 import { semanticReview, PROMPT_VERSION } from "../review.js";
@@ -116,6 +117,53 @@ test("resolveModel: uses review_model by default", () => {
 test("resolveModel: uses cheap_model when budget.use_cheap_model", () => {
   const p = policy({ review_model: "big", budget: { use_cheap_model: true, cheap_model: "cheap" } });
   assert.equal(resolveModel(p), "cheap");
+});
+
+test("resolveModel: use_cheap_model without a cheap_model set falls back to review_model", () => {
+  const p = policy({ review_model: "big", budget: { use_cheap_model: true } });
+  assert.equal(resolveModel(p), "big");
+});
+
+// --- budget soft-cap parses and is available (#8) ---
+
+test("policy: budget.max_usd_per_pr soft cap parses (0 default = no cap)", () => {
+  assert.equal(policy().budget.max_usd_per_pr, 0);
+  assert.equal(policy({ budget: { max_usd_per_pr: 2.5 } }).budget.max_usd_per_pr, 2.5);
+});
+
+// --- redundant protected floor (#4) ---
+
+test("protectedFloor: self_modifying receipt always hits the floor", () => {
+  const hit = protectedFloor(receipt({ self_modifying: true, changed_files: ["README.md"] }), policy(), []);
+  assert.match(String(hit), /self_modifying/);
+});
+
+test("protectedFloor: a protected file in the ACTUAL diff hits, even if the receipt hid it", () => {
+  // Receipt self-reports only a benign file; the real diff touches a protected path.
+  const hit = protectedFloor(
+    receipt({ self_modifying: false, changed_files: ["README.md"] }),
+    policy({ protected_paths: ["src/**"] }),
+    ["src/cli.ts"],
+  );
+  assert.match(String(hit), /src\/cli\.ts.*src\/\*\*/);
+});
+
+test("protectedFloor: a protected file declared in the receipt hits too", () => {
+  const hit = protectedFloor(
+    receipt({ self_modifying: false, changed_files: ["src/shape.ts"] }),
+    policy({ protected_paths: ["src/**"] }),
+    [],
+  );
+  assert.match(String(hit), /src\/shape\.ts/);
+});
+
+test("protectedFloor: ordinary change returns null (no floor)", () => {
+  const hit = protectedFloor(
+    receipt({ self_modifying: false, changed_files: ["README.md"] }),
+    policy({ protected_paths: ["src/**"] }),
+    ["docs/x.md"],
+  );
+  assert.equal(hit, null);
 });
 
 // --- cache ---

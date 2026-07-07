@@ -26,9 +26,19 @@ jobs:
       # receipt against the PR's REAL check-runs (ci_evidence_checks in
       # policy.json), so it must run AFTER those checks reach a terminal
       # conclusion — otherwise it reads "still queued" and false-fails. This
-      # step blocks until every OTHER check-run on the head commit completes
-      # (it ignores itself), up to a generous, configurable timeout
-      # (repo/org variable PLUMBLINE_POLL_TIMEOUT_SECONDS, default 900s).
+      # step blocks until every OTHER check-run on the head commit completes,
+      # up to a generous, configurable timeout (repo/org variable
+      # PLUMBLINE_POLL_TIMEOUT_SECONDS, default 900s).
+      #
+      # SELF-DETECTION (must be robust): the ONLY check-run we must exclude is
+      # our own gate — waiting on ourselves would deadlock until timeout. We
+      # identify self by RUN ID, not by name: this workflow run is
+      # context.runId, and our own check-runs' details_url/html_url embeds
+      # `/actions/runs/<runId>/`. That survives a job rename and won't wrongly
+      # match some unrelated repo check that merely has "plumbline" in its name.
+      # A bare-name match is used ONLY as a last resort when there's no url to
+      # key on. And regardless: the timeout guarantees we can never wait
+      # forever — a mis-detection degrades to "proceed", never to a hang.
       - name: Wait for CI checks to finish
         uses: actions/github-script@v7
         with:
@@ -37,9 +47,20 @@ jobs:
             const timeoutMs = Number('${{ vars.PLUMBLINE_POLL_TIMEOUT_SECONDS || 900 }}') * 1000;
             const intervalMs = 15000;
             const deadline = Date.now() + timeoutMs;
-            const isSelf = (r) =>
-              r.name === "gate" || r.name === "plumbline" ||
-              (r.name || "").toLowerCase().includes("plumbline");
+            const runId = String(context.runId);
+            const belongsToThisRun = (r) => {
+              const url = r.details_url || r.html_url || "";
+              return url.includes(`/runs/${runId}/`) || url.endsWith(`/runs/${runId}`);
+            };
+            const isSelf = (r) => {
+              if (belongsToThisRun(r)) return true;
+              // Fallback ONLY when there's no url to key on — never let a bare
+              // name match hide another run's check we should wait on.
+              const url = r.details_url || r.html_url || "";
+              if (url) return false;
+              const n = (r.name || "").toLowerCase();
+              return n === "plumbline" || n === "gate";
+            };
             for (;;) {
               const { data } = await github.rest.checks.listForRef({
                 owner: context.repo.owner, repo: context.repo.repo, ref: sha, per_page: 100,

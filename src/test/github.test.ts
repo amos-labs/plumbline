@@ -1,7 +1,49 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { renderComment, renderCiSummary } from "../github.js";
+import { renderComment, renderCiSummary, isOwnGateRun } from "../github.js";
 import type { GateResult } from "../types.js";
+
+// --- poll-wait self-detection (#6) — mirrors templates/workflow.yml ---
+
+const RUN_ID = "12345";
+
+test("isOwnGateRun: matches by run id in details_url (survives a job rename)", () => {
+  assert.equal(
+    isOwnGateRun(
+      { name: "some-renamed-job", details_url: `https://github.com/o/r/actions/runs/${RUN_ID}/job/99` },
+      RUN_ID,
+    ),
+    true,
+  );
+});
+
+test("isOwnGateRun: a 'plumbline'-named check from a DIFFERENT run is NOT self (no deadlock)", () => {
+  assert.equal(
+    isOwnGateRun(
+      { name: "plumbline-extra", details_url: `https://github.com/o/r/actions/runs/99999/job/1` },
+      RUN_ID,
+    ),
+    false,
+  );
+});
+
+test("isOwnGateRun: an unrelated CI check is not self", () => {
+  assert.equal(
+    isOwnGateRun({ name: "test", details_url: `https://github.com/o/r/actions/runs/77/job/2` }, RUN_ID),
+    false,
+  );
+});
+
+test("isOwnGateRun: name fallback ONLY when there is no url to key on", () => {
+  assert.equal(isOwnGateRun({ name: "plumbline", details_url: null, html_url: null }, RUN_ID), true);
+  assert.equal(isOwnGateRun({ name: "gate", details_url: null }, RUN_ID), true);
+  assert.equal(isOwnGateRun({ name: "test" }, RUN_ID), false);
+  // With a url present, the bare-name fallback is NOT used (avoids false self).
+  assert.equal(
+    isOwnGateRun({ name: "plumbline", details_url: `https://github.com/o/r/actions/runs/88/job/3` }, RUN_ID),
+    false,
+  );
+});
 
 function reviewResult(opts: { agent: string[]; human: string[] }): GateResult {
   return {

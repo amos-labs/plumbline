@@ -2,7 +2,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { PolicySchema, type GateResult, type Policy, type Verdict } from "./types.js";
+import { PolicySchema, type GateResult, type Policy, type Receipt, type Verdict } from "./types.js";
 import {
   shapeCheck,
   computeDiffSha256,
@@ -12,7 +12,7 @@ import {
 } from "./shape.js";
 import { semanticReview, resolveReviewModel, PROMPT_VERSION } from "./review.js";
 import { selectProvider } from "./provider.js";
-import { shouldSkipReview, readReviewCache, writeReviewCache } from "./cost.js";
+import { shouldSkipReview, readReviewCache, writeReviewCache, protectedFloor } from "./cost.js";
 import { renderComment, renderCiSummary, verifyCiEvidence } from "./github.js";
 import { detectCi, reportToCi } from "./ci.js";
 import { pickReceipt, type ReceiptCandidate } from "./receipt-select.js";
@@ -46,6 +46,30 @@ function getDiff(baseRef: string, cwd: string): string {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
+}
+
+/**
+ * Redundant protected-path / self_modifying floor for the skip path. Reads the
+ * ACTUAL changed files from git (best-effort) so the floor isn't only trusting
+ * the receipt's self-report, then delegates to the pure `protectedFloor`.
+ * Returns a reason string when review MUST be enforced, else null.
+ */
+function protectedFloorHit(
+  receipt: Receipt,
+  policy: Policy,
+  baseRef: string | undefined,
+  cwd: string,
+  skipGit: boolean,
+): string | null {
+  let actual: string[] = [];
+  if (!skipGit && baseRef) {
+    try {
+      actual = gitChangedFiles(baseRef, cwd).filter((f) => !isReceiptPath(f));
+    } catch {
+      /* git unavailable — fall back to receipt-declared files only */
+    }
+  }
+  return protectedFloor(receipt, policy, actual);
 }
 
 /**
@@ -198,10 +222,13 @@ usage:
   plumb init    [--stack rust-sqlx] [--no-stack] [--protect]   (scaffold the governed CI into this
                 repo: gate workflow WITH ci-evidence poll-wait + .plumbline/ + AGENTS.md, and — on a
                 detected stack — the stack preset (rust-sqlx: migration guard + rust-cache CI). Start here.)
-  plumb setup-protection --repo owner/name [--branch b] [--check name ...] [--dry-run]
+  plumb setup-protection --repo owner/name [--branch b] [--check name ...] [--dry-run] [--force]
                 (make the plumbline gate + the repo's CI checks REQUIRED on the default branch
                  (strict:false) and enable auto-merge — the 'blocking + auto-merge on all green' shape.
-                 Idempotent; prints what it changed. Needs GITHUB_TOKEN with repo-admin scope.)
+                 NON-DESTRUCTIVE: reads current protection first and PRESERVES existing required
+                 reviewers + push restrictions (only ADDS checks; never nulls them). Refuses to write
+                 if it can't read current protection — pass --force to override. Idempotent; prints
+                 what it changed. Needs GITHUB_TOKEN with repo-admin scope.)
   plumb migration-guard [--base ref] [--dir migrations]   (fail if a new migration's version <= the
                 base branch's max — the collision guard the rust-sqlx CI job runs)
   plumb propose "<title>" [--body text] [--repo owner/name] [--lite] [--task id]
@@ -313,6 +340,7 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
         checks,
         gateCheck: arg("gate-check", "plumbline"),
         dryRun: flag("dry-run"),
+        force: flag("force"),
       });
       console.error(`${flag("dry-run") ? "[dry-run] " : ""}protection on ${repo}@${res.branch}:`);
       for (const c of res.changes) console.error(`  · ${c}`);
@@ -714,7 +742,19 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
     // self_modifying / protected-path changes (hard floor). Opt-in; default
     // config skips nothing.
     const skip = shouldSkipReview(receipt, policy, diff);
-    if (skip.skip) {
+    // Redundant hard floor, defense-in-depth: a bug in shouldSkipReview must
+    // NEVER let a self_modifying / protected-path change auto-approve on the
+    // skip path. Recompute the floor here from the receipt + the ACTUAL diff's
+    // changed files (not just the receipt's self-report) and refuse to skip.
+    const floorHit = protectedFloorHit(receipt, policy, baseRef, cwd, skipGit);
+    if (skip.skip && floorHit) {
+      console.error(
+        `semantic review: skip DENIED by protected floor (${floorHit}) — a self_modifying/protected ` +
+          `change never skips review, regardless of skip_review config.`,
+      );
+      gate.reasons.push(`Semantic review floor: ${floorHit} — skip denied, review enforced.`);
+    }
+    if (skip.skip && !floorHit) {
       console.error(`semantic review: SKIPPED (${skip.reason}) — shape gate stands as the verdict`);
       gate.reasons.push(`Semantic review skipped: ${skip.reason} (shape gate passed).`);
       // Shape passed and review was intentionally skipped → approve on shape.
@@ -740,10 +780,33 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
       const model = resolveReviewModel(policy);
       let review: Awaited<ReturnType<typeof semanticReview>> | null = null;
 
+      // Cache validation: only trust the cache key when receipt.diff_sha256
+      // actually matches the current diff. The shape gate's diff_integrity check
+      // normally guarantees this, but it's downgradable via check_severity — so
+      // recompute independently here. A mismatch → treat as a cache MISS (run a
+      // live review) rather than serve a verdict keyed on a stale/wrong hash.
+      let cacheKeyValid = false;
       if (policy.review_cache.enabled && !skipGit && receipt.diff_sha256) {
+        try {
+          const actualSha = computeDiffSha256(gitDiffExcludingReceipt(baseRef, cwd));
+          cacheKeyValid = actualSha === receipt.diff_sha256;
+          if (!cacheKeyValid) {
+            console.error(
+              `semantic review: cache lookup SKIPPED — receipt.diff_sha256 ` +
+                `(${receipt.diff_sha256.slice(0, 12)}…) != actual diff (${actualSha.slice(0, 12)}…); ` +
+                `running a live review to avoid serving a mismatched cached verdict.`,
+            );
+          }
+        } catch {
+          // Can't recompute the hash → don't trust the cache; run live.
+          cacheKeyValid = false;
+        }
+      }
+
+      if (cacheKeyValid) {
         const hit = readReviewCache(
           cacheDir,
-          receipt.diff_sha256,
+          receipt.diff_sha256!,
           provider.id,
           model,
           PROMPT_VERSION,
@@ -759,7 +822,9 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
 
       if (!review) {
         review = await semanticReview(mission, receipt, diff, policy, provider);
-        if (policy.review_cache.enabled && !skipGit && receipt.diff_sha256) {
+        // Only persist under a key we verified matches the actual diff — never
+        // write a verdict under a stale/wrong diff_sha256.
+        if (policy.review_cache.enabled && !skipGit && receipt.diff_sha256 && cacheKeyValid) {
           writeReviewCache(
             cacheDir,
             receipt.diff_sha256,
