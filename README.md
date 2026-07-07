@@ -14,18 +14,48 @@ Extracted from the [AMOS](https://github.com/amos-labs) proof-carrying autonomou
 
 Every stage stands alone; none requires the previous one.
 
-1. **Gate-only (5 minutes).** `plumb init`, make `plumbline` a required check, agents ship receipts via `plumb receipt --write`. You get the proof half: every PR hash-bound to a receipt, judged against your mission.
+1. **Gate-only (5 minutes).** `plumb init` scaffolds a **correct-by-default** governed CI (the gate workflow with the ci-evidence poll-wait already wired, `.plumbline/` policy + mission + `AGENTS.md`, and — on a detected stack — a stack preset), then `plumb setup-protection --repo owner/name` makes the gate a required, blocking check with auto-merge in one command. Agents ship receipts via `plumb receipt --write`. You get the proof half: every PR hash-bound to a receipt, judged against your mission.
 2. **The full loop.** `propose → work → receipt --write → check → gate → archive` — intake contracts, proof, and living specs, one tool end to end.
 3. **Bring your OpenSpec.** Already spec-driven? Your `openspec/changes/` folders are the contract: `plumb receipt --write` binds the diff to them and `plumb archive` applies your deltas to `openspec/specs/` — no workflow change.
 
 ## Quick start (agent-installable)
 
-One command scaffolds the workflow, policy, mission, an example receipt, and an
-**`AGENTS.md`** that tells an AI agent exactly how to satisfy the gate:
+**Recommended onboarding — two commands set up the whole governed CI correctly:**
 
 ```bash
-npx github:amos-labs/plumbline init   # scaffold .github/workflows + .plumbline/ + AGENTS.md
+# 1. Scaffold a correct-by-default governed CI. On a Cargo.toml + migrations/ + sqlx
+#    repo this auto-detects the `rust-sqlx` preset; force one with --stack, or skip
+#    presets with --no-stack.
+npx github:amos-labs/plumbline init
+
+# 2. Make the gate + CI checks REQUIRED and blocking on the default branch, and turn
+#    on auto-merge — the "blocking + auto-merge on all green" shape. Idempotent.
+GITHUB_TOKEN=<repo-admin token> npx github:amos-labs/plumbline setup-protection --repo owner/name
+#    (or fold it into step 1: `plumb init --protect --repo owner/name`)
 ```
+
+`init` lays down, **correct out of the box, no hand-editing**:
+
+- **`.github/workflows/plumbline.yml`** — the gate, WITH the **ci-evidence poll-wait
+  already wired** so the gate waits for the repo's CI checks to reach a terminal
+  conclusion before it evaluates (it never races CI). Poll timeout is configurable
+  via the repo/org variable `PLUMBLINE_POLL_TIMEOUT_SECONDS` (default 900s).
+- **`.plumbline/`** — `policy.json`, `MISSION.md`, and an **`AGENTS.md`** that tells an
+  AI agent exactly how to satisfy the gate (including the migration + receipt-authoring
+  conventions, so agents don't fight the gate on CI bookkeeping), plus an example receipt.
+- **Stack preset (auto-detected or `--stack`).** On a **`rust-sqlx`** repo (Cargo.toml +
+  `migrations/` + sqlx): a **migration-version-collision guard** (fails a PR whose new
+  migration version ≤ the base branch's max), **rust-cache** + **parallelized** test jobs
+  (no `needs:` chain), the policy's `ci_evidence_checks` pre-bound to those jobs, and —
+  if a `Dockerfile` is present — a **cargo-chef** layering + `cache-to mode=max` hint (the
+  thing that makes warm deploys fast). Everything is a plain file you can edit or delete —
+  presets are a starting point, not a lock-in.
+
+`setup-protection` makes the `plumbline` gate + the repo's CI checks required status
+checks on the default branch (`strict:false`) and enables auto-merge — the misconfiguration
+that a hand-build reliably gets subtly wrong (gate not actually required, so the gate is an
+advisory comment rather than a block). It's idempotent and prints exactly what it changed;
+needs a token with repo-admin (`admin:org` / `repo`) scope.
 
 Then the full lifecycle — **propose → work → prove → gate → archive** — starts at intake:
 
@@ -145,7 +175,16 @@ cuts a release and moves the major tag.
 The complete command set, in lifecycle order:
 
 ```bash
-plumb init             # scaffold the gate into a repo: workflow + .plumbline/ + AGENTS.md — start here
+plumb init             # scaffold a correct-by-default governed CI: gate workflow (WITH ci-evidence
+                       #   poll-wait) + .plumbline/ + AGENTS.md, and on a detected stack the stack preset
+                       #   ([--stack rust-sqlx] to force, [--no-stack] to skip, [--protect] to also run
+                       #   setup-protection) — start here
+plumb setup-protection # make the gate + CI checks REQUIRED (strict:false) on the default branch + enable
+  --repo owner/name    #   auto-merge — the "blocking + auto-merge on all green" shape. Idempotent; prints
+                       #   what it changed. Needs GITHUB_TOKEN with repo-admin scope. [--check name] repeats
+                       #   for extra required checks; [--branch b]; [--dry-run]
+plumb migration-guard  # (rust-sqlx) fail if a new migration's version <= the base branch's max — the
+                       #   collision guard the scaffolded migration-guard.yml job runs [--base ref] [--dir]
 plumb propose "<ask>"  # intake: GitHub issue + openspec/changes/<slug>/ contract folder, born linked
                        #   (--lite = plain issue, no folder — typo-fix-grade work)
 plumb receipt --write  # one idempotent step: scaffold or refresh the per-PR receipt's mechanical fields

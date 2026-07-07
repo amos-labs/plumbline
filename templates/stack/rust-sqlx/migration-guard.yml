@@ -1,0 +1,32 @@
+# plumbline rust-sqlx preset — migration-version-collision guard.
+# Scaffolded by `plumb init` on a detected rust-sqlx repo. Fails a PR whose new
+# migration's version is <= the max version already on the base branch — so two
+# parallel branches can never merge migrations that sqlx would order ambiguously
+# (or land a lower version AFTER a higher one already applied in prod).
+#
+# The rule: a new migration MUST sort strictly after everything already merged.
+# Create migrations with a full UTC timestamp so parallel branches don't collide:
+#   sqlx migrate add -r <name>        # or: date -u +%Y%m%d%H%M%S
+name: migration-guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  migration-guard:
+    name: migration-guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Guard against migration-version collisions
+        run: npx --yes plumbline migration-guard --base "origin/${{ github.base_ref }}"

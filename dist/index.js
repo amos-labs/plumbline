@@ -6,9 +6,9 @@ var __export = (target, all) => {
 };
 
 // src/cli.ts
-import { execFileSync as execFileSync4 } from "node:child_process";
-import { readFileSync as readFileSync5, writeFileSync as writeFileSync5, existsSync as existsSync6, mkdirSync as mkdirSync5 } from "node:fs";
-import { join as join6, dirname as dirname4 } from "node:path";
+import { execFileSync as execFileSync5 } from "node:child_process";
+import { readFileSync as readFileSync6, writeFileSync as writeFileSync5, existsSync as existsSync7, mkdirSync as mkdirSync5 } from "node:fs";
+import { join as join7, dirname as dirname4 } from "node:path";
 
 // node_modules/zod/v3/external.js
 var external_exports = {};
@@ -5070,12 +5070,12 @@ ${b}`).join("\n\n") + `
 }
 async function postPrComment(repo, prNumber, body, token) {
   const api = `https://api.github.com/repos/${repo}/issues/${prNumber}/comments`;
-  const headers = {
+  const headers2 = {
     authorization: `Bearer ${token}`,
     accept: "application/vnd.github+json",
     "content-type": "application/json"
   };
-  const list = await fetch(`${api}?per_page=100`, { headers });
+  const list = await fetch(`${api}?per_page=100`, { headers: headers2 });
   if (list.ok) {
     const comments = await list.json();
     const mine = comments.find(
@@ -5085,12 +5085,12 @@ async function postPrComment(repo, prNumber, body, token) {
       const merged = appendAttemptHistory(body, mine.body);
       const upd = await fetch(
         `https://api.github.com/repos/${repo}/issues/comments/${mine.id}`,
-        { method: "PATCH", headers, body: JSON.stringify({ body: merged }) }
+        { method: "PATCH", headers: headers2, body: JSON.stringify({ body: merged }) }
       );
       if (upd.ok) return;
     }
   }
-  const res = await fetch(api, { method: "POST", headers, body: JSON.stringify({ body }) });
+  const res = await fetch(api, { method: "POST", headers: headers2, body: JSON.stringify({ body }) });
   if (!res.ok) {
     throw new Error(`failed to post PR comment: ${res.status} ${await res.text()}`);
   }
@@ -5149,12 +5149,12 @@ async function postAzureComment(prId, body, approved) {
     );
   }
   const base = `${collection}${encodeURIComponent(project)}/_apis/git/repositories/${repoId}/pullRequests/${prId}/threads`;
-  const headers = {
+  const headers2 = {
     authorization: `Bearer ${token}`,
     "content-type": "application/json"
   };
   const status = approved ? 2 : 1;
-  const list = await fetch(`${base}?api-version=7.1`, { headers });
+  const list = await fetch(`${base}?api-version=7.1`, { headers: headers2 });
   if (list.ok) {
     const data = await list.json();
     const mine = data.value.find(
@@ -5164,12 +5164,12 @@ async function postAzureComment(prId, body, approved) {
       const commentId = mine.comments[0].id;
       await fetch(`${base}/${mine.id}/comments/${commentId}?api-version=7.1`, {
         method: "PATCH",
-        headers,
+        headers: headers2,
         body: JSON.stringify({ content: body })
       });
       await fetch(`${base}/${mine.id}?api-version=7.1`, {
         method: "PATCH",
-        headers,
+        headers: headers2,
         body: JSON.stringify({ status })
       });
       return;
@@ -5177,7 +5177,7 @@ async function postAzureComment(prId, body, approved) {
   }
   const res = await fetch(`${base}?api-version=7.1`, {
     method: "POST",
-    headers,
+    headers: headers2,
     body: JSON.stringify({
       comments: [{ parentCommentId: 0, content: body, commentType: 1 }],
       status
@@ -5228,7 +5228,7 @@ function pickReceipt(candidates, ctx) {
 
 // src/scaffold.ts
 import { fileURLToPath } from "node:url";
-import { dirname as dirname2, join as join3 } from "node:path";
+import { dirname as dirname2, join as join4 } from "node:path";
 
 // src/basedir.ts
 import { existsSync as existsSync2 } from "node:fs";
@@ -5253,9 +5253,89 @@ function resolveDualPath(cwd, path) {
 }
 
 // src/scaffold.ts
-import { existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync3, writeFileSync as writeFileSync2 } from "node:fs";
+
+// src/stack.ts
+import { existsSync as existsSync3, readFileSync as readFileSync2, readdirSync } from "node:fs";
+import { execFileSync as execFileSync2 } from "node:child_process";
+import { join as join3 } from "node:path";
+var KNOWN_STACKS = ["rust-sqlx"];
+function isStackId(s) {
+  return KNOWN_STACKS.includes(s);
+}
+function detectStack(cwd) {
+  const cargo = join3(cwd, "Cargo.toml");
+  if (!existsSync3(cargo)) return void 0;
+  const hasMigrations = existsSync3(join3(cwd, "migrations"));
+  if (!hasMigrations) return void 0;
+  let usesSqlx = false;
+  try {
+    if (/(^|\n)\s*sqlx\b/.test(readFileSync2(cargo, "utf8"))) usesSqlx = true;
+  } catch {
+  }
+  if (!usesSqlx) {
+    const lock = join3(cwd, "Cargo.lock");
+    try {
+      if (existsSync3(lock) && /name = "sqlx"/.test(readFileSync2(lock, "utf8"))) usesSqlx = true;
+    } catch {
+    }
+  }
+  return usesSqlx ? "rust-sqlx" : void 0;
+}
+function hasDockerfile(cwd) {
+  return existsSync3(join3(cwd, "Dockerfile"));
+}
+function migrationVersion(filename) {
+  const base = filename.replace(/^.*\//, "");
+  const m = base.match(/^(\d+)_/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isSafeInteger(n) ? n : null;
+}
+function maxMigrationVersion(files) {
+  let max = 0;
+  for (const f of files) {
+    const v = migrationVersion(f);
+    if (v !== null && v > max) max = v;
+  }
+  return max;
+}
+function checkMigrationCollision(addedFiles, baseFiles) {
+  const baseMax = maxMigrationVersion(baseFiles);
+  const errors = [];
+  const added = [];
+  for (const f of addedFiles) {
+    const v = migrationVersion(f);
+    if (v === null) continue;
+    added.push(v);
+    if (v <= baseMax) {
+      errors.push(
+        `migration "${f.replace(/^.*\//, "")}" has version ${v} <= base branch max ${baseMax}. A new migration must sort strictly AFTER everything already merged \u2014 rename it with a fresh full-timestamp version (e.g. \`date -u +%Y%m%d%H%M%S\`) so parallel branches never collide.`
+      );
+    }
+  }
+  return { ok: errors.length === 0, errors, added, baseMax };
+}
+function runMigrationGuard(cwd, baseRef, migrationsDir = "migrations") {
+  const git = (args) => execFileSync2("git", args, { cwd, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+  let baseFiles = [];
+  try {
+    baseFiles = git(["ls-tree", "-r", "--name-only", baseRef, "--", migrationsDir]).split("\n").map((l) => l.trim()).filter(Boolean);
+  } catch {
+    baseFiles = [];
+  }
+  let added = [];
+  try {
+    added = git(["diff", "--name-only", "--diff-filter=A", `${baseRef}...HEAD`, "--", migrationsDir]).split("\n").map((l) => l.trim()).filter(Boolean);
+  } catch {
+    added = [];
+  }
+  return checkMigrationCollision(added, baseFiles);
+}
+
+// src/scaffold.ts
 function templatesDir() {
-  return join3(dirname2(fileURLToPath(import.meta.url)), "..", "templates");
+  return join4(dirname2(fileURLToPath(import.meta.url)), "..", "templates");
 }
 var INIT_PLAN = [
   { dest: "<dir>", dir: true },
@@ -5267,14 +5347,44 @@ var INIT_PLAN = [
   { dest: "<dir>/AGENTS.md", src: "AGENTS.md" },
   { dest: "<dir>/receipts/EXAMPLE.json", src: "receipt.example.json" }
 ];
-function runInit(cwd) {
+var STACK_PLANS = {
+  "rust-sqlx": [
+    { dest: ".github/workflows/ci.yml", src: "ci.yml", stack: "rust-sqlx" },
+    { dest: ".github/workflows/migration-guard.yml", src: "migration-guard.yml", stack: "rust-sqlx" },
+    {
+      dest: "Dockerfile.cargo-chef.example",
+      src: "Dockerfile.cargo-chef.example",
+      stack: "rust-sqlx",
+      when: hasDockerfile
+    }
+  ]
+};
+function resolveStack(cwd, requested) {
+  return requested ?? detectStack(cwd);
+}
+function policyForStack(rawPolicy, stack) {
+  if (!stack) return rawPolicy;
+  const policy = JSON.parse(rawPolicy);
+  if (stack === "rust-sqlx") {
+    const checks = new Set(Array.isArray(policy.ci_evidence_checks) ? policy.ci_evidence_checks : []);
+    checks.add("test");
+    checks.add("migration-guard");
+    policy.ci_evidence_checks = [...checks];
+  }
+  return `${JSON.stringify(policy, null, 2)}
+`;
+}
+function runInit(cwd, opts = {}) {
   const tdir = templatesDir();
   const out = [];
   const dir = baseDir(cwd);
-  for (const item of INIT_PLAN) {
+  const stack = opts.noStack ? void 0 : resolveStack(cwd, opts.stack);
+  const plan = [...INIT_PLAN, ...stack ? STACK_PLANS[stack] : []];
+  for (const item of plan) {
+    if (item.when && !item.when(cwd)) continue;
     const dest = item.dest.replace("<dir>", dir);
-    const abs = join3(cwd, dest);
-    if (existsSync3(abs)) {
+    const abs = join4(cwd, dest);
+    if (existsSync4(abs)) {
       out.push({ dest, created: false, note: "exists \u2014 left as-is" });
       continue;
     }
@@ -5283,11 +5393,13 @@ function runInit(cwd) {
       out.push({ dest, created: true });
       continue;
     }
-    let content = readFileSync2(join3(tdir, item.src), "utf8").replaceAll(".plumbline/", `${dir}/`);
+    const srcPath = item.stack ? join4(tdir, "stack", item.stack, item.src) : join4(tdir, item.src);
+    let content = readFileSync3(srcPath, "utf8").replaceAll(".plumbline/", `${dir}/`);
     if (item.src === "workflow.yml") content = content.replace(/^# Copy to [^\n]*\n/, "");
+    if (item.dest === "<dir>/policy.json") content = policyForStack(content, stack);
     mkdirSync2(dirname2(abs), { recursive: true });
     writeFileSync2(abs, content);
-    out.push({ dest, created: true });
+    out.push({ dest, created: true, note: item.stack ? `${item.stack} preset` : void 0 });
   }
   return out;
 }
@@ -5369,12 +5481,110 @@ function newReceipt(opts) {
   };
 }
 
+// src/protection.ts
+var GH_API = "https://api.github.com";
+function headers(token) {
+  return {
+    authorization: `Bearer ${token}`,
+    accept: "application/vnd.github+json",
+    "content-type": "application/json",
+    "x-github-api-version": "2022-11-28"
+  };
+}
+async function ghGet(url, token) {
+  const res = await fetch(url, { headers: headers(token) });
+  const text = await res.text();
+  let body = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = null;
+  }
+  return { ok: res.ok, status: res.status, body };
+}
+async function getRepo(repo, token) {
+  const { ok, status, body } = await ghGet(`${GH_API}/repos/${repo}`, token);
+  if (!ok || !body) throw new Error(`get repo ${repo}: ${status}`);
+  return body;
+}
+function mergeRequiredChecks(current, desired) {
+  const set = new Set(current);
+  const added = [];
+  for (const c of desired) {
+    if (!set.has(c)) {
+      set.add(c);
+      added.push(c);
+    }
+  }
+  return { merged: [...set].sort(), added };
+}
+function currentContexts(p) {
+  const rsc = p?.required_status_checks;
+  if (!rsc) return [];
+  if (rsc.checks && rsc.checks.length) return rsc.checks.map((c) => c.context);
+  return rsc.contexts ?? [];
+}
+async function setupProtection(opts) {
+  const { repo, token } = opts;
+  const gateCheck = opts.gateCheck ?? "plumbline";
+  const changes = [];
+  const repoInfo = await getRepo(repo, token);
+  const branch = opts.branch ?? repoInfo.default_branch;
+  const desired = [gateCheck, ...opts.checks ?? []];
+  const { status: protStatus, body: prot } = await ghGet(
+    `${GH_API}/repos/${repo}/branches/${branch}/protection`,
+    token
+  );
+  const existing = protStatus === 200 ? currentContexts(prot) : [];
+  const strictNow = protStatus === 200 ? Boolean(prot?.required_status_checks?.strict) : false;
+  const { merged, added } = mergeRequiredChecks(existing, desired);
+  const strictChange = strictNow ? "strict:true\u2192false" : null;
+  const needsWrite = added.length > 0 || strictChange !== null || protStatus !== 200;
+  if (needsWrite) {
+    if (added.length) changes.push(`required checks +[${added.join(", ")}]`);
+    if (strictChange) changes.push(strictChange);
+    if (protStatus !== 200 && !added.length && !strictChange)
+      changes.push(`enable required status checks [${merged.join(", ")}]`);
+    if (!opts.dryRun) {
+      const put = await fetch(`${GH_API}/repos/${repo}/branches/${branch}/protection`, {
+        method: "PUT",
+        headers: headers(token),
+        body: JSON.stringify({
+          required_status_checks: { strict: false, checks: merged.map((c) => ({ context: c })) },
+          enforce_admins: null,
+          required_pull_request_reviews: null,
+          restrictions: null
+        })
+      });
+      if (!put.ok) throw new Error(`set branch protection on ${branch}: ${put.status} ${await put.text()}`);
+    }
+  } else {
+    changes.push(`required checks already [${merged.join(", ")}] (strict:false) \u2014 no change`);
+  }
+  let autoMergeEnabled = Boolean(repoInfo.allow_auto_merge);
+  if (!repoInfo.allow_auto_merge) {
+    changes.push("enable repository auto-merge");
+    if (!opts.dryRun) {
+      const patch = await fetch(`${GH_API}/repos/${repo}`, {
+        method: "PATCH",
+        headers: headers(token),
+        body: JSON.stringify({ allow_auto_merge: true })
+      });
+      if (!patch.ok) throw new Error(`enable auto-merge on ${repo}: ${patch.status} ${await patch.text()}`);
+      autoMergeEnabled = true;
+    }
+  } else {
+    changes.push("repository auto-merge already enabled \u2014 no change");
+  }
+  return { branch, requiredChecks: merged, changes, autoMergeEnabled };
+}
+
 // src/base.ts
-import { execFileSync as execFileSync2 } from "node:child_process";
+import { execFileSync as execFileSync3 } from "node:child_process";
 function gitTry(cwd) {
   return (args) => {
     try {
-      return execFileSync2("git", args, { cwd, encoding: "utf8" }).trim() || null;
+      return execFileSync3("git", args, { cwd, encoding: "utf8" }).trim() || null;
     } catch {
       return null;
     }
@@ -5468,9 +5678,9 @@ function checkMechanical(receipt, mech) {
 }
 
 // src/propose.ts
-import { execFileSync as execFileSync3 } from "node:child_process";
-import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync3, writeFileSync as writeFileSync3 } from "node:fs";
-import { join as join4 } from "node:path";
+import { execFileSync as execFileSync4 } from "node:child_process";
+import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
+import { join as join5 } from "node:path";
 function slugFromTitle(title) {
   const s = title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60).replace(/-+$/, "");
   return s || "change";
@@ -5578,7 +5788,7 @@ function predictSelfModifying(ask, protectedPaths) {
   }
   return { selfModifying: reasons.length > 0, reasons };
 }
-var defaultGhRunner = (args, cwd) => execFileSync3("gh", args, { cwd, encoding: "utf8" });
+var defaultGhRunner = (args, cwd) => execFileSync4("gh", args, { cwd, encoding: "utf8" });
 function runPropose(opts) {
   const log = opts.log ?? ((l) => console.error(l));
   const gh = opts.gh ?? defaultGhRunner;
@@ -5587,19 +5797,19 @@ function runPropose(opts) {
   let proposalPath;
   if (!opts.lite) {
     const slug = slugFromTitle(opts.title);
-    const folder = join4("openspec", "changes", slug);
-    const abs = join4(opts.cwd, folder);
+    const folder = join5("openspec", "changes", slug);
+    const abs = join5(opts.cwd, folder);
     result.slug = slug;
     result.folder = folder;
-    if (existsSync4(abs)) {
+    if (existsSync5(abs)) {
       log(`propose: ${folder}/ already exists \u2014 left as-is (scaffolding is never destructive).`);
-      proposalPath = join4(abs, "proposal.md");
+      proposalPath = join5(abs, "proposal.md");
     } else {
-      mkdirSync3(join4(abs, "specs"), { recursive: true });
-      proposalPath = join4(abs, "proposal.md");
+      mkdirSync3(join5(abs, "specs"), { recursive: true });
+      proposalPath = join5(abs, "proposal.md");
       writeFileSync3(proposalPath, proposalMd({ title: opts.title, body: opts.body, taskId: opts.task }));
-      writeFileSync3(join4(abs, "tasks.md"), tasksMd(opts.title));
-      writeFileSync3(join4(abs, "specs", "README.md"), specsReadme());
+      writeFileSync3(join5(abs, "tasks.md"), tasksMd(opts.title));
+      writeFileSync3(join5(abs, "specs", "README.md"), specsReadme());
       log(`created ${folder}/ (proposal.md + tasks.md + specs/) \u2014 fill the TODO sections; the tool never writes judgment content.`);
     }
   }
@@ -5629,8 +5839,8 @@ function runPropose(opts) {
     log(`propose: gh unavailable/failed \u2014 run this yourself:
   ${result.ghCommand}`);
   }
-  if (result.issueNumber !== void 0 && proposalPath && existsSync4(proposalPath)) {
-    writeFileSync3(proposalPath, writeBackTaskId(readFileSync3(proposalPath, "utf8"), result.issueNumber));
+  if (result.issueNumber !== void 0 && proposalPath && existsSync5(proposalPath)) {
+    writeFileSync3(proposalPath, writeBackTaskId(readFileSync4(proposalPath, "utf8"), result.issueNumber));
     log(`linked: proposal.md task_id \u2194 issue #${result.issueNumber}`);
   }
   if (prediction.selfModifying) {
@@ -5641,8 +5851,8 @@ function runPropose(opts) {
 }
 
 // src/archive.ts
-import { existsSync as existsSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync4, readdirSync, renameSync, writeFileSync as writeFileSync4 } from "node:fs";
-import { join as join5, dirname as dirname3 } from "node:path";
+import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync5, readdirSync as readdirSync2, renameSync, writeFileSync as writeFileSync4 } from "node:fs";
+import { join as join6, dirname as dirname3 } from "node:path";
 var REQ_HEADER = /^### Requirement:\s*(.+?)\s*$/;
 function parseRequirements(md) {
   const lines = md.split("\n");
@@ -5749,16 +5959,16 @@ function taskIdFromProposal(proposal) {
 }
 function findReceipt(cwd, taskId) {
   for (const dir of [CANONICAL_DIR, LEGACY_DIR]) {
-    const exact = join5(dir, "receipts", `${taskId}.json`);
-    if (existsSync5(join5(cwd, exact))) return exact;
+    const exact = join6(dir, "receipts", `${taskId}.json`);
+    if (existsSync6(join6(cwd, exact))) return exact;
   }
   for (const dir of [CANONICAL_DIR, LEGACY_DIR]) {
-    const receipts = join5(cwd, dir, "receipts");
-    if (!existsSync5(receipts)) continue;
-    for (const f of readdirSync(receipts).filter((f2) => f2.endsWith(".json"))) {
+    const receipts = join6(cwd, dir, "receipts");
+    if (!existsSync6(receipts)) continue;
+    for (const f of readdirSync2(receipts).filter((f2) => f2.endsWith(".json"))) {
       try {
-        const j = JSON.parse(readFileSync4(join5(receipts, f), "utf8"));
-        if (j.task_id === taskId) return join5(dir, "receipts", f);
+        const j = JSON.parse(readFileSync5(join6(receipts, f), "utf8"));
+        if (j.task_id === taskId) return join6(dir, "receipts", f);
       } catch {
       }
     }
@@ -5769,18 +5979,18 @@ function runArchive(opts) {
   const log = opts.log ?? ((l) => console.error(l));
   const policy = opts.policy ?? PolicySchema.parse({ version: "1.0" });
   const res = { ok: false, specsUpdated: [], notes: [], warnings: [], errors: [] };
-  const changeRel = join5("openspec", "changes", opts.slug);
-  const changeAbs = join5(opts.cwd, changeRel);
+  const changeRel = join6("openspec", "changes", opts.slug);
+  const changeAbs = join6(opts.cwd, changeRel);
   if (opts.slug === "archive" || opts.slug.includes("/") || opts.slug.includes("..")) {
     res.errors.push(`'${opts.slug}' is not a change slug`);
     return res;
   }
-  if (!existsSync5(changeAbs)) {
+  if (!existsSync6(changeAbs)) {
     res.errors.push(`no change folder at ${changeRel}/ \u2014 is it already archived, or misspelled?`);
     return res;
   }
-  const proposalPath = join5(changeAbs, "proposal.md");
-  const taskId = existsSync5(proposalPath) ? taskIdFromProposal(readFileSync4(proposalPath, "utf8")) : void 0;
+  const proposalPath = join6(changeAbs, "proposal.md");
+  const taskId = existsSync6(proposalPath) ? taskIdFromProposal(readFileSync5(proposalPath, "utf8")) : void 0;
   const receiptRel = taskId ? findReceipt(opts.cwd, taskId) : void 0;
   let gateProblem;
   if (!taskId) {
@@ -5788,7 +5998,7 @@ function runArchive(opts) {
   } else if (!receiptRel) {
     gateProblem = `no receipt found for task_id '${taskId}' (looked in ${CANONICAL_DIR}/receipts/ and ${LEGACY_DIR}/receipts/)`;
   } else {
-    const { result } = shapeCheck(readFileSync4(join5(opts.cwd, receiptRel), "utf8"), policy, {
+    const { result } = shapeCheck(readFileSync5(join6(opts.cwd, receiptRel), "utf8"), policy, {
       skipGit: true
     });
     if (result.pass) {
@@ -5806,19 +6016,19 @@ function runArchive(opts) {
     res.warnings.push(`FORCED past the gate-before-archive rule: ${gateProblem}`);
     log(`plumb archive \u26A0\uFE0F  ${res.warnings[res.warnings.length - 1]}`);
   }
-  const deltaRoot = join5(changeAbs, "specs");
-  if (existsSync5(deltaRoot)) {
-    for (const capability of readdirSync(deltaRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)) {
-      const deltaPath = join5(deltaRoot, capability, "spec.md");
-      if (!existsSync5(deltaPath)) continue;
-      const delta = parseDeltaSpec(readFileSync4(deltaPath, "utf8"));
+  const deltaRoot = join6(changeAbs, "specs");
+  if (existsSync6(deltaRoot)) {
+    for (const capability of readdirSync2(deltaRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)) {
+      const deltaPath = join6(deltaRoot, capability, "spec.md");
+      if (!existsSync6(deltaPath)) continue;
+      const delta = parseDeltaSpec(readFileSync5(deltaPath, "utf8"));
       if (delta.added.length + delta.modified.length + delta.removed.length === 0) {
         res.warnings.push(`${capability}: delta spec has no ADDED/MODIFIED/REMOVED sections \u2014 nothing applied`);
         continue;
       }
-      const livingRel = join5("openspec", "specs", capability, "spec.md");
-      const livingAbs = join5(opts.cwd, livingRel);
-      const living = existsSync5(livingAbs) ? readFileSync4(livingAbs, "utf8") : void 0;
+      const livingRel = join6("openspec", "specs", capability, "spec.md");
+      const livingAbs = join6(opts.cwd, livingRel);
+      const living = existsSync6(livingAbs) ? readFileSync5(livingAbs, "utf8") : void 0;
       const applied = applyDelta(living, delta, capability);
       mkdirSync4(dirname3(livingAbs), { recursive: true });
       writeFileSync4(livingAbs, applied.md);
@@ -5828,9 +6038,9 @@ function runArchive(opts) {
     }
   }
   const date = opts.date ?? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-  const destRel = join5("openspec", "changes", "archive", `${date}-${opts.slug}`);
-  const destAbs = join5(opts.cwd, destRel);
-  if (existsSync5(destAbs)) {
+  const destRel = join6("openspec", "changes", "archive", `${date}-${opts.slug}`);
+  const destAbs = join6(opts.cwd, destRel);
+  if (existsSync6(destAbs)) {
     res.errors.push(`archive destination ${destRel}/ already exists \u2014 refusing to overwrite`);
     return res;
   }
@@ -5849,14 +6059,14 @@ function runArchive(opts) {
 
 // src/cli.ts
 function loadPolicy(path) {
-  if (!existsSync6(path)) {
+  if (!existsSync7(path)) {
     console.error(`plumb: policy file not found at ${path} \u2014 using defaults`);
     return PolicySchema.parse({ version: "1.0" });
   }
-  return PolicySchema.parse(JSON.parse(readFileSync5(path, "utf8")));
+  return PolicySchema.parse(JSON.parse(readFileSync6(path, "utf8")));
 }
 function getDiff(baseRef, cwd) {
-  return execFileSync4("git", ["diff", `${baseRef}...HEAD`], {
+  return execFileSync5("git", ["diff", `${baseRef}...HEAD`], {
     cwd,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024
@@ -5864,14 +6074,14 @@ function getDiff(baseRef, cwd) {
 }
 function preflightWarnings(cwd, baseRef) {
   for (const d of [".plumbline", ".proofgate"]) {
-    if (existsSync6(join6(cwd, d, "receipt.json"))) {
+    if (existsSync7(join7(cwd, d, "receipt.json"))) {
       console.error(
         `plumb \u26A0\uFE0F  legacy ${d}/receipt.json present \u2014 use one file per PR at ${d}/receipts/<task_id>.json (a shared receipt.json gets dragged forward across branches and conflicts). \`plumb new\` creates the per-PR file.`
       );
     }
   }
   try {
-    const dirty = execFileSync4("git", ["status", "--porcelain"], { cwd, encoding: "utf8" }).trim();
+    const dirty = execFileSync5("git", ["status", "--porcelain"], { cwd, encoding: "utf8" }).trim();
     if (dirty) {
       console.error(
         `plumb \u26A0\uFE0F  uncommitted changes present. The gate binds the COMMITTED HEAD via \`git diff ${baseRef}...HEAD\` (3-dot) \u2014 uncommitted edits are NOT in diff_sha256. Commit, then re-run \`plumb receipt --write\` so the hash matches what CI computes.`
@@ -5888,7 +6098,7 @@ function resolveReceiptPath(explicit, baseRef, cwd, skipGit, fallback) {
   if (skipGit || !baseRef) return fallback;
   let changed = [];
   try {
-    changed = execFileSync4(
+    changed = execFileSync5(
       "git",
       ["diff", "--name-only", "--diff-filter=AMR", `${baseRef}...HEAD`],
       { cwd, encoding: "utf8" }
@@ -5900,7 +6110,7 @@ function resolveReceiptPath(explicit, baseRef, cwd, skipGit, fallback) {
   if (changed.length > 1) {
     const candidates = changed.map((p) => {
       try {
-        const j = JSON.parse(readFileSync5(join6(cwd, p), "utf8"));
+        const j = JSON.parse(readFileSync6(join7(cwd, p), "utf8"));
         return {
           path: p,
           taskId: typeof j.task_id === "string" ? j.task_id : void 0,
@@ -5941,18 +6151,26 @@ async function main() {
   const skipGit = flag("no-git");
   const receiptArg = arg("receipt", "auto");
   const receiptIsDefault = receiptArg === "auto" || receiptArg === ".plumbline/receipt.json" || receiptArg === ".proofgate/receipt.json";
-  const receiptPath = cmd === "init" || cmd === "new" || cmd === "schema" || cmd === "propose" || cmd === "archive" ? DEFAULT_RECEIPT : resolveReceiptPath(
+  const receiptPath = cmd === "init" || cmd === "new" || cmd === "schema" || cmd === "propose" || cmd === "archive" || cmd === "setup-protection" || cmd === "migration-guard" ? DEFAULT_RECEIPT : resolveReceiptPath(
     receiptIsDefault ? DEFAULT_RECEIPT : receiptArg,
     skipGit ? void 0 : baseRef,
     cwd,
     skipGit,
     DEFAULT_RECEIPT
   );
-  if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check", "receipt", "propose", "archive"].includes(cmd)) {
+  if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check", "receipt", "propose", "archive", "setup-protection", "migration-guard"].includes(cmd)) {
     console.log(`plumbline \u2014 the plumb line for AI agent work (Amos 7:7-8): proof-carrying gate
 
 usage:
-  plumb init    (scaffold workflow + .plumbline/ + AGENTS.md into this repo \u2014 start here)
+  plumb init    [--stack rust-sqlx] [--no-stack] [--protect]   (scaffold the governed CI into this
+                repo: gate workflow WITH ci-evidence poll-wait + .plumbline/ + AGENTS.md, and \u2014 on a
+                detected stack \u2014 the stack preset (rust-sqlx: migration guard + rust-cache CI). Start here.)
+  plumb setup-protection --repo owner/name [--branch b] [--check name ...] [--dry-run]
+                (make the plumbline gate + the repo's CI checks REQUIRED on the default branch
+                 (strict:false) and enable auto-merge \u2014 the 'blocking + auto-merge on all green' shape.
+                 Idempotent; prints what it changed. Needs GITHUB_TOKEN with repo-admin scope.)
+  plumb migration-guard [--base ref] [--dir migrations]   (fail if a new migration's version <= the
+                base branch's max \u2014 the collision guard the rust-sqlx CI job runs)
   plumb propose "<title>" [--body text] [--repo owner/name] [--lite] [--task id]
                 (intake: open the GitHub issue + scaffold openspec/changes/<slug>/ born linked;
                  --lite = plain issue, no contract folder \u2014 for trivial work)
@@ -5984,17 +6202,103 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
     return 0;
   }
   if (cmd === "init") {
-    for (const it of runInit(cwd)) {
+    const stackArg = arg("stack");
+    if (stackArg && !isStackId(stackArg)) {
+      console.error(`plumb init: unknown --stack "${stackArg}" (known: rust-sqlx)`);
+      return 2;
+    }
+    const forced = stackArg && isStackId(stackArg) ? stackArg : void 0;
+    const noStack = flag("no-stack");
+    const stack = noStack ? void 0 : resolveStack(cwd, forced);
+    if (stack) {
+      console.error(`stack: ${stack}${forced ? " (--stack)" : " (auto-detected)"}`);
+    } else if (!noStack) {
+      console.error(`stack: none detected (core-only) \u2014 force one with --stack rust-sqlx`);
+    }
+    for (const it of runInit(cwd, { stack: forced, noStack })) {
       console.error(`  ${it.created ? "created" : "skip   "} ${it.dest}${it.note ? `  (${it.note})` : ""}`);
+    }
+    if (flag("protect")) {
+      const repo = arg("repo") ?? process.env.GITHUB_REPOSITORY;
+      const token = process.env.GITHUB_TOKEN;
+      if (!repo || !token) {
+        console.error(
+          `
+plumb init --protect: needs --repo owner/name (or GITHUB_REPOSITORY) and GITHUB_TOKEN with repo-admin scope. Run 'plumb setup-protection --repo owner/name' once the workflow has run.`
+        );
+      } else {
+        try {
+          const res = await setupProtection({ repo, token, gateCheck: "plumbline" });
+          console.error(`
+protection on ${repo}@${res.branch}:`);
+          for (const c of res.changes) console.error(`  \xB7 ${c}`);
+        } catch (e) {
+          console.error(`
+plumb init --protect: ${String(e)}`);
+        }
+      }
     }
     console.error(
       `
 plumbline initialized. Next:
   1. Read ${dir}/AGENTS.md (the agent guide)
   2. plumb receipt --write  \u2192  fill the judgment fields  \u2192  plumb check
-  3. (human) make 'plumbline' a required check + add the ANTHROPIC_API_KEY secret \u2014 steps in AGENTS.md`
+  3. (human) plumb setup-protection --repo owner/name  +  add the ANTHROPIC_API_KEY secret \u2014 steps in AGENTS.md`
     );
     return 0;
+  }
+  if (cmd === "setup-protection") {
+    const repo = arg("repo") ?? process.env.GITHUB_REPOSITORY;
+    const token = process.env.GITHUB_TOKEN;
+    if (!repo) {
+      console.error("plumb setup-protection: --repo owner/name is required (or set GITHUB_REPOSITORY)");
+      return 2;
+    }
+    if (!token) {
+      console.error("plumb setup-protection: GITHUB_TOKEN with repo-admin scope is required");
+      return 2;
+    }
+    const checks = [];
+    for (let i = 0; i < process.argv.length; i++) {
+      if (process.argv[i] === "--check" && process.argv[i + 1] && !process.argv[i + 1].startsWith("--")) {
+        checks.push(process.argv[i + 1]);
+      }
+    }
+    try {
+      const res = await setupProtection({
+        repo,
+        token,
+        branch: arg("branch"),
+        checks,
+        gateCheck: arg("gate-check", "plumbline"),
+        dryRun: flag("dry-run")
+      });
+      console.error(`${flag("dry-run") ? "[dry-run] " : ""}protection on ${repo}@${res.branch}:`);
+      for (const c of res.changes) console.error(`  \xB7 ${c}`);
+      console.error(
+        `
+required checks now: [${res.requiredChecks.join(", ")}] (strict:false) \xB7 auto-merge: ${res.autoMergeEnabled ? "enabled" : "off"}`
+      );
+    } catch (e) {
+      console.error(`plumb setup-protection: ${String(e)}`);
+      return 1;
+    }
+    return 0;
+  }
+  if (cmd === "migration-guard") {
+    if (skipGit || !baseRef) {
+      console.error("plumb migration-guard: needs git + a --base ref");
+      return 1;
+    }
+    const res = runMigrationGuard(cwd, baseRef, arg("dir", "migrations"));
+    if (res.ok) {
+      console.error(
+        `\u2713 migration-guard PASS \u2014 ${res.added.length} new migration(s), all sort after base max ${res.baseMax}.`
+      );
+      return 0;
+    }
+    for (const e of res.errors) console.error(`migration-guard \u274C ${e}`);
+    return 1;
   }
   if (cmd === "propose") {
     const title = process.argv[3] && !process.argv[3].startsWith("--") ? process.argv[3] : void 0;
@@ -6044,7 +6348,7 @@ Commit the archive: git add openspec/ && git commit -m "chore(openspec): archive
     let branch = process.env.GITHUB_HEAD_REF || "";
     if (!branch) {
       try {
-        branch = execFileSync4("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+        branch = execFileSync5("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
           cwd,
           encoding: "utf8"
         }).trim();
@@ -6062,8 +6366,8 @@ Commit the archive: git add openspec/ && git commit -m "chore(openspec): archive
       } catch {
       }
     }
-    const dest = join6(cwd, dir, "receipts", `${taskId}.json`);
-    if (existsSync6(dest)) {
+    const dest = join7(cwd, dir, "receipts", `${taskId}.json`);
+    if (existsSync7(dest)) {
       console.error(
         `plumb new: ${dir}/receipts/${taskId}.json already exists \u2014 left as-is. Edit it, then run 'plumb receipt --write' + 'plumb check'.`
       );
@@ -6108,7 +6412,7 @@ Fill intent / validation_plan / execution_evidence / result_summary, then: plumb
       let branch = process.env.GITHUB_HEAD_REF || "";
       if (!branch) {
         try {
-          branch = execFileSync4("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+          branch = execFileSync5("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
             cwd,
             encoding: "utf8"
           }).trim();
@@ -6116,17 +6420,17 @@ Fill intent / validation_plan / execution_evidence / result_summary, then: plumb
         }
       }
       const taskId = sanitizeTaskId(arg("task", branch || "TASK"));
-      dest = join6(dir, "receipts", `${taskId}.json`);
+      dest = join7(dir, "receipts", `${taskId}.json`);
     }
-    const destAbs = join6(cwd, dest);
+    const destAbs = join7(cwd, dest);
     if (checkOnly) {
-      if (!existsSync6(destAbs)) {
+      if (!existsSync7(destAbs)) {
         console.error(`plumb receipt --check: no receipt at ${dest} \u2014 run 'plumb receipt --write'`);
         return 1;
       }
       let obj;
       try {
-        obj = JSON.parse(readFileSync5(destAbs, "utf8"));
+        obj = JSON.parse(readFileSync6(destAbs, "utf8"));
       } catch (e) {
         console.error(`plumb receipt --check: ${dest} is not valid JSON: ${String(e)}`);
         return 1;
@@ -6140,7 +6444,7 @@ Fill intent / validation_plan / execution_evidence / result_summary, then: plumb
       console.error("\u2717 receipt is stale \u2014 run 'plumb receipt --write' to refresh, then commit.");
       return 1;
     }
-    if (!existsSync6(destAbs)) {
+    if (!existsSync7(destAbs)) {
       const taskId = sanitizeTaskId(arg("task", dest.replace(/^.*\/|\.json$/g, "")));
       const agentId = arg("agent", process.env.PLUMBLINE_AGENT_ID || process.env.PROOFGATE_AGENT_ID || "agent");
       const receipt2 = newReceipt({
@@ -6162,7 +6466,7 @@ Fill intent / validation_plan / execution_evidence / result_summary, then: plumb
     } else {
       let obj;
       try {
-        obj = JSON.parse(readFileSync5(destAbs, "utf8"));
+        obj = JSON.parse(readFileSync6(destAbs, "utf8"));
       } catch (e) {
         console.error(`plumb receipt --write: ${dest} is not valid JSON: ${String(e)}`);
         return 1;
@@ -6182,14 +6486,14 @@ Now fill the judgment fields (the tool never writes these):`);
 Then: git add ${dest} && commit && push  (pre-check: plumb check)`);
     return 0;
   }
-  if (!existsSync6(receiptPath)) {
+  if (!existsSync7(receiptPath)) {
     console.error(
       `plumb: no receipt found at ${receiptPath}.
 Agent work must ship with a proof receipt. See templates/receipt.example.json.`
     );
     return 1;
   }
-  const rawReceipt = readFileSync5(receiptPath, "utf8");
+  const rawReceipt = readFileSync6(receiptPath, "utf8");
   if (cmd === "stamp") {
     if (skipGit || !baseRef) {
       console.error("plumb stamp: needs git + a --base ref to compute the diff");
@@ -6300,11 +6604,11 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
     gate.reasons.push("semantic review skipped: shape gate failed \u2014 fix shape errors first");
   } else {
     const missionPath = resolveDualPath(cwd, arg("mission", policy.mission_file));
-    if (!existsSync6(missionPath)) {
+    if (!existsSync7(missionPath)) {
       console.error(`plumb: mission file not found at ${missionPath}`);
       return 1;
     }
-    const mission = readFileSync5(missionPath, "utf8");
+    const mission = readFileSync6(missionPath, "utf8");
     const diff = skipGit ? "" : getDiff(baseRef, cwd);
     const skip = shouldSkipReview(receipt, policy, diff);
     if (skip.skip) {
@@ -6324,7 +6628,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
         }
       })();
       if (!provider) return 1;
-      const cacheDir = join6(cwd, policy.review_cache.dir);
+      const cacheDir = join7(cwd, policy.review_cache.dir);
       const model = resolveReviewModel(policy);
       let review = null;
       if (policy.review_cache.enabled && !skipGit && receipt.diff_sha256) {

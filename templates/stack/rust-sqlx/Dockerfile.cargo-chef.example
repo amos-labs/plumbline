@@ -1,0 +1,46 @@
+# plumbline rust-sqlx preset — cargo-chef layering hint (EXAMPLE, not applied).
+#
+# Your repo already has a Dockerfile, so plumbline won't touch it. This sidecar
+# shows the cargo-chef pattern that makes warm deploys fast: the dependency
+# compile is cached ABOVE the app-code COPY, so editing app code doesn't
+# recompile every dependency. Combine with BuildKit `--cache-to mode=max` (see
+# the CI hint at the bottom) so the cache actually persists between builds.
+#
+# Merge the relevant stages into your Dockerfile, then delete this file.
+
+# 1. Pin the chef image once.
+FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+WORKDIR /app
+
+# 2. Plan: compute a recipe.json describing ONLY the dependency graph. This
+#    layer's cache key is the manifests, not your source — so it stays warm
+#    across app-code edits.
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# 3. Build deps from the recipe FIRST (cached), THEN copy source + build the app.
+#    The `cargo chef cook` layer only busts when a dependency actually changes.
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json   # <-- cached dependency compile
+COPY . .
+RUN cargo build --release --bin YOUR_BIN                   # <-- only this re-runs on app-code edits
+
+# 4. Slim runtime image.
+FROM debian:bookworm-slim AS runtime
+WORKDIR /app
+COPY --from=builder /app/target/release/YOUR_BIN /usr/local/bin/YOUR_BIN
+ENTRYPOINT ["/usr/local/bin/YOUR_BIN"]
+
+# ── Make the cache PERSIST between builds (the thing that makes warm deploys fast) ──
+# In the workflow step that builds this image (docker/build-push-action@v6):
+#
+#   with:
+#     cache-from: type=gha
+#     cache-to: type=gha,mode=max     # mode=max caches intermediate stages too —
+#                                     # without it the cargo-chef cook layer is lost.
+#
+# For a registry cache instead of gha:
+#   cache-from: type=registry,ref=<repo>:buildcache
+#   cache-to:   type=registry,ref=<repo>:buildcache,mode=max

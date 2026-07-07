@@ -30,6 +30,26 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
   - Determinism: `review_temperature` pinned to `0` by default; the verdict records
     `audit` metadata (provider, model, prompt version, temperature, cache hit) for
     reproducibility.
+- **Batteries-included `plumb init` + `plumb setup-protection`** (#22) — two-layer,
+  correct-by-default governed-CI setup so a new repo can't land the subtly-wrong
+  configurations that silently defeat the gate.
+  - **Language-agnostic core:** the scaffolded gate workflow now ships WITH the
+    **ci-evidence poll-wait** wired (waits for the repo's CI check-runs to reach a
+    terminal conclusion before the gate evaluates, so it never races CI; timeout via
+    the `PLUMBLINE_POLL_TIMEOUT_SECONDS` repo/org variable, default 900s). AGENTS.md
+    gains the database-migration conventions (never edit an applied migration,
+    full-timestamp versions, the guard rejects a version ≤ base max).
+  - **`plumb setup-protection --repo owner/name`** (and `plumb init --protect`) —
+    via the GitHub API, makes the `plumbline` gate + the repo's CI checks REQUIRED on
+    the default branch (`strict:false`) and enables auto-merge — the "blocking +
+    auto-merge on all green" shape. Idempotent; prints what it changed; needs a
+    repo-admin token.
+  - **Stack presets** (auto-detected or `--stack`; `--no-stack` to skip). **`rust-sqlx`**
+    (Cargo.toml + `migrations/` + sqlx): scaffolds a migration-version-collision guard
+    (`plumb migration-guard`), rust-cache + parallelized (no `needs:` chain) test jobs,
+    the policy's `ci_evidence_checks` pre-bound to those jobs, and — if a Dockerfile is
+    present — a cargo-chef layering + `cache-to mode=max` hint. Everything is an
+    overridable plain file.
 
 ## [0.2.0] - 2026-07-07
 

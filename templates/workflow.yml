@@ -8,6 +8,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  checks: read
 
 jobs:
   gate:
@@ -20,6 +21,42 @@ jobs:
           # and the merge ref's diff can differ once the base moves.
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+
+      # Poll-wait: don't let the gate race CI. The gate corroborates the
+      # receipt against the PR's REAL check-runs (ci_evidence_checks in
+      # policy.json), so it must run AFTER those checks reach a terminal
+      # conclusion — otherwise it reads "still queued" and false-fails. This
+      # step blocks until every OTHER check-run on the head commit completes
+      # (it ignores itself), up to a generous, configurable timeout
+      # (repo/org variable PLUMBLINE_POLL_TIMEOUT_SECONDS, default 900s).
+      - name: Wait for CI checks to finish
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const sha = context.payload.pull_request.head.sha;
+            const timeoutMs = Number('${{ vars.PLUMBLINE_POLL_TIMEOUT_SECONDS || 900 }}') * 1000;
+            const intervalMs = 15000;
+            const deadline = Date.now() + timeoutMs;
+            const isSelf = (r) =>
+              r.name === "gate" || r.name === "plumbline" ||
+              (r.name || "").toLowerCase().includes("plumbline");
+            for (;;) {
+              const { data } = await github.rest.checks.listForRef({
+                owner: context.repo.owner, repo: context.repo.repo, ref: sha, per_page: 100,
+              });
+              const others = data.check_runs.filter((r) => !isSelf(r));
+              const pending = others.filter((r) => r.status !== "completed");
+              if (pending.length === 0) {
+                core.info(`All ${others.length} other check-run(s) complete — proceeding to gate.`);
+                break;
+              }
+              if (Date.now() > deadline) {
+                core.warning(`Poll-wait timed out after ${timeoutMs / 1000}s; ${pending.length} check(s) still pending: ${pending.map((r) => r.name).join(", ")}. Proceeding — the gate reports ci-evidence as it finds it.`);
+                break;
+              }
+              core.info(`Waiting on ${pending.length} check(s): ${pending.map((r) => r.name).join(", ")}`);
+              await new Promise((res) => setTimeout(res, intervalMs));
+            }
 
       - name: Run plumbline
         uses: amos-labs/plumbline@v0   # or a local path / pinned SHA
