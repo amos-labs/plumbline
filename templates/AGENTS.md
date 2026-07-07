@@ -52,6 +52,31 @@ pass — no red-CI round-trips. (Semantic review still runs server-side in CI.)
 - `changed_files` / `diff_sha256` — set by `stamp`; don't edit by hand.
 - `result_summary` — ≥40 chars: what changed + how it was verified.
 
+### Receipt authoring: don't fight the gate on CI bookkeeping
+Two habits cause almost every *false* shape REWORK — avoid both:
+
+1. **Don't list CI-run checks as required manual-evidence steps.** Checks that
+   only run in CI (Lint, Unit, Integration — anything you can't run in your
+   sandbox) are already corroborated by the gate's **`ci-evidence`** check,
+   which reads the PR's *real* CI run. So:
+   - Keep `validation_plan` to steps you can actually run **locally** (unit
+     tests, a lint you can invoke, a build). Give those `execution_evidence`
+     with `status: "passed"`.
+   - For a CI-only check, either **omit it** from the plan (ci-evidence covers
+     it) or, if you want it recorded, mark the step `"ci_covered": true` (or
+     name it exactly as a policy `ci_evidence_checks` entry). A CI-covered step
+     may be `"skipped"` — the gate will **not** demand self-reported evidence
+     for it. Do **not** add a step like `"CI: Lint & Unit + Integration"` as
+     `required` and then mark it `skipped` expecting a pass — for a plain step
+     that's a hard fail; make it CI-covered instead.
+2. **Match evidence to the step, not to a byte-identical string.** Evidence is
+   matched to its plan step by **`id`** first (set `"id"` on the step and
+   `"step": "<id>"` on the evidence), then by command with **whitespace
+   normalized** and a trailing `(note)`/`# note` allowed. A trivial spacing or
+   wording diff no longer reads as "no evidence" — and if the command still
+   diverges, `plumb check` names the exact mismatch (`evidence command does not
+   match validation_plan step <id>: plan="…" evidence="…"`) so the fix is obvious.
+
 **Don't memorize this — run `plumb schema`** to print every field with its
 type, required/optional, and allowed enum values. A scaffolded receipt also
 carries an inline `_help` block listing the same (safe to leave or delete — the

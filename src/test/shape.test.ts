@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { shapeCheck, commandMatchesCheck, evidenceSatisfiesStep, computeDiffSha256, isReceiptPath } from "../shape.js";
+import { shapeCheck, commandMatchesCheck, evidenceSatisfiesStep, normalizeCommand, stepIsCiCovered, computeDiffSha256, isReceiptPath } from "../shape.js";
 import { globToRegExp, matchesAny } from "../glob.js";
 import { PolicySchema } from "../types.js";
 
@@ -151,4 +151,112 @@ test("glob: ** spans directories", () => {
   assert.ok(globToRegExp("app/controllers/**/stripe*").test("app/controllers/webhooks/stripe_events_controller.rb"));
   assert.ok(globToRegExp("app/controllers/**/stripe*").test("app/controllers/stripe_events_controller.rb"));
   assert.equal(globToRegExp("db/migrate/**").test("db/schema.rb"), false);
+});
+
+// ── issue #27: CI-corroborated validation steps must not force manual evidence ──
+
+test("normalizeCommand collapses internal whitespace and trims", () => {
+  assert.equal(normalizeCommand("  npm    run\t lint  "), "npm run lint");
+  assert.equal(normalizeCommand("bundle exec rspec"), "bundle exec rspec");
+});
+
+test("evidenceSatisfiesStep tolerates whitespace-only diffs (issue #27)", () => {
+  // Same command, differing only in internal spacing — used to read as "no evidence".
+  assert.ok(evidenceSatisfiesStep("bundle  exec   rspec", "bundle exec rspec"));
+  assert.ok(evidenceSatisfiesStep("npm\trun lint", "npm run lint"));
+  // Still rejects genuinely different / extra-arg commands.
+  assert.ok(!evidenceSatisfiesStep("npm run lint --fix", "npm run lint"));
+});
+
+test("stepIsCiCovered: explicit flag OR command maps to a ci_evidence_check", () => {
+  assert.ok(stepIsCiCovered({ command: "anything", ci_covered: true }, []));
+  assert.ok(stepIsCiCovered({ command: "npm run lint" }, ["npm run lint"]));
+  assert.ok(!stepIsCiCovered({ command: "npm test" }, ["npm run lint"]));
+});
+
+// A policy that lists the repo's CI checks as ci_evidence_checks.
+const ciPolicy = PolicySchema.parse({
+  version: "1.0",
+  required_checks: [],
+  ci_evidence_checks: ["Lint & Unit", "Integration Tests"],
+});
+
+function ciReceipt(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    receipt_version: "1.0",
+    task_id: "TEST-27",
+    agent_id: "test-agent",
+    intent: "A change validated locally plus CI-run checks that the sandbox cannot execute directly.",
+    self_modifying: false,
+    policy_refs: [".plumbline/MISSION.md"],
+    validation_plan: [
+      { command: "npm test", reason: "local unit tests", required: true },
+      { command: "Lint & Unit", reason: "CI lint+unit — corroborated by ci-evidence", required: true },
+      { command: "Integration Tests", reason: "CI integration — corroborated by ci-evidence", required: true, ci_covered: true },
+    ],
+    execution_evidence: [
+      { command: "npm test", status: "passed", output_ref: "42 passing" },
+      { command: "Lint & Unit", status: "skipped", skip_reason: "cannot run CI in sandbox; ci-evidence corroborates" },
+      { command: "Integration Tests", status: "skipped", skip_reason: "cannot run CI in sandbox; ci-evidence corroborates" },
+    ],
+    changed_files: ["src/app.ts"],
+    diff_sha256: computeDiffSha256("fake diff"),
+    result_summary: "Made the change, ran unit tests locally, and relied on CI-evidence for lint/integration.",
+    ...overrides,
+  });
+}
+
+test("issue #27: CI-covered required step marked skipped + ci-evidence → shape PASS", () => {
+  const { result } = shapeCheck(ciReceipt(), ciPolicy, { skipGit: true });
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.pass, true);
+  // The skipped CI-covered steps surface as informational warnings, not errors.
+  assert.ok(result.warnings.some((w) => w.includes("corroborated by ci-evidence")));
+});
+
+test("issue #27: a NON-CI-covered required step still needs passing evidence", () => {
+  const receipt = ciReceipt({
+    validation_plan: [
+      { command: "npm test", reason: "local unit tests", required: true },
+    ],
+    execution_evidence: [
+      { command: "npm test", status: "skipped", skip_reason: "was lazy" },
+    ],
+  });
+  const { result } = shapeCheck(receipt, ciPolicy, { skipGit: true });
+  assert.equal(result.pass, false);
+  assert.ok(result.errors.some((e) => e.includes('has status "skipped"')));
+});
+
+test("issue #27: whitespace mismatch between plan and evidence still matches (shape PASS)", () => {
+  const receipt = ciReceipt({
+    validation_plan: [
+      { command: "npm  run   test", reason: "local unit tests", required: true },
+    ],
+    execution_evidence: [
+      { command: "npm run test", status: "passed" },
+    ],
+  });
+  const { result } = shapeCheck(receipt, ciPolicy, { skipGit: true });
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.pass, true);
+});
+
+test("issue #27: evidence matched by step id despite a command wording diff, with a named FYI", () => {
+  const receipt = ciReceipt({
+    validation_plan: [
+      { command: "npm test", id: "unit", reason: "local unit tests", required: true },
+    ],
+    execution_evidence: [
+      // Different wording, but linked to the step by id — must still satisfy.
+      { command: "npm run test -- --runInBand", step: "unit", status: "passed" },
+    ],
+  });
+  const { result } = shapeCheck(receipt, ciPolicy, { skipGit: true });
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.pass, true);
+  assert.ok(
+    result.warnings.some((w) => w.includes("does not match validation_plan step <unit>")),
+    "expected a precise, named mismatch FYI",
+  );
 });

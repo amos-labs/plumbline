@@ -87,6 +87,16 @@ export function commandMatchesCheck(command: string, check: string): boolean {
 }
 
 /**
+ * Collapse runs of internal whitespace to a single space and trim, so that a
+ * trivial spacing/indentation diff between a validation_plan step's command and
+ * the evidence command doesn't read as a mismatch. Semantically-meaningful
+ * differences (extra args, different tokens) survive normalization.
+ */
+export function normalizeCommand(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+/**
  * Evidence satisfies a plan step when its command IS the step's command,
  * allowing only a trailing PARENTHETICAL or `#` annotation: the step
  * "bundle exec rspec spec/foo_spec.rb" is satisfied by evidence
@@ -96,13 +106,77 @@ export function commandMatchesCheck(command: string, check: string): boolean {
  * narrower run ("bundle exec rspec spec/foo") would wrongly satisfy a broader
  * required step ("bundle exec rspec") and could even mask a failed full-suite
  * evidence entry.
+ *
+ * Whitespace is normalized on both sides first (collapsing internal runs), so a
+ * plan/evidence pair that differs only in spacing still matches — the trivial
+ * string diff that used to read as "no execution evidence for required step".
  */
 export function evidenceSatisfiesStep(evidenceCommand: string, stepCommand: string): boolean {
-  const ev = evidenceCommand.trim();
-  const step = stepCommand.trim();
+  const ev = normalizeCommand(evidenceCommand);
+  const step = normalizeCommand(stepCommand);
   if (ev === step) return true;
   if (!ev.startsWith(step)) return false;
   return /^\s*[(#]/.test(ev.slice(step.length));
+}
+
+/**
+ * A validation_plan step is "CI-covered" — corroborated by the `ci-evidence`
+ * gate rather than by self-reported manual evidence — when either it is
+ * explicitly flagged `ci_covered: true`, or its command maps (at token
+ * boundaries) to one of the policy's `ci_evidence_checks`. Such a step may be
+ * `skipped` (or carry no manual evidence) without failing shape: the agent
+ * legitimately can't run CI (Lint/Integration) in its sandbox, and the gate
+ * reads the PR's real CI run in `run` mode — demanding manual evidence here is
+ * just redundant bookkeeping and drove a REWORK loop (issue #27).
+ */
+export function stepIsCiCovered(
+  step: { command: string; ci_covered?: boolean },
+  ciEvidenceChecks: readonly string[],
+): boolean {
+  if (step.ci_covered) return true;
+  return ciEvidenceChecks.some((check) => commandMatchesCheck(step.command, check));
+}
+
+/**
+ * Find the execution_evidence entry for a plan step and, if none satisfies it,
+ * report WHY. Matching order:
+ *   1. by `step` id (when the plan step has an `id`) — the robust path: a
+ *      whitespace/wording diff in the command never breaks an id match;
+ *   2. by command (whitespace-normalized, trailing-annotation tolerant).
+ * On a near-miss (an evidence entry targets the id but its command diverges, or
+ * a command-matched entry exists but was rejected) `mismatch` names the exact
+ * divergence so the fix is obvious rather than a bare "no evidence".
+ */
+export function findEvidenceForStep(
+  step: { command: string; id?: string },
+  evidence: ReadonlyArray<{ command: string; status: string; skip_reason?: string; step?: string }>,
+): { evidence?: (typeof evidence)[number]; mismatch?: string } {
+  // 1. id match — authoritative when both sides carry the id.
+  if (step.id) {
+    const byId = evidence.filter((e) => e.step === step.id);
+    if (byId.length > 0) {
+      // Prefer an entry that also command-matches; otherwise accept the id link
+      // outright (the id is the contract — the command field is a human label).
+      const exact = byId.find((e) => evidenceSatisfiesStep(e.command, step.command));
+      if (exact) return { evidence: exact };
+      // The evidence targets this step by id but its command diverges. That's a
+      // deliberate link, so honor it — but name the divergence as a FYI so the
+      // author can reconcile the two command strings if they meant them equal.
+      const stepNorm = normalizeCommand(step.command);
+      const evNorm = normalizeCommand(byId[0].command);
+      return {
+        evidence: byId[0],
+        mismatch:
+          `evidence command does not match validation_plan step <${step.id}>: ` +
+          `plan="${stepNorm}" evidence="${evNorm}" (matched by step id)`,
+      };
+    }
+  }
+  // 2. command match (normalized).
+  const byCommand = evidence.find((e) => evidenceSatisfiesStep(e.command, step.command));
+  if (byCommand) return { evidence: byCommand };
+
+  return {};
 }
 
 export interface ShapeOptions {
@@ -189,10 +263,27 @@ export function shapeCheck(
     }
   }
 
-  // 2. Every required plan step must have passing evidence.
+  // 2. Every required plan step must have passing evidence — UNLESS the step is
+  //    corroborated by the ci-evidence gate. A CI-covered step (Lint/Integration
+  //    etc. the agent can't run in its sandbox) may be `skipped` or evidence-less:
+  //    the `ci-evidence` check reads the PR's real CI run in `run` mode, so
+  //    demanding self-reported manual evidence here is redundant bookkeeping and
+  //    was the #1 cause of the shape REWORK loop (issue #27). We still surface a
+  //    FYI when such a step reports actual failed evidence.
   for (const step of receipt.validation_plan) {
-    const ev = receipt.execution_evidence.find((e) => evidenceSatisfiesStep(e.command, step.command));
+    const ciCovered = stepIsCiCovered(step, policy.ci_evidence_checks);
+    const { evidence: ev, mismatch } = findEvidenceForStep(step, receipt.execution_evidence);
+    // A command/plan divergence that was still reconciled by step id: surface it
+    // as a FYI so the author can align the strings, but it does NOT gate.
+    if (mismatch) warnings.push(mismatch);
     if (!ev) {
+      if (ciCovered) {
+        warnings.push(
+          `validation_plan step "${step.command}" is corroborated by ci-evidence — ` +
+            `not requiring self-reported manual evidence`,
+        );
+        continue;
+      }
       if (step.required) {
         findings.push({ check: "evidence_coverage", message: `no execution evidence for required step: "${step.command}"` });
       } else {
@@ -201,6 +292,14 @@ export function shapeCheck(
       continue;
     }
     if (step.required && ev.status !== "passed") {
+      if (ciCovered && ev.status === "skipped") {
+        // Legitimate: can't run CI locally; ci-evidence proves the real run.
+        warnings.push(
+          `validation_plan step "${step.command}" is skipped locally but corroborated by ci-evidence` +
+            (ev.skip_reason ? ` (skip_reason: ${ev.skip_reason})` : ""),
+        );
+        continue;
+      }
       findings.push({
         check: "evidence_coverage",
         message: `required step "${step.command}" has status "${ev.status}"${ev.skip_reason ? ` (skip_reason: ${ev.skip_reason})` : ""}`,

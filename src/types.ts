@@ -13,6 +13,23 @@ export const ValidationStepSchema = z.object({
   command: z.string().min(1),
   reason: z.string().min(1),
   required: z.boolean(),
+  /**
+   * Optional stable identifier for the step. When present, execution_evidence
+   * is matched to this step by `id` (via each evidence entry's `step`) instead
+   * of by byte-matching the `command` string — so a trivial whitespace/wording
+   * diff between plan and evidence no longer reads as "no execution evidence".
+   */
+  id: z.string().min(1).optional(),
+  /**
+   * Mark a step as corroborated by the `ci-evidence` gate rather than by
+   * self-reported manual evidence. A step whose `command` maps to one of the
+   * policy's `ci_evidence_checks` is auto-recognized as CI-covered even without
+   * this flag — set it explicitly to be unambiguous. CI-covered required steps
+   * may be `skipped` (or have no manual evidence) in the sandbox: the gate
+   * reads the PR's real CI run in `run` mode, so demanding manual evidence here
+   * would just be redundant bookkeeping. See AGENTS.md "receipt authoring".
+   */
+  ci_covered: z.boolean().optional(),
 });
 
 export const ExecutionEvidenceSchema = z.object({
@@ -20,6 +37,8 @@ export const ExecutionEvidenceSchema = z.object({
   status: z.enum(["passed", "failed", "skipped"]),
   output_ref: z.string().optional(),
   skip_reason: z.string().optional(),
+  /** Optional id of the validation_plan step this evidence is for (matches ValidationStep.id). */
+  step: z.string().min(1).optional(),
 });
 
 export const ReceiptSchema = z.object({
