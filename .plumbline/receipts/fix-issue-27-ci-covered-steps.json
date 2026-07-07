@@ -1,0 +1,60 @@
+{
+  "receipt_version": "1.0",
+  "task_id": "fix-issue-27-ci-covered-steps",
+  "agent_id": "claude-opus-4-8",
+  "intent": "Fix issue #27: stop the shape gate from sending receipt authors into a REWORK loop on CI bookkeeping. CI-corroborated validation_plan steps (ci_covered, or mapping to a policy ci_evidence_checks entry) may be skipped without failing shape, and evidence is matched to steps by id or whitespace-normalized command so trivial diffs no longer read as missing evidence.",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json"
+  ],
+  "validation_plan": [
+    {
+      "command": "npm run build",
+      "reason": "TypeScript must compile after the type + logic changes to types.ts/shape.ts/scaffold.ts",
+      "required": true,
+      "id": "build"
+    },
+    {
+      "command": "npm test",
+      "reason": "Unit tests (shape + severity + schema-discoverability suites) must stay green, including the new issue-27 tests",
+      "required": true,
+      "id": "unit"
+    },
+    {
+      "command": "test",
+      "reason": "The repo's CI 'test' job (build + tsc + npm test) is the authoritative run; corroborated by the ci-evidence gate, not runnable in this sandbox as a check-run",
+      "required": true,
+      "ci_covered": true
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npm run build",
+      "status": "passed",
+      "output_ref": "tsc clean, no errors",
+      "step": "build"
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "tests 108, pass 108, fail 0",
+      "step": "unit"
+    },
+    {
+      "command": "test",
+      "status": "skipped",
+      "skip_reason": "cannot run the GitHub 'test' check-run in the sandbox; corroborated by the ci-evidence gate against the PR's real CI run"
+    }
+  ],
+  "changed_files": [
+    ".plumbline/AGENTS.md",
+    "src/scaffold.ts",
+    "src/shape.ts",
+    "src/test/shape.test.ts",
+    "src/types.ts",
+    "templates/AGENTS.md"
+  ],
+  "diff_sha256": "ec93a776b4d7739988394ba9b6648dc017677a6fab3f92721bc5a8f5a5f933c2",
+  "result_summary": "Extended the receipt schema with optional validation_plan.id / ci_covered and execution_evidence.step (back-compat), taught the shape gate to treat CI-covered steps as satisfied by ci-evidence and to match evidence by id or normalized command with a precise mismatch message, updated plumb schema and AGENTS.md (repo + init template), and added tests. Verified with npm run build and npm test (108/108)."
+}
