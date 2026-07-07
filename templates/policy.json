@@ -10,5 +10,20 @@
   "min_review_confidence": 0.8,
   "human_review_level": "balanced",
   "review_model": "claude-sonnet-4-6",
-  "max_receipt_bytes": 262144
+  "review_provider": "anthropic",
+  "max_receipt_bytes": 262144,
+  "review_temperature": 0,
+  "skip_review": {
+    "docs_only": false,
+    "config_only": false,
+    "below_diff_chars": 0
+  },
+  "review_cache": {
+    "enabled": false,
+    "dir": ".plumbline/cache/review"
+  },
+  "budget": {
+    "use_cheap_model": false,
+    "max_usd_per_pr": 0
+  }
 }

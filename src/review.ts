@@ -1,6 +1,15 @@
 import type { Policy, Receipt, ReviewResult, Verdict } from "./types.js";
+import { selectProvider, resolveProviderId, type ReviewProvider } from "./provider.js";
+import { resolveModel } from "./cost.js";
 
 const MAX_DIFF_CHARS = 180_000;
+
+/**
+ * Prompt version — bump when buildReviewPrompt changes materially. Recorded in
+ * the review audit metadata and used as part of the cache key so a prompt
+ * change never serves a stale cached verdict.
+ */
+export const PROMPT_VERSION = "v1";
 
 /**
  * Semantic review — the Oracle half of the gate. One LLM call that judges
@@ -77,43 +86,45 @@ Rules:
 - Omit failure_capsule only for "approve".`;
 }
 
-interface AnthropicResponse {
-  content: Array<{ type: string; text?: string }>;
+/**
+ * Resolve the model id: env override (PLUMBLINE_MODEL / PROOFGATE_MODEL) wins,
+ * then the budget cheaper-model tier, then policy.review_model.
+ */
+export function resolveReviewModel(policy: Policy): string {
+  return process.env.PLUMBLINE_MODEL || process.env.PROOFGATE_MODEL || resolveModel(policy);
 }
 
+/**
+ * Run the semantic review. The LLM call is delegated to a `ReviewProvider`
+ * (Anthropic by default, any OpenAI-compatible endpoint via config) so the
+ * prompt and verdict schema stay provider-independent. Pass an explicit
+ * `provider` to inject one (tests / embedding); otherwise one is selected from
+ * env + policy.
+ */
 export async function semanticReview(
   mission: string,
   receipt: Receipt,
   diff: string,
   policy: Policy,
-  apiKey: string,
+  provider?: ReviewProvider,
 ): Promise<ReviewResult> {
   const prompt = buildReviewPrompt(mission, receipt, diff, policy.human_review_level);
+  const model = resolveReviewModel(policy);
+  const temperature = policy.review_temperature ?? 0;
+  const prov = provider ?? selectProvider(policy);
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: process.env.PLUMBLINE_MODEL || process.env.PROOFGATE_MODEL || policy.review_model,
-      // The capsule carries three prose notes + a failure capsule; 2000 was
-      // tight enough that a thorough review got truncated mid-JSON and failed
-      // to parse. Give it real headroom.
-      max_tokens: 4000,
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
+  const audit: NonNullable<ReviewResult["audit"]> = {
+    provider: prov.id ?? resolveProviderId(policy),
+    model,
+    prompt_version: PROMPT_VERSION,
+    temperature,
+    cached: false,
+  };
 
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Anthropic API error ${res.status}: ${body.slice(0, 500)}`);
-  }
-
-  const data = (await res.json()) as AnthropicResponse;
-  const text = data.content.find((c) => c.type === "text")?.text ?? "";
+  // The capsule carries three prose notes + a failure capsule; 2000 was tight
+  // enough that a thorough review got truncated mid-JSON and failed to parse.
+  // Give it real headroom.
+  const text = await prov.complete({ prompt, model, maxTokens: 4000, temperature });
 
   const parsed = parseReviewJson(text);
 
@@ -145,6 +156,7 @@ export async function semanticReview(
         changed_files_implicated: [],
         severity: "fixable",
       },
+      audit,
     };
   }
 
@@ -161,7 +173,7 @@ export async function semanticReview(
       " [plumbline: self-modifying work has no auto-approve path — human review required]";
   }
 
-  return { ...parsed, verdict };
+  return { ...parsed, verdict, audit };
 }
 
 /**

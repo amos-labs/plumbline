@@ -10,7 +10,9 @@ import {
   gitChangedFiles,
   isReceiptPath,
 } from "./shape.js";
-import { semanticReview } from "./review.js";
+import { semanticReview, resolveReviewModel, PROMPT_VERSION } from "./review.js";
+import { selectProvider } from "./provider.js";
+import { shouldSkipReview, readReviewCache, writeReviewCache } from "./cost.js";
 import { renderComment, renderCiSummary, verifyCiEvidence } from "./github.js";
 import { detectCi, reportToCi } from "./ci.js";
 import { pickReceipt, type ReceiptCandidate } from "./receipt-select.js";
@@ -212,8 +214,9 @@ receipt: auto-discovered from the PR diff at .plumbline/receipts/<task_id>.json
          (one file per PR — no conflicts); falls back to <dir>/receipt.json.
          Legacy .proofgate/ repos work unchanged. Pass --receipt to override.
 policy default:  .plumbline/policy.json (or .proofgate/policy.json when that's what exists)
-env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (comment),
-     PLUMBLINE_MODEL / PROOFGATE_MODEL (override)`);
+env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (comment),
+     PLUMBLINE_MODEL / PROOFGATE_MODEL (model override),
+     PLUMBLINE_PROVIDER (anthropic|openai), PLUMBLINE_API_BASE + PLUMBLINE_API_KEY (OpenAI-compatible)`);
     return cmd ? 2 : 0;
   }
 
@@ -599,22 +602,87 @@ env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (c
       console.error(`plumb: mission file not found at ${missionPath}`);
       return 1;
     }
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      console.error("plumb: ANTHROPIC_API_KEY is required for semantic review");
-      return 1;
-    }
     const mission = readFileSync(missionPath, "utf8");
     const diff = skipGit ? "" : getDiff(baseRef, cwd);
 
-    const review = await semanticReview(mission, receipt, diff, policy, apiKey);
-    gate.review = review;
-    gate.final = review.verdict as Verdict;
+    // Cost control (#26): skip the LLM for low-risk diffs — but NEVER for
+    // self_modifying / protected-path changes (hard floor). Opt-in; default
+    // config skips nothing.
+    const skip = shouldSkipReview(receipt, policy, diff);
+    if (skip.skip) {
+      console.error(`semantic review: SKIPPED (${skip.reason}) — shape gate stands as the verdict`);
+      gate.reasons.push(`Semantic review skipped: ${skip.reason} (shape gate passed).`);
+      // Shape passed and review was intentionally skipped → approve on shape.
+      gate.final = "approve";
+    } else {
+      if (skip.reason) {
+        // A "never skipped" floor reason worth surfacing for auditability.
+        gate.reasons.push(`Semantic review enforced: ${skip.reason}.`);
+      }
 
-    console.error(`semantic review: ${review.verdict} (confidence ${review.confidence})`);
-    console.error(`  coverage: ${review.validation_coverage_notes}`);
-    console.error(`  mission:  ${review.mission_alignment_notes}`);
-    console.error(`  risk:     ${review.risk_notes}`);
+      // Cost control (#26): reuse a cached verdict for an identical diff.
+      const provider = (() => {
+        try {
+          return selectProvider(policy);
+        } catch (e) {
+          console.error(`plumb: ${(e as Error).message}`);
+          return null;
+        }
+      })();
+      if (!provider) return 1;
+
+      const cacheDir = join(cwd, policy.review_cache.dir);
+      const model = resolveReviewModel(policy);
+      let review: Awaited<ReturnType<typeof semanticReview>> | null = null;
+
+      if (policy.review_cache.enabled && !skipGit && receipt.diff_sha256) {
+        const hit = readReviewCache(
+          cacheDir,
+          receipt.diff_sha256,
+          provider.id,
+          model,
+          PROMPT_VERSION,
+        );
+        if (hit) {
+          review = { ...hit, audit: { ...hit.audit, cached: true } };
+          console.error(
+            `semantic review: CACHE HIT for diff ${receipt.diff_sha256.slice(0, 12)}… (${provider.id}/${model}) — no LLM call`,
+          );
+          gate.reasons.push(`Reused cached verdict for this diff (diff_sha256, ${provider.id}/${model}).`);
+        }
+      }
+
+      if (!review) {
+        review = await semanticReview(mission, receipt, diff, policy, provider);
+        if (policy.review_cache.enabled && !skipGit && receipt.diff_sha256) {
+          writeReviewCache(
+            cacheDir,
+            receipt.diff_sha256,
+            provider.id,
+            model,
+            PROMPT_VERSION,
+            review,
+          );
+        }
+      }
+
+      gate.review = review;
+      gate.final = review.verdict as Verdict;
+
+      // Budget: soft per-PR spend cap is informational — surface it for audit.
+      if (policy.budget.max_usd_per_pr > 0) {
+        gate.reasons.push(
+          `Budget cap configured: max $${policy.budget.max_usd_per_pr}/PR (model ${model}).`,
+        );
+      }
+
+      console.error(
+        `semantic review: ${review.verdict} (confidence ${review.confidence}) [${review.audit?.provider}/${model}, temp ${review.audit?.temperature}, prompt ${review.audit?.prompt_version}${review.audit?.cached ? ", cached" : ""}]`,
+      );
+      console.error(`  coverage: ${review.validation_coverage_notes}`);
+      console.error(`  mission:  ${review.mission_alignment_notes}`);
+      console.error(`  risk:     ${review.risk_notes}`);
+    }
   }
 
   // --- CI reporting ---

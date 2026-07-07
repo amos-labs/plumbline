@@ -10,6 +10,27 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
 
 ## [Unreleased]
 
+### Added
+- **Provider abstraction for the semantic review (#25).** The review LLM call is
+  now behind a small `ReviewProvider` interface. Anthropic stays the default with
+  its env unchanged (`ANTHROPIC_API_KEY`, `PLUMBLINE_MODEL`/`PROOFGATE_MODEL`); any
+  OpenAI-compatible endpoint (OpenAI, Azure OpenAI, Together, Groq, vLLM, Ollama,
+  self-hosted, …) is selectable via `PLUMBLINE_PROVIDER=openai` + `PLUMBLINE_API_BASE`
+  + `PLUMBLINE_API_KEY`, or `policy.review_provider` / `policy.review_api_base`. The
+  prompt and the `approve`/`rework`/`review` verdict schema are provider-independent.
+- **LLM cost + determinism controls (#26), all opt-in — defaults preserve today's
+  behavior (review always runs).**
+  - `skip_review` — pass docs-only / config-only / below-size-threshold diffs on the
+    shape gate alone. **Hard floor:** `self_modifying` / `protected_paths` changes are
+    never skipped.
+  - `review_cache` — reuse a prior verdict for an identical diff (keyed by
+    `diff_sha256`, scoped to provider + model + prompt version).
+  - `budget` — optional cheaper-model tier (`use_cheap_model` / `cheap_model`) and an
+    informational per-PR spend cap (`max_usd_per_pr`).
+  - Determinism: `review_temperature` pinned to `0` by default; the verdict records
+    `audit` metadata (provider, model, prompt version, temperature, cache hit) for
+    reproducibility.
+
 ## [0.2.0] - 2026-07-07
 
 First tagged release with a changelog and a release process. No behavioral change

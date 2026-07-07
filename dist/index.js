@@ -7,8 +7,8 @@ var __export = (target, all) => {
 
 // src/cli.ts
 import { execFileSync as execFileSync4 } from "node:child_process";
-import { readFileSync as readFileSync4, writeFileSync as writeFileSync4, existsSync as existsSync5, mkdirSync as mkdirSync4 } from "node:fs";
-import { join as join5, dirname as dirname3 } from "node:path";
+import { readFileSync as readFileSync5, writeFileSync as writeFileSync5, existsSync as existsSync6, mkdirSync as mkdirSync5 } from "node:fs";
+import { join as join6, dirname as dirname4 } from "node:path";
 
 // node_modules/zod/v3/external.js
 var external_exports = {};
@@ -4129,8 +4129,65 @@ var PolicySchema = external_exports.object({
    * regardless of this setting.
    */
   human_review_level: external_exports.enum(["low", "balanced", "high"]).default("balanced"),
-  /** Anthropic model used for semantic review. */
+  /** Default model used for semantic review (provider-specific model id). */
   review_model: external_exports.string().default("claude-sonnet-4-6"),
+  /**
+   * Which LLM provider backs the semantic review. "anthropic" (default) or
+   * "openai" (any OpenAI-compatible Chat Completions endpoint). The prompt and
+   * the approve/rework/review verdict schema are provider-independent — this
+   * only swaps the transport. Env var PLUMBLINE_PROVIDER overrides this.
+   * "no lock-in on intelligence": adopters can use their own vendor or a
+   * self-hosted model.
+   */
+  review_provider: external_exports.enum(["anthropic", "openai"]).default("anthropic"),
+  /**
+   * Optional base URL for the review provider. Required for "openai" (e.g.
+   * https://api.openai.com/v1 or a self-hosted endpoint); an optional endpoint
+   * override for "anthropic" (proxy/gateway). Env var PLUMBLINE_API_BASE
+   * overrides this.
+   */
+  review_api_base: external_exports.string().optional(),
+  /**
+   * Cost control (issue #26) — skip the LLM review for low-risk diffs, passing
+   * on the shape gate alone. ALL OPT-IN; defaults keep review running. The
+   * hard floor is never skippable: self_modifying / protected_paths changes
+   * always get a real semantic review regardless of these flags.
+   */
+  skip_review: external_exports.object({
+    /** Skip when every changed file is documentation (.md/.rst/.txt/…). */
+    docs_only: external_exports.boolean().default(false),
+    /** Skip when every changed file is config (.json/.yaml/.toml/…) or docs. */
+    config_only: external_exports.boolean().default(false),
+    /** Skip when the diff is smaller than this many characters. 0 = disabled. */
+    below_diff_chars: external_exports.number().int().min(0).default(0)
+  }).default({}),
+  /**
+   * Budget / model-tier control (issue #26). All opt-in.
+   *   use_cheap_model — when true and cheap_model set, use the cheaper model.
+   *   cheap_model     — a lower-cost model id for routine reviews.
+   *   max_usd_per_pr  — optional soft spend cap per PR (0 = no cap). Informational
+   *                     ceiling recorded for audit; the gate warns if exceeded.
+   */
+  budget: external_exports.object({
+    use_cheap_model: external_exports.boolean().default(false),
+    cheap_model: external_exports.string().optional(),
+    max_usd_per_pr: external_exports.number().min(0).default(0)
+  }).default({}),
+  /**
+   * Verdict cache (issue #26). When enabled, an identical diff (by diff_sha256,
+   * scoped to provider+model+prompt version) reuses the prior verdict instead
+   * of re-calling the LLM. Opt-in; disabled by default.
+   */
+  review_cache: external_exports.object({
+    enabled: external_exports.boolean().default(false),
+    /** Directory for cache files (relative to repo root). */
+    dir: external_exports.string().default(".plumbline/cache/review")
+  }).default({}),
+  /**
+   * Sampling temperature for the review call. Pinned LOW by default for
+   * determinism + auditability. Recorded in the review output.
+   */
+  review_temperature: external_exports.number().min(0).max(2).default(0),
   /** Max receipt size in bytes (anti garbage-dump). */
   max_receipt_bytes: external_exports.number().default(262144),
   /**
@@ -4482,8 +4539,194 @@ function shapeCheck(rawReceipt, policy, opts = {}) {
   return { result: { pass: errors.length === 0, errors, warnings }, receipt };
 }
 
+// src/provider.ts
+var AnthropicProvider = class {
+  constructor(apiKey, baseUrl = "https://api.anthropic.com") {
+    this.apiKey = apiKey;
+    this.baseUrl = baseUrl;
+  }
+  apiKey;
+  baseUrl;
+  id = "anthropic";
+  async complete(req) {
+    const res = await fetch(`${this.baseUrl.replace(/\/$/, "")}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": this.apiKey,
+        "anthropic-version": "2023-06-01"
+      },
+      body: JSON.stringify({
+        model: req.model,
+        max_tokens: req.maxTokens,
+        temperature: req.temperature,
+        messages: [{ role: "user", content: req.prompt }]
+      })
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Anthropic API error ${res.status}: ${body.slice(0, 500)}`);
+    }
+    const data = await res.json();
+    return data.content.find((c) => c.type === "text")?.text ?? "";
+  }
+};
+var OpenAICompatibleProvider = class {
+  constructor(apiKey, baseUrl) {
+    this.apiKey = apiKey;
+    this.baseUrl = baseUrl;
+  }
+  apiKey;
+  baseUrl;
+  id = "openai";
+  async complete(req) {
+    const res = await fetch(`${this.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${this.apiKey}`
+      },
+      body: JSON.stringify({
+        model: req.model,
+        max_tokens: req.maxTokens,
+        temperature: req.temperature,
+        messages: [{ role: "user", content: req.prompt }]
+      })
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`OpenAI-compatible API error ${res.status}: ${body.slice(0, 500)}`);
+    }
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content ?? "";
+  }
+};
+var ENV = {
+  provider: "PLUMBLINE_PROVIDER",
+  apiBase: "PLUMBLINE_API_BASE",
+  apiKey: "PLUMBLINE_API_KEY",
+  apiKeyLegacy: "PROOFGATE_API_KEY",
+  anthropicKey: "ANTHROPIC_API_KEY"
+};
+function resolveProviderId(policy) {
+  const raw = (process.env[ENV.provider] || policy.review_provider || "anthropic").toLowerCase();
+  if (raw === "openai-compatible" || raw === "openai_compatible") return "openai";
+  return raw;
+}
+function selectProvider(policy) {
+  const id = resolveProviderId(policy);
+  const sharedKey = process.env[ENV.apiKey] || process.env[ENV.apiKeyLegacy];
+  if (id === "anthropic") {
+    const key = process.env[ENV.anthropicKey] || sharedKey;
+    if (!key) {
+      throw new Error(
+        `semantic review: no API key for provider "anthropic" \u2014 set ${ENV.anthropicKey} (or ${ENV.apiKey}).`
+      );
+    }
+    const base = process.env[ENV.apiBase] || policy.review_api_base;
+    return base ? new AnthropicProvider(key, base) : new AnthropicProvider(key);
+  }
+  if (id === "openai") {
+    const key = sharedKey || process.env[ENV.anthropicKey];
+    if (!key) {
+      throw new Error(
+        `semantic review: no API key for provider "openai" \u2014 set ${ENV.apiKey} (or ${ENV.apiKeyLegacy}).`
+      );
+    }
+    const base = process.env[ENV.apiBase] || policy.review_api_base;
+    if (!base) {
+      throw new Error(
+        `semantic review: provider "openai" requires a base URL \u2014 set ${ENV.apiBase} (or policy.review_api_base), e.g. https://api.openai.com/v1 or your self-hosted endpoint.`
+      );
+    }
+    return new OpenAICompatibleProvider(key, base);
+  }
+  throw new Error(
+    `semantic review: unknown provider "${id}" \u2014 supported: "anthropic" (default), "openai".`
+  );
+}
+
+// src/cost.ts
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+var DOC_EXT = /\.(md|markdown|mdx|rst|txt|adoc)$/i;
+var CONFIG_EXT = /\.(json|ya?ml|toml|ini|cfg|conf|env|lock|editorconfig|gitignore|gitattributes)$/i;
+var CONFIG_BASENAME = /(^|\/)(\.gitignore|\.gitattributes|\.editorconfig|\.npmrc|\.nvmrc|LICENSE)$/i;
+function isDocFile(f) {
+  return DOC_EXT.test(f);
+}
+function isConfigFile(f) {
+  return CONFIG_EXT.test(f) || CONFIG_BASENAME.test(f);
+}
+function shouldSkipReview(receipt, policy, diff) {
+  const s = policy.skip_review;
+  if (!s || !s.docs_only && !s.config_only && (s.below_diff_chars ?? 0) <= 0) {
+    return { skip: false, reason: "" };
+  }
+  if (receipt.self_modifying) {
+    return { skip: false, reason: "self_modifying \u2014 protected review floor, never skipped" };
+  }
+  const files = receipt.changed_files ?? [];
+  const protectedHit = files.map((f) => matchesAny(f, policy.protected_paths)).find(Boolean);
+  if (protectedHit) {
+    return { skip: false, reason: `protected path touched (${protectedHit}) \u2014 never skipped` };
+  }
+  if (s.docs_only && files.length > 0 && files.every(isDocFile)) {
+    return { skip: true, reason: `docs-only change (${files.length} file(s)) \u2014 shape gate only` };
+  }
+  if (s.config_only && files.length > 0 && files.every((f) => isConfigFile(f) || isDocFile(f))) {
+    return { skip: true, reason: `config/docs-only change (${files.length} file(s)) \u2014 shape gate only` };
+  }
+  const threshold = s.below_diff_chars ?? 0;
+  if (threshold > 0 && diff.length > 0 && diff.length < threshold) {
+    return {
+      skip: true,
+      reason: `diff is ${diff.length} chars, below skip threshold ${threshold} \u2014 shape gate only`
+    };
+  }
+  return { skip: false, reason: "" };
+}
+function cacheFilePath(cacheDir, diffSha256) {
+  return join(cacheDir, `${diffSha256}.json`);
+}
+function readReviewCache(cacheDir, diffSha256, provider, model, promptVersion) {
+  try {
+    const p = cacheFilePath(cacheDir, diffSha256);
+    if (!existsSync(p)) return null;
+    const entry = JSON.parse(readFileSync(p, "utf8"));
+    if (entry.diff_sha256 === diffSha256 && entry.provider === provider && entry.model === model && entry.prompt_version === promptVersion && entry.review) {
+      return entry.review;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+function writeReviewCache(cacheDir, diffSha256, provider, model, promptVersion, review) {
+  try {
+    const p = cacheFilePath(cacheDir, diffSha256);
+    mkdirSync(dirname(p), { recursive: true });
+    const entry = {
+      diff_sha256: diffSha256,
+      provider,
+      model,
+      prompt_version: promptVersion,
+      review,
+      cached_at: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    writeFileSync(p, JSON.stringify(entry, null, 2));
+  } catch {
+  }
+}
+function resolveModel(policy) {
+  const b = policy.budget;
+  if (b?.use_cheap_model && b.cheap_model) return b.cheap_model;
+  return policy.review_model;
+}
+
 // src/review.ts
 var MAX_DIFF_CHARS = 18e4;
+var PROMPT_VERSION = "v1";
 function buildReviewPrompt(mission, receipt, diff, humanReviewLevel = "balanced") {
   const levelGuidance = {
     low: "The maintainer wants MINIMAL human review. Route to human_actions ONLY what genuinely cannot be done without human judgment (protected-surface/billing override, a real invariant trade-off, irreducibly ambiguous intent). Everything an agent could reasonably do goes in agent_actions.",
@@ -4543,30 +4786,22 @@ Rules:
 - "review" when human_actions is non-empty: an invariant trade-off, ambiguous intent, protected-surface changes, or anything you cannot verify. STILL populate agent_actions so the agent-doable parts can proceed in parallel.
 - Omit failure_capsule only for "approve".`;
 }
-async function semanticReview(mission, receipt, diff, policy, apiKey) {
+function resolveReviewModel(policy) {
+  return process.env.PLUMBLINE_MODEL || process.env.PROOFGATE_MODEL || resolveModel(policy);
+}
+async function semanticReview(mission, receipt, diff, policy, provider) {
   const prompt = buildReviewPrompt(mission, receipt, diff, policy.human_review_level);
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01"
-    },
-    body: JSON.stringify({
-      model: process.env.PLUMBLINE_MODEL || process.env.PROOFGATE_MODEL || policy.review_model,
-      // The capsule carries three prose notes + a failure capsule; 2000 was
-      // tight enough that a thorough review got truncated mid-JSON and failed
-      // to parse. Give it real headroom.
-      max_tokens: 4e3,
-      messages: [{ role: "user", content: prompt }]
-    })
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Anthropic API error ${res.status}: ${body.slice(0, 500)}`);
-  }
-  const data = await res.json();
-  const text = data.content.find((c) => c.type === "text")?.text ?? "";
+  const model = resolveReviewModel(policy);
+  const temperature = policy.review_temperature ?? 0;
+  const prov = provider ?? selectProvider(policy);
+  const audit = {
+    provider: prov.id ?? resolveProviderId(policy),
+    model,
+    prompt_version: PROMPT_VERSION,
+    temperature,
+    cached: false
+  };
+  const text = await prov.complete({ prompt, model, maxTokens: 4e3, temperature });
   const parsed = parseReviewJson(text);
   if (!parsed || !["approve", "rework", "review"].includes(parsed.verdict)) {
     return {
@@ -4587,7 +4822,8 @@ async function semanticReview(mission, receipt, diff, policy, apiKey) {
         ],
         changed_files_implicated: [],
         severity: "fixable"
-      }
+      },
+      audit
     };
   }
   let verdict = parsed.verdict;
@@ -4599,7 +4835,7 @@ async function semanticReview(mission, receipt, diff, policy, apiKey) {
     verdict = "review";
     parsed.risk_notes += " [plumbline: self-modifying work has no auto-approve path \u2014 human review required]";
   }
-  return { ...parsed, verdict };
+  return { ...parsed, verdict, audit };
 }
 function parseReviewJson(text) {
   if (!text) return null;
@@ -4992,34 +5228,34 @@ function pickReceipt(candidates, ctx) {
 
 // src/scaffold.ts
 import { fileURLToPath } from "node:url";
-import { dirname, join as join2 } from "node:path";
+import { dirname as dirname2, join as join3 } from "node:path";
 
 // src/basedir.ts
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync as existsSync2 } from "node:fs";
+import { join as join2 } from "node:path";
 var CANONICAL_DIR = ".plumbline";
 var LEGACY_DIR = ".proofgate";
 function baseDir(cwd) {
-  if (existsSync(join(cwd, CANONICAL_DIR))) return CANONICAL_DIR;
-  if (existsSync(join(cwd, LEGACY_DIR))) return LEGACY_DIR;
+  if (existsSync2(join2(cwd, CANONICAL_DIR))) return CANONICAL_DIR;
+  if (existsSync2(join2(cwd, LEGACY_DIR))) return LEGACY_DIR;
   return CANONICAL_DIR;
 }
 function resolveDualPath(cwd, path) {
-  if (existsSync(join(cwd, path))) return path;
+  if (existsSync2(join2(cwd, path))) return path;
   let twin;
   if (path.startsWith(`${CANONICAL_DIR}/`)) {
     twin = LEGACY_DIR + path.slice(CANONICAL_DIR.length);
   } else if (path.startsWith(`${LEGACY_DIR}/`)) {
     twin = CANONICAL_DIR + path.slice(LEGACY_DIR.length);
   }
-  if (twin && existsSync(join(cwd, twin))) return twin;
+  if (twin && existsSync2(join2(cwd, twin))) return twin;
   return path;
 }
 
 // src/scaffold.ts
-import { existsSync as existsSync2, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "node:fs";
 function templatesDir() {
-  return join2(dirname(fileURLToPath(import.meta.url)), "..", "templates");
+  return join3(dirname2(fileURLToPath(import.meta.url)), "..", "templates");
 }
 var INIT_PLAN = [
   { dest: "<dir>", dir: true },
@@ -5037,20 +5273,20 @@ function runInit(cwd) {
   const dir = baseDir(cwd);
   for (const item of INIT_PLAN) {
     const dest = item.dest.replace("<dir>", dir);
-    const abs = join2(cwd, dest);
-    if (existsSync2(abs)) {
+    const abs = join3(cwd, dest);
+    if (existsSync3(abs)) {
       out.push({ dest, created: false, note: "exists \u2014 left as-is" });
       continue;
     }
     if (item.dir) {
-      mkdirSync(abs, { recursive: true });
+      mkdirSync2(abs, { recursive: true });
       out.push({ dest, created: true });
       continue;
     }
-    let content = readFileSync(join2(tdir, item.src), "utf8").replaceAll(".plumbline/", `${dir}/`);
+    let content = readFileSync2(join3(tdir, item.src), "utf8").replaceAll(".plumbline/", `${dir}/`);
     if (item.src === "workflow.yml") content = content.replace(/^# Copy to [^\n]*\n/, "");
-    mkdirSync(dirname(abs), { recursive: true });
-    writeFileSync(abs, content);
+    mkdirSync2(dirname2(abs), { recursive: true });
+    writeFileSync2(abs, content);
     out.push({ dest, created: true });
   }
   return out;
@@ -5233,8 +5469,8 @@ function checkMechanical(receipt, mech) {
 
 // src/propose.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
-import { existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { join as join3 } from "node:path";
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync3, writeFileSync as writeFileSync3 } from "node:fs";
+import { join as join4 } from "node:path";
 function slugFromTitle(title) {
   const s = title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60).replace(/-+$/, "");
   return s || "change";
@@ -5351,19 +5587,19 @@ function runPropose(opts) {
   let proposalPath;
   if (!opts.lite) {
     const slug = slugFromTitle(opts.title);
-    const folder = join3("openspec", "changes", slug);
-    const abs = join3(opts.cwd, folder);
+    const folder = join4("openspec", "changes", slug);
+    const abs = join4(opts.cwd, folder);
     result.slug = slug;
     result.folder = folder;
-    if (existsSync3(abs)) {
+    if (existsSync4(abs)) {
       log(`propose: ${folder}/ already exists \u2014 left as-is (scaffolding is never destructive).`);
-      proposalPath = join3(abs, "proposal.md");
+      proposalPath = join4(abs, "proposal.md");
     } else {
-      mkdirSync2(join3(abs, "specs"), { recursive: true });
-      proposalPath = join3(abs, "proposal.md");
-      writeFileSync2(proposalPath, proposalMd({ title: opts.title, body: opts.body, taskId: opts.task }));
-      writeFileSync2(join3(abs, "tasks.md"), tasksMd(opts.title));
-      writeFileSync2(join3(abs, "specs", "README.md"), specsReadme());
+      mkdirSync3(join4(abs, "specs"), { recursive: true });
+      proposalPath = join4(abs, "proposal.md");
+      writeFileSync3(proposalPath, proposalMd({ title: opts.title, body: opts.body, taskId: opts.task }));
+      writeFileSync3(join4(abs, "tasks.md"), tasksMd(opts.title));
+      writeFileSync3(join4(abs, "specs", "README.md"), specsReadme());
       log(`created ${folder}/ (proposal.md + tasks.md + specs/) \u2014 fill the TODO sections; the tool never writes judgment content.`);
     }
   }
@@ -5393,8 +5629,8 @@ function runPropose(opts) {
     log(`propose: gh unavailable/failed \u2014 run this yourself:
   ${result.ghCommand}`);
   }
-  if (result.issueNumber !== void 0 && proposalPath && existsSync3(proposalPath)) {
-    writeFileSync2(proposalPath, writeBackTaskId(readFileSync2(proposalPath, "utf8"), result.issueNumber));
+  if (result.issueNumber !== void 0 && proposalPath && existsSync4(proposalPath)) {
+    writeFileSync3(proposalPath, writeBackTaskId(readFileSync3(proposalPath, "utf8"), result.issueNumber));
     log(`linked: proposal.md task_id \u2194 issue #${result.issueNumber}`);
   }
   if (prediction.selfModifying) {
@@ -5405,8 +5641,8 @@ function runPropose(opts) {
 }
 
 // src/archive.ts
-import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync3, readdirSync, renameSync, writeFileSync as writeFileSync3 } from "node:fs";
-import { join as join4, dirname as dirname2 } from "node:path";
+import { existsSync as existsSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync4, readdirSync, renameSync, writeFileSync as writeFileSync4 } from "node:fs";
+import { join as join5, dirname as dirname3 } from "node:path";
 var REQ_HEADER = /^### Requirement:\s*(.+?)\s*$/;
 function parseRequirements(md) {
   const lines = md.split("\n");
@@ -5513,16 +5749,16 @@ function taskIdFromProposal(proposal) {
 }
 function findReceipt(cwd, taskId) {
   for (const dir of [CANONICAL_DIR, LEGACY_DIR]) {
-    const exact = join4(dir, "receipts", `${taskId}.json`);
-    if (existsSync4(join4(cwd, exact))) return exact;
+    const exact = join5(dir, "receipts", `${taskId}.json`);
+    if (existsSync5(join5(cwd, exact))) return exact;
   }
   for (const dir of [CANONICAL_DIR, LEGACY_DIR]) {
-    const receipts = join4(cwd, dir, "receipts");
-    if (!existsSync4(receipts)) continue;
+    const receipts = join5(cwd, dir, "receipts");
+    if (!existsSync5(receipts)) continue;
     for (const f of readdirSync(receipts).filter((f2) => f2.endsWith(".json"))) {
       try {
-        const j = JSON.parse(readFileSync3(join4(receipts, f), "utf8"));
-        if (j.task_id === taskId) return join4(dir, "receipts", f);
+        const j = JSON.parse(readFileSync4(join5(receipts, f), "utf8"));
+        if (j.task_id === taskId) return join5(dir, "receipts", f);
       } catch {
       }
     }
@@ -5533,18 +5769,18 @@ function runArchive(opts) {
   const log = opts.log ?? ((l) => console.error(l));
   const policy = opts.policy ?? PolicySchema.parse({ version: "1.0" });
   const res = { ok: false, specsUpdated: [], notes: [], warnings: [], errors: [] };
-  const changeRel = join4("openspec", "changes", opts.slug);
-  const changeAbs = join4(opts.cwd, changeRel);
+  const changeRel = join5("openspec", "changes", opts.slug);
+  const changeAbs = join5(opts.cwd, changeRel);
   if (opts.slug === "archive" || opts.slug.includes("/") || opts.slug.includes("..")) {
     res.errors.push(`'${opts.slug}' is not a change slug`);
     return res;
   }
-  if (!existsSync4(changeAbs)) {
+  if (!existsSync5(changeAbs)) {
     res.errors.push(`no change folder at ${changeRel}/ \u2014 is it already archived, or misspelled?`);
     return res;
   }
-  const proposalPath = join4(changeAbs, "proposal.md");
-  const taskId = existsSync4(proposalPath) ? taskIdFromProposal(readFileSync3(proposalPath, "utf8")) : void 0;
+  const proposalPath = join5(changeAbs, "proposal.md");
+  const taskId = existsSync5(proposalPath) ? taskIdFromProposal(readFileSync4(proposalPath, "utf8")) : void 0;
   const receiptRel = taskId ? findReceipt(opts.cwd, taskId) : void 0;
   let gateProblem;
   if (!taskId) {
@@ -5552,7 +5788,7 @@ function runArchive(opts) {
   } else if (!receiptRel) {
     gateProblem = `no receipt found for task_id '${taskId}' (looked in ${CANONICAL_DIR}/receipts/ and ${LEGACY_DIR}/receipts/)`;
   } else {
-    const { result } = shapeCheck(readFileSync3(join4(opts.cwd, receiptRel), "utf8"), policy, {
+    const { result } = shapeCheck(readFileSync4(join5(opts.cwd, receiptRel), "utf8"), policy, {
       skipGit: true
     });
     if (result.pass) {
@@ -5570,35 +5806,35 @@ function runArchive(opts) {
     res.warnings.push(`FORCED past the gate-before-archive rule: ${gateProblem}`);
     log(`plumb archive \u26A0\uFE0F  ${res.warnings[res.warnings.length - 1]}`);
   }
-  const deltaRoot = join4(changeAbs, "specs");
-  if (existsSync4(deltaRoot)) {
+  const deltaRoot = join5(changeAbs, "specs");
+  if (existsSync5(deltaRoot)) {
     for (const capability of readdirSync(deltaRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)) {
-      const deltaPath = join4(deltaRoot, capability, "spec.md");
-      if (!existsSync4(deltaPath)) continue;
-      const delta = parseDeltaSpec(readFileSync3(deltaPath, "utf8"));
+      const deltaPath = join5(deltaRoot, capability, "spec.md");
+      if (!existsSync5(deltaPath)) continue;
+      const delta = parseDeltaSpec(readFileSync4(deltaPath, "utf8"));
       if (delta.added.length + delta.modified.length + delta.removed.length === 0) {
         res.warnings.push(`${capability}: delta spec has no ADDED/MODIFIED/REMOVED sections \u2014 nothing applied`);
         continue;
       }
-      const livingRel = join4("openspec", "specs", capability, "spec.md");
-      const livingAbs = join4(opts.cwd, livingRel);
-      const living = existsSync4(livingAbs) ? readFileSync3(livingAbs, "utf8") : void 0;
+      const livingRel = join5("openspec", "specs", capability, "spec.md");
+      const livingAbs = join5(opts.cwd, livingRel);
+      const living = existsSync5(livingAbs) ? readFileSync4(livingAbs, "utf8") : void 0;
       const applied = applyDelta(living, delta, capability);
-      mkdirSync3(dirname2(livingAbs), { recursive: true });
-      writeFileSync3(livingAbs, applied.md);
+      mkdirSync4(dirname3(livingAbs), { recursive: true });
+      writeFileSync4(livingAbs, applied.md);
       res.specsUpdated.push(livingRel);
       res.notes.push(...applied.notes);
       res.warnings.push(...applied.warnings);
     }
   }
   const date = opts.date ?? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-  const destRel = join4("openspec", "changes", "archive", `${date}-${opts.slug}`);
-  const destAbs = join4(opts.cwd, destRel);
-  if (existsSync4(destAbs)) {
+  const destRel = join5("openspec", "changes", "archive", `${date}-${opts.slug}`);
+  const destAbs = join5(opts.cwd, destRel);
+  if (existsSync5(destAbs)) {
     res.errors.push(`archive destination ${destRel}/ already exists \u2014 refusing to overwrite`);
     return res;
   }
-  mkdirSync3(dirname2(destAbs), { recursive: true });
+  mkdirSync4(dirname3(destAbs), { recursive: true });
   renameSync(changeAbs, destAbs);
   res.archivedTo = destRel;
   res.ok = true;
@@ -5613,11 +5849,11 @@ function runArchive(opts) {
 
 // src/cli.ts
 function loadPolicy(path) {
-  if (!existsSync5(path)) {
+  if (!existsSync6(path)) {
     console.error(`plumb: policy file not found at ${path} \u2014 using defaults`);
     return PolicySchema.parse({ version: "1.0" });
   }
-  return PolicySchema.parse(JSON.parse(readFileSync4(path, "utf8")));
+  return PolicySchema.parse(JSON.parse(readFileSync5(path, "utf8")));
 }
 function getDiff(baseRef, cwd) {
   return execFileSync4("git", ["diff", `${baseRef}...HEAD`], {
@@ -5628,7 +5864,7 @@ function getDiff(baseRef, cwd) {
 }
 function preflightWarnings(cwd, baseRef) {
   for (const d of [".plumbline", ".proofgate"]) {
-    if (existsSync5(join5(cwd, d, "receipt.json"))) {
+    if (existsSync6(join6(cwd, d, "receipt.json"))) {
       console.error(
         `plumb \u26A0\uFE0F  legacy ${d}/receipt.json present \u2014 use one file per PR at ${d}/receipts/<task_id>.json (a shared receipt.json gets dragged forward across branches and conflicts). \`plumb new\` creates the per-PR file.`
       );
@@ -5664,7 +5900,7 @@ function resolveReceiptPath(explicit, baseRef, cwd, skipGit, fallback) {
   if (changed.length > 1) {
     const candidates = changed.map((p) => {
       try {
-        const j = JSON.parse(readFileSync4(join5(cwd, p), "utf8"));
+        const j = JSON.parse(readFileSync5(join6(cwd, p), "utf8"));
         return {
           path: p,
           taskId: typeof j.task_id === "string" ? j.task_id : void 0,
@@ -5738,8 +5974,9 @@ receipt: auto-discovered from the PR diff at .plumbline/receipts/<task_id>.json
          (one file per PR \u2014 no conflicts); falls back to <dir>/receipt.json.
          Legacy .proofgate/ repos work unchanged. Pass --receipt to override.
 policy default:  .plumbline/policy.json (or .proofgate/policy.json when that's what exists)
-env: ANTHROPIC_API_KEY (review), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (comment),
-     PLUMBLINE_MODEL / PROOFGATE_MODEL (override)`);
+env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR number (comment),
+     PLUMBLINE_MODEL / PROOFGATE_MODEL (model override),
+     PLUMBLINE_PROVIDER (anthropic|openai), PLUMBLINE_API_BASE + PLUMBLINE_API_KEY (OpenAI-compatible)`);
     return cmd ? 2 : 0;
   }
   if (cmd === "schema") {
@@ -5825,16 +6062,16 @@ Commit the archive: git add openspec/ && git commit -m "chore(openspec): archive
       } catch {
       }
     }
-    const dest = join5(cwd, dir, "receipts", `${taskId}.json`);
-    if (existsSync5(dest)) {
+    const dest = join6(cwd, dir, "receipts", `${taskId}.json`);
+    if (existsSync6(dest)) {
       console.error(
         `plumb new: ${dir}/receipts/${taskId}.json already exists \u2014 left as-is. Edit it, then run 'plumb receipt --write' + 'plumb check'.`
       );
       return 0;
     }
-    mkdirSync4(dirname3(dest), { recursive: true });
+    mkdirSync5(dirname4(dest), { recursive: true });
     const receipt2 = newReceipt({ taskId, agentId, diffSha256: diffSha, changedFiles: changed });
-    writeFileSync4(dest, `${JSON.stringify(receipt2, null, 2)}
+    writeFileSync5(dest, `${JSON.stringify(receipt2, null, 2)}
 `);
     console.error(
       `created ${dir}/receipts/${taskId}.json (diff-stamped: ${diffSha ? "yes" : "no \u2014 run 'plumb receipt --write'"})
@@ -5879,17 +6116,17 @@ Fill intent / validation_plan / execution_evidence / result_summary, then: plumb
         }
       }
       const taskId = sanitizeTaskId(arg("task", branch || "TASK"));
-      dest = join5(dir, "receipts", `${taskId}.json`);
+      dest = join6(dir, "receipts", `${taskId}.json`);
     }
-    const destAbs = join5(cwd, dest);
+    const destAbs = join6(cwd, dest);
     if (checkOnly) {
-      if (!existsSync5(destAbs)) {
+      if (!existsSync6(destAbs)) {
         console.error(`plumb receipt --check: no receipt at ${dest} \u2014 run 'plumb receipt --write'`);
         return 1;
       }
       let obj;
       try {
-        obj = JSON.parse(readFileSync4(destAbs, "utf8"));
+        obj = JSON.parse(readFileSync5(destAbs, "utf8"));
       } catch (e) {
         console.error(`plumb receipt --check: ${dest} is not valid JSON: ${String(e)}`);
         return 1;
@@ -5903,7 +6140,7 @@ Fill intent / validation_plan / execution_evidence / result_summary, then: plumb
       console.error("\u2717 receipt is stale \u2014 run 'plumb receipt --write' to refresh, then commit.");
       return 1;
     }
-    if (!existsSync5(destAbs)) {
+    if (!existsSync6(destAbs)) {
       const taskId = sanitizeTaskId(arg("task", dest.replace(/^.*\/|\.json$/g, "")));
       const agentId = arg("agent", process.env.PLUMBLINE_AGENT_ID || process.env.PROOFGATE_AGENT_ID || "agent");
       const receipt2 = newReceipt({
@@ -5918,20 +6155,20 @@ Fill intent / validation_plan / execution_evidence / result_summary, then: plumb
           `self_modifying: true (protected paths touched: ${mech.hits.map((h) => `${h.file} matches ${h.glob}`).join(", ")})`
         );
       }
-      mkdirSync4(dirname3(destAbs), { recursive: true });
-      writeFileSync4(destAbs, `${JSON.stringify(receipt2, null, 2)}
+      mkdirSync5(dirname4(destAbs), { recursive: true });
+      writeFileSync5(destAbs, `${JSON.stringify(receipt2, null, 2)}
 `);
       console.error(`created ${dest} \u2014 mechanical fields filled from the real diff (base ${baseRef}).`);
     } else {
       let obj;
       try {
-        obj = JSON.parse(readFileSync4(destAbs, "utf8"));
+        obj = JSON.parse(readFileSync5(destAbs, "utf8"));
       } catch (e) {
         console.error(`plumb receipt --write: ${dest} is not valid JSON: ${String(e)}`);
         return 1;
       }
       const { receipt: receipt2, notes, changed } = refreshMechanical(obj, mech);
-      if (changed) writeFileSync4(destAbs, `${JSON.stringify(receipt2, null, 2)}
+      if (changed) writeFileSync5(destAbs, `${JSON.stringify(receipt2, null, 2)}
 `);
       for (const n of notes) console.error(`  ${n}`);
       console.error(
@@ -5945,14 +6182,14 @@ Now fill the judgment fields (the tool never writes these):`);
 Then: git add ${dest} && commit && push  (pre-check: plumb check)`);
     return 0;
   }
-  if (!existsSync5(receiptPath)) {
+  if (!existsSync6(receiptPath)) {
     console.error(
       `plumb: no receipt found at ${receiptPath}.
 Agent work must ship with a proof receipt. See templates/receipt.example.json.`
     );
     return 1;
   }
-  const rawReceipt = readFileSync4(receiptPath, "utf8");
+  const rawReceipt = readFileSync5(receiptPath, "utf8");
   if (cmd === "stamp") {
     if (skipGit || !baseRef) {
       console.error("plumb stamp: needs git + a --base ref to compute the diff");
@@ -5977,7 +6214,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
     const prevSha = receiptObj.diff_sha256;
     receiptObj.diff_sha256 = diffSha;
     receiptObj.changed_files = changed;
-    writeFileSync4(receiptPath, `${JSON.stringify(receiptObj, null, 2)}
+    writeFileSync5(receiptPath, `${JSON.stringify(receiptObj, null, 2)}
 `);
     console.error(`stamped ${receiptPath} (base ${baseRef}):`);
     console.error(
@@ -6063,24 +6300,76 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
     gate.reasons.push("semantic review skipped: shape gate failed \u2014 fix shape errors first");
   } else {
     const missionPath = resolveDualPath(cwd, arg("mission", policy.mission_file));
-    if (!existsSync5(missionPath)) {
+    if (!existsSync6(missionPath)) {
       console.error(`plumb: mission file not found at ${missionPath}`);
       return 1;
     }
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      console.error("plumb: ANTHROPIC_API_KEY is required for semantic review");
-      return 1;
-    }
-    const mission = readFileSync4(missionPath, "utf8");
+    const mission = readFileSync5(missionPath, "utf8");
     const diff = skipGit ? "" : getDiff(baseRef, cwd);
-    const review = await semanticReview(mission, receipt, diff, policy, apiKey);
-    gate.review = review;
-    gate.final = review.verdict;
-    console.error(`semantic review: ${review.verdict} (confidence ${review.confidence})`);
-    console.error(`  coverage: ${review.validation_coverage_notes}`);
-    console.error(`  mission:  ${review.mission_alignment_notes}`);
-    console.error(`  risk:     ${review.risk_notes}`);
+    const skip = shouldSkipReview(receipt, policy, diff);
+    if (skip.skip) {
+      console.error(`semantic review: SKIPPED (${skip.reason}) \u2014 shape gate stands as the verdict`);
+      gate.reasons.push(`Semantic review skipped: ${skip.reason} (shape gate passed).`);
+      gate.final = "approve";
+    } else {
+      if (skip.reason) {
+        gate.reasons.push(`Semantic review enforced: ${skip.reason}.`);
+      }
+      const provider = (() => {
+        try {
+          return selectProvider(policy);
+        } catch (e) {
+          console.error(`plumb: ${e.message}`);
+          return null;
+        }
+      })();
+      if (!provider) return 1;
+      const cacheDir = join6(cwd, policy.review_cache.dir);
+      const model = resolveReviewModel(policy);
+      let review = null;
+      if (policy.review_cache.enabled && !skipGit && receipt.diff_sha256) {
+        const hit = readReviewCache(
+          cacheDir,
+          receipt.diff_sha256,
+          provider.id,
+          model,
+          PROMPT_VERSION
+        );
+        if (hit) {
+          review = { ...hit, audit: { ...hit.audit, cached: true } };
+          console.error(
+            `semantic review: CACHE HIT for diff ${receipt.diff_sha256.slice(0, 12)}\u2026 (${provider.id}/${model}) \u2014 no LLM call`
+          );
+          gate.reasons.push(`Reused cached verdict for this diff (diff_sha256, ${provider.id}/${model}).`);
+        }
+      }
+      if (!review) {
+        review = await semanticReview(mission, receipt, diff, policy, provider);
+        if (policy.review_cache.enabled && !skipGit && receipt.diff_sha256) {
+          writeReviewCache(
+            cacheDir,
+            receipt.diff_sha256,
+            provider.id,
+            model,
+            PROMPT_VERSION,
+            review
+          );
+        }
+      }
+      gate.review = review;
+      gate.final = review.verdict;
+      if (policy.budget.max_usd_per_pr > 0) {
+        gate.reasons.push(
+          `Budget cap configured: max $${policy.budget.max_usd_per_pr}/PR (model ${model}).`
+        );
+      }
+      console.error(
+        `semantic review: ${review.verdict} (confidence ${review.confidence}) [${review.audit?.provider}/${model}, temp ${review.audit?.temperature}, prompt ${review.audit?.prompt_version}${review.audit?.cached ? ", cached" : ""}]`
+      );
+      console.error(`  coverage: ${review.validation_coverage_notes}`);
+      console.error(`  mission:  ${review.mission_alignment_notes}`);
+      console.error(`  risk:     ${review.risk_notes}`);
+    }
   }
   if (cmd === "run") {
     const prOverride = process.env.PLUMBLINE_PR_NUMBER || process.env.PROOFGATE_PR_NUMBER;
