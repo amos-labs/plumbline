@@ -90,6 +90,33 @@ export function shouldSkipReview(
   return { skip: false, reason: "" };
 }
 
+/**
+ * Redundant, independent protected-path / self_modifying floor. Returns a
+ * human-readable reason when the change MUST get a real review (never skip,
+ * never approve on the skip path), else null.
+ *
+ * This duplicates the floor already inside {@link shouldSkipReview} on purpose:
+ * it's a defense-in-depth check the CLI runs a second time, from the ACTUAL
+ * changed files (not only the receipt's self-report), so a bug in
+ * shouldSkipReview can't leak a protected change onto the auto-approve path.
+ * Pure — the caller supplies the actual changed files.
+ */
+export function protectedFloor(
+  receipt: Pick<Receipt, "self_modifying" | "changed_files">,
+  policy: Pick<Policy, "protected_paths">,
+  actualFiles: string[],
+): string | null {
+  if (receipt.self_modifying) return "receipt.self_modifying is true";
+  // Union of receipt-declared and actual diff files — either touching a
+  // protected path forces review.
+  const files = new Set([...(receipt.changed_files ?? []), ...actualFiles]);
+  for (const f of files) {
+    const hit = matchesAny(f, policy.protected_paths);
+    if (hit) return `${f} matches protected path ${hit}`;
+  }
+  return null;
+}
+
 /** On-disk cache entry, keyed by diff_sha256. */
 interface CacheEntry {
   diff_sha256: string;

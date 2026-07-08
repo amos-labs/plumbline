@@ -4184,10 +4184,13 @@ var PolicySchema = external_exports.object({
     dir: external_exports.string().default(".plumbline/cache/review")
   }).default({}),
   /**
-   * Sampling temperature for the review call. Pinned LOW by default for
-   * determinism + auditability. Recorded in the review output.
+   * Sampling temperature for the review call. OPTIONAL and OMITTED by default:
+   * some Anthropic models reject an explicit `temperature`, so the gate sends
+   * none unless you set this — the backend then uses its own (low) default.
+   * Set it (e.g. 0) to pin determinism where the model supports it. Recorded in
+   * the review audit output. Env override: PLUMBLINE_TEMPERATURE.
    */
-  review_temperature: external_exports.number().min(0).max(2).default(0),
+  review_temperature: external_exports.number().min(0).max(2).optional(),
   /** Max receipt size in bytes (anti garbage-dump). */
   max_receipt_bytes: external_exports.number().default(262144),
   /**
@@ -4559,7 +4562,9 @@ var AnthropicProvider = class {
       body: JSON.stringify({
         model: req.model,
         max_tokens: req.maxTokens,
-        temperature: req.temperature,
+        // Omit temperature unless explicitly configured — some Anthropic models
+        // reject an explicit temperature.
+        ...req.temperature !== void 0 ? { temperature: req.temperature } : {},
         messages: [{ role: "user", content: req.prompt }]
       })
     });
@@ -4589,7 +4594,8 @@ var OpenAICompatibleProvider = class {
       body: JSON.stringify({
         model: req.model,
         max_tokens: req.maxTokens,
-        temperature: req.temperature,
+        // Same policy as the Anthropic path: omit unless explicitly configured.
+        ...req.temperature !== void 0 ? { temperature: req.temperature } : {},
         messages: [{ role: "user", content: req.prompt }]
       })
     });
@@ -4627,10 +4633,10 @@ function selectProvider(policy) {
     return base ? new AnthropicProvider(key, base) : new AnthropicProvider(key);
   }
   if (id === "openai") {
-    const key = sharedKey || process.env[ENV.anthropicKey];
+    const key = sharedKey;
     if (!key) {
       throw new Error(
-        `semantic review: no API key for provider "openai" \u2014 set ${ENV.apiKey} (or ${ENV.apiKeyLegacy}).`
+        `semantic review: no API key for provider "openai" \u2014 set ${ENV.apiKey} (or ${ENV.apiKeyLegacy}). The Anthropic key (${ENV.anthropicKey}) is intentionally NOT used for a non-Anthropic endpoint \u2014 that would leak your Anthropic credential to a third-party host.`
       );
     }
     const base = process.env[ENV.apiBase] || policy.review_api_base;
@@ -4685,6 +4691,15 @@ function shouldSkipReview(receipt, policy, diff) {
     };
   }
   return { skip: false, reason: "" };
+}
+function protectedFloor(receipt, policy, actualFiles) {
+  if (receipt.self_modifying) return "receipt.self_modifying is true";
+  const files = /* @__PURE__ */ new Set([...receipt.changed_files ?? [], ...actualFiles]);
+  for (const f of files) {
+    const hit = matchesAny(f, policy.protected_paths);
+    if (hit) return `${f} matches protected path ${hit}`;
+  }
+  return null;
 }
 function cacheFilePath(cacheDir, diffSha256) {
   return join(cacheDir, `${diffSha256}.json`);
@@ -4789,10 +4804,18 @@ Rules:
 function resolveReviewModel(policy) {
   return process.env.PLUMBLINE_MODEL || process.env.PROOFGATE_MODEL || resolveModel(policy);
 }
+function resolveReviewTemperature(policy) {
+  const raw = process.env.PLUMBLINE_TEMPERATURE;
+  if (raw !== void 0 && raw.trim() !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0 && n <= 2) return n;
+  }
+  return policy.review_temperature;
+}
 async function semanticReview(mission, receipt, diff, policy, provider) {
   const prompt = buildReviewPrompt(mission, receipt, diff, policy.human_review_level);
   const model = resolveReviewModel(policy);
-  const temperature = policy.review_temperature ?? 0;
+  const temperature = resolveReviewTemperature(policy);
   const prov = provider ?? selectProvider(policy);
   const audit = {
     provider: prov.id ?? resolveProviderId(policy),
@@ -5507,6 +5530,31 @@ async function getRepo(repo, token) {
   if (!ok || !body) throw new Error(`get repo ${repo}: ${status}`);
   return body;
 }
+function normalizeForPut(prot) {
+  const rpr = prot?.required_pull_request_reviews;
+  const requiredPrReviews = rpr && typeof rpr === "object" ? {
+    dismiss_stale_reviews: rpr.dismiss_stale_reviews ?? false,
+    require_code_owner_reviews: rpr.require_code_owner_reviews ?? false,
+    required_approving_review_count: rpr.required_approving_review_count ?? 0,
+    // Preserve the actual reviewer restrictions if present.
+    ...rpr.require_last_push_approval !== void 0 ? { require_last_push_approval: rpr.require_last_push_approval } : {}
+  } : null;
+  const rst = prot?.restrictions;
+  const restrictions = rst && typeof rst === "object" ? {
+    users: Array.isArray(rst.users) ? rst.users.map(
+      (u) => typeof u === "string" ? u : u.login ?? ""
+    ) : [],
+    teams: Array.isArray(rst.teams) ? rst.teams.map(
+      (t) => typeof t === "string" ? t : t.slug ?? ""
+    ) : [],
+    apps: Array.isArray(rst.apps) ? rst.apps.map(
+      (a) => typeof a === "string" ? a : a.slug ?? ""
+    ) : []
+  } : null;
+  const ea = prot?.enforce_admins;
+  const enforceAdmins = ea && typeof ea === "object" ? Boolean(ea.enabled) : ea === true ? true : null;
+  return { requiredPrReviews, restrictions, enforceAdmins };
+}
 function mergeRequiredChecks(current, desired) {
   const set = new Set(current);
   const added = [];
@@ -5535,15 +5583,27 @@ async function setupProtection(opts) {
     `${GH_API}/repos/${repo}/branches/${branch}/protection`,
     token
   );
+  const couldRead = protStatus === 200 || protStatus === 404;
   const existing = protStatus === 200 ? currentContexts(prot) : [];
   const strictNow = protStatus === 200 ? Boolean(prot?.required_status_checks?.strict) : false;
   const { merged, added } = mergeRequiredChecks(existing, desired);
   const strictChange = strictNow ? "strict:true\u2192false" : null;
-  const needsWrite = added.length > 0 || strictChange !== null || protStatus !== 200;
+  const preserved = normalizeForPut(protStatus === 200 ? prot : null);
+  const hasReviewers = preserved.requiredPrReviews !== null && Number(
+    preserved.requiredPrReviews?.required_approving_review_count ?? 0
+  ) > 0;
+  if (hasReviewers) changes.push("preserving existing required_pull_request_reviews");
+  if (preserved.restrictions !== null) changes.push("preserving existing push restrictions");
+  const needsWrite = added.length > 0 || strictChange !== null || protStatus === 404;
   if (needsWrite) {
+    if (!couldRead && !opts.force) {
+      throw new Error(
+        `set branch protection on ${branch}: current protection returned ${protStatus} \u2014 could not read existing settings, so a write could WIPE required reviewers / push restrictions. Re-run with a token that can read branch protection, or pass --force to write anyway (force only ADDS the required checks; it still won't send review/restriction nulls unless nothing was readable).`
+      );
+    }
     if (added.length) changes.push(`required checks +[${added.join(", ")}]`);
     if (strictChange) changes.push(strictChange);
-    if (protStatus !== 200 && !added.length && !strictChange)
+    if (protStatus === 404 && !added.length && !strictChange)
       changes.push(`enable required status checks [${merged.join(", ")}]`);
     if (!opts.dryRun) {
       const put = await fetch(`${GH_API}/repos/${repo}/branches/${branch}/protection`, {
@@ -5551,9 +5611,9 @@ async function setupProtection(opts) {
         headers: headers(token),
         body: JSON.stringify({
           required_status_checks: { strict: false, checks: merged.map((c) => ({ context: c })) },
-          enforce_admins: null,
-          required_pull_request_reviews: null,
-          restrictions: null
+          enforce_admins: preserved.enforceAdmins,
+          required_pull_request_reviews: preserved.requiredPrReviews,
+          restrictions: preserved.restrictions
         })
       });
       if (!put.ok) throw new Error(`set branch protection on ${branch}: ${put.status} ${await put.text()}`);
@@ -6072,6 +6132,16 @@ function getDiff(baseRef, cwd) {
     maxBuffer: 64 * 1024 * 1024
   });
 }
+function protectedFloorHit(receipt, policy, baseRef, cwd, skipGit) {
+  let actual = [];
+  if (!skipGit && baseRef) {
+    try {
+      actual = gitChangedFiles(baseRef, cwd).filter((f) => !isReceiptPath(f));
+    } catch {
+    }
+  }
+  return protectedFloor(receipt, policy, actual);
+}
 function preflightWarnings(cwd, baseRef) {
   for (const d of [".plumbline", ".proofgate"]) {
     if (existsSync7(join7(cwd, d, "receipt.json"))) {
@@ -6165,10 +6235,13 @@ usage:
   plumb init    [--stack rust-sqlx] [--no-stack] [--protect]   (scaffold the governed CI into this
                 repo: gate workflow WITH ci-evidence poll-wait + .plumbline/ + AGENTS.md, and \u2014 on a
                 detected stack \u2014 the stack preset (rust-sqlx: migration guard + rust-cache CI). Start here.)
-  plumb setup-protection --repo owner/name [--branch b] [--check name ...] [--dry-run]
+  plumb setup-protection --repo owner/name [--branch b] [--check name ...] [--dry-run] [--force]
                 (make the plumbline gate + the repo's CI checks REQUIRED on the default branch
                  (strict:false) and enable auto-merge \u2014 the 'blocking + auto-merge on all green' shape.
-                 Idempotent; prints what it changed. Needs GITHUB_TOKEN with repo-admin scope.)
+                 NON-DESTRUCTIVE: reads current protection first and PRESERVES existing required
+                 reviewers + push restrictions (only ADDS checks; never nulls them). Refuses to write
+                 if it can't read current protection \u2014 pass --force to override. Idempotent; prints
+                 what it changed. Needs GITHUB_TOKEN with repo-admin scope.)
   plumb migration-guard [--base ref] [--dir migrations]   (fail if a new migration's version <= the
                 base branch's max \u2014 the collision guard the rust-sqlx CI job runs)
   plumb propose "<title>" [--body text] [--repo owner/name] [--lite] [--task id]
@@ -6271,7 +6344,8 @@ plumbline initialized. Next:
         branch: arg("branch"),
         checks,
         gateCheck: arg("gate-check", "plumbline"),
-        dryRun: flag("dry-run")
+        dryRun: flag("dry-run"),
+        force: flag("force")
       });
       console.error(`${flag("dry-run") ? "[dry-run] " : ""}protection on ${repo}@${res.branch}:`);
       for (const c of res.changes) console.error(`  \xB7 ${c}`);
@@ -6611,7 +6685,14 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
     const mission = readFileSync6(missionPath, "utf8");
     const diff = skipGit ? "" : getDiff(baseRef, cwd);
     const skip = shouldSkipReview(receipt, policy, diff);
-    if (skip.skip) {
+    const floorHit = protectedFloorHit(receipt, policy, baseRef, cwd, skipGit);
+    if (skip.skip && floorHit) {
+      console.error(
+        `semantic review: skip DENIED by protected floor (${floorHit}) \u2014 a self_modifying/protected change never skips review, regardless of skip_review config.`
+      );
+      gate.reasons.push(`Semantic review floor: ${floorHit} \u2014 skip denied, review enforced.`);
+    }
+    if (skip.skip && !floorHit) {
       console.error(`semantic review: SKIPPED (${skip.reason}) \u2014 shape gate stands as the verdict`);
       gate.reasons.push(`Semantic review skipped: ${skip.reason} (shape gate passed).`);
       gate.final = "approve";
@@ -6631,7 +6712,21 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
       const cacheDir = join7(cwd, policy.review_cache.dir);
       const model = resolveReviewModel(policy);
       let review = null;
+      let cacheKeyValid = false;
       if (policy.review_cache.enabled && !skipGit && receipt.diff_sha256) {
+        try {
+          const actualSha = computeDiffSha256(gitDiffExcludingReceipt(baseRef, cwd));
+          cacheKeyValid = actualSha === receipt.diff_sha256;
+          if (!cacheKeyValid) {
+            console.error(
+              `semantic review: cache lookup SKIPPED \u2014 receipt.diff_sha256 (${receipt.diff_sha256.slice(0, 12)}\u2026) != actual diff (${actualSha.slice(0, 12)}\u2026); running a live review to avoid serving a mismatched cached verdict.`
+            );
+          }
+        } catch {
+          cacheKeyValid = false;
+        }
+      }
+      if (cacheKeyValid) {
         const hit = readReviewCache(
           cacheDir,
           receipt.diff_sha256,
@@ -6649,7 +6744,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
       }
       if (!review) {
         review = await semanticReview(mission, receipt, diff, policy, provider);
-        if (policy.review_cache.enabled && !skipGit && receipt.diff_sha256) {
+        if (policy.review_cache.enabled && !skipGit && receipt.diff_sha256 && cacheKeyValid) {
           writeReviewCache(
             cacheDir,
             receipt.diff_sha256,

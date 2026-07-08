@@ -55,7 +55,11 @@ GITHUB_TOKEN=<repo-admin token> npx github:amos-labs/plumbline setup-protection 
 checks on the default branch (`strict:false`) and enables auto-merge — the misconfiguration
 that a hand-build reliably gets subtly wrong (gate not actually required, so the gate is an
 advisory comment rather than a block). It's idempotent and prints exactly what it changed;
-needs a token with repo-admin (`admin:org` / `repo`) scope.
+needs a token with repo-admin (`admin:org` / `repo`) scope. It's **non-destructive**: it
+reads the current branch protection first and **preserves** any existing required reviewers
+(`required_pull_request_reviews`) and push restrictions (`restrictions`) — it only ADDS the
+required checks, never nulls those. If it can't read the current protection, it refuses to
+write unless you pass `--force`.
 
 Then the full lifecycle — **propose → work → prove → gate → archive** — starts at intake:
 
@@ -259,13 +263,17 @@ OpenAI shim, LM Studio, a self-hosted model, …):
 ```bash
 export PLUMBLINE_PROVIDER=openai
 export PLUMBLINE_API_BASE=https://api.openai.com/v1   # or your self-hosted endpoint
-export PLUMBLINE_API_KEY=sk-...                        # (PROOFGATE_API_KEY also accepted)
+export PLUMBLINE_API_KEY=sk-...                        # REQUIRED (PROOFGATE_API_KEY also accepted)
 export PLUMBLINE_MODEL=gpt-4o-mini                     # provider-specific model id
 ```
 
 Or set it in `policy.json` (`"review_provider": "openai"`, `"review_api_base": "…"`);
 the env vars override the policy. The prompt and the `approve`/`rework`/`review`
 verdict schema are identical across providers — only the transport changes.
+
+A non-Anthropic provider needs its **own** key (`PLUMBLINE_API_KEY`) — the gate will
+**not** fall back to `ANTHROPIC_API_KEY` for it, because sending your Anthropic key to a
+third-party/self-hosted endpoint would leak that credential. Missing key → a clear error.
 
 ### Cost + determinism controls (opt-in)
 
@@ -291,7 +299,9 @@ runs exactly as before). Configure in `policy.json`:
     "cheap_model": "claude-haiku-4-5",
     "max_usd_per_pr": 0         // informational soft cap, recorded for audit
   },
-  // Determinism: pinned low by default; recorded in the verdict for audit.
+  // Determinism: OPTIONAL and OMITTED by default (some Anthropic models reject
+  // an explicit temperature). Set it (e.g. 0) to pin determinism where the model
+  // supports it; env PLUMBLINE_TEMPERATURE overrides. Recorded in the verdict.
   "review_temperature": 0
 }
 ```

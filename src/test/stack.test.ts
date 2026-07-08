@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +10,7 @@ import {
   migrationVersion,
   maxMigrationVersion,
   checkMigrationCollision,
+  runMigrationGuard,
   isStackId,
 } from "../stack.js";
 
@@ -108,4 +110,47 @@ test("checkMigrationCollision: first migration on an empty base passes", () => {
   const res = checkMigrationCollision(["0001_init.sql"], []);
   assert.equal(res.ok, true);
   assert.equal(res.baseMax, 0);
+});
+
+// --- runMigrationGuard CLI path (#8): git-reading wrapper over the pure logic ---
+
+function git(dir: string, args: string[]): string {
+  return execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+}
+
+/** Build a tiny git repo: a base commit with one migration, then a branch. */
+function migrationRepo(): { dir: string; base: string } {
+  const dir = mkdtempSync(join(tmpdir(), "pl-mig-"));
+  git(dir, ["init", "-q", "-b", "main"]);
+  git(dir, ["config", "user.email", "t@t.test"]);
+  git(dir, ["config", "user.name", "t"]);
+  mkdirSync(join(dir, "migrations"));
+  writeFileSync(join(dir, "migrations", "20260101000000_init.sql"), "-- init\n");
+  git(dir, ["add", "."]);
+  git(dir, ["commit", "-q", "-m", "base"]);
+  const base = git(dir, ["rev-parse", "HEAD"]).trim();
+  git(dir, ["checkout", "-q", "-b", "feat"]);
+  return { dir, base };
+}
+
+test("runMigrationGuard: PASS when the new migration sorts after base max", () => {
+  const { dir, base } = migrationRepo();
+  writeFileSync(join(dir, "migrations", "20260202000000_new.sql"), "-- new\n");
+  git(dir, ["add", "."]);
+  git(dir, ["commit", "-q", "-m", "add higher migration"]);
+  const res = runMigrationGuard(dir, base, "migrations");
+  assert.equal(res.ok, true);
+  assert.equal(res.baseMax, 20260101000000);
+  assert.deepEqual(res.added, [20260202000000]);
+});
+
+test("runMigrationGuard: FAIL when a new migration collides with (<=) base max", () => {
+  const { dir, base } = migrationRepo();
+  // Lower version than the base's 20260101000000 — the collision.
+  writeFileSync(join(dir, "migrations", "20251231000000_late.sql"), "-- collides\n");
+  git(dir, ["add", "."]);
+  git(dir, ["commit", "-q", "-m", "add colliding migration"]);
+  const res = runMigrationGuard(dir, base, "migrations");
+  assert.equal(res.ok, false);
+  assert.ok(res.errors.some((e) => /20251231000000_late\.sql/.test(e) && /base branch max/.test(e)));
 });

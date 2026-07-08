@@ -95,3 +95,116 @@ test("setupProtection: dry-run reports changes but makes no mutating calls", asy
     globalThis.fetch = orig;
   }
 });
+
+// --- #1: setup-protection must NOT clobber existing branch protection ---
+
+test("setupProtection: existing required reviewers are PRESERVED, not removed", async () => {
+  const { fn, calls } = stubFetch([
+    { match: /\/repos\/o\/r$/, method: "GET", body: { default_branch: "main", node_id: "n", allow_auto_merge: true } },
+    {
+      match: /branches\/main\/protection$/,
+      method: "GET",
+      body: {
+        // Repo already has required reviewers + a push restriction — the exact
+        // settings the old code would have nulled out.
+        required_status_checks: { strict: false, checks: [{ context: "test" }] },
+        required_pull_request_reviews: {
+          required_approving_review_count: 2,
+          require_code_owner_reviews: true,
+          dismiss_stale_reviews: true,
+        },
+        restrictions: { users: [{ login: "alice" }], teams: [{ slug: "core" }], apps: [] },
+        enforce_admins: { enabled: true },
+      },
+    },
+    { match: /branches\/main\/protection$/, method: "PUT", body: {} },
+  ]);
+  const orig = globalThis.fetch;
+  globalThis.fetch = fn as typeof fetch;
+  try {
+    // Adding the gate check forces a PUT — the danger point.
+    const res = await setupProtection({ repo: "o/r", token: "t", checks: [] });
+    const put = calls.find((c) => c.method === "PUT")!;
+    assert.ok(put, "a PUT should fire to add the plumbline check");
+    const b = put.body as any;
+    // The gate check is added...
+    const ctxs = b.required_status_checks.checks.map((c: any) => c.context).sort();
+    assert.deepEqual(ctxs, ["plumbline", "test"]);
+    // ...and the existing reviewer/restriction settings are CARRIED, not nulled.
+    assert.notEqual(b.required_pull_request_reviews, null, "required reviewers must NOT be wiped");
+    assert.equal(b.required_pull_request_reviews.required_approving_review_count, 2);
+    assert.equal(b.required_pull_request_reviews.require_code_owner_reviews, true);
+    assert.notEqual(b.restrictions, null, "push restrictions must NOT be wiped");
+    assert.deepEqual(b.restrictions.users, ["alice"]);
+    assert.deepEqual(b.restrictions.teams, ["core"]);
+    assert.equal(b.enforce_admins, true, "enforce_admins preserved");
+    assert.ok(res.changes.some((c) => /preserving existing required_pull_request_reviews/.test(c)));
+    assert.ok(res.changes.some((c) => /preserving existing push restrictions/.test(c)));
+  } finally {
+    globalThis.fetch = orig;
+  }
+});
+
+test("setupProtection: strict:true is downgraded to false (#8)", async () => {
+  const { fn, calls } = stubFetch([
+    { match: /\/repos\/o\/r$/, method: "GET", body: { default_branch: "main", node_id: "n", allow_auto_merge: true } },
+    {
+      match: /branches\/main\/protection$/,
+      method: "GET",
+      body: { required_status_checks: { strict: true, checks: [{ context: "plumbline" }] } },
+    },
+    { match: /branches\/main\/protection$/, method: "PUT", body: {} },
+  ]);
+  const orig = globalThis.fetch;
+  globalThis.fetch = fn as typeof fetch;
+  try {
+    const res = await setupProtection({ repo: "o/r", token: "t" });
+    assert.ok(res.changes.some((c) => c === "strict:true→false"), "reports the strict downgrade");
+    const put = calls.find((c) => c.method === "PUT")!;
+    assert.equal((put.body as any).required_status_checks.strict, false);
+  } finally {
+    globalThis.fetch = orig;
+  }
+});
+
+test("setupProtection: refuses to write when current protection is unreadable (no --force)", async () => {
+  const { fn, calls } = stubFetch([
+    { match: /\/repos\/o\/r$/, method: "GET", body: { default_branch: "main", node_id: "n", allow_auto_merge: true } },
+    // 403 = protection may exist but we can't read it → clobber risk.
+    { match: /branches\/main\/protection$/, method: "GET", status: 403 },
+  ]);
+  const orig = globalThis.fetch;
+  globalThis.fetch = fn as typeof fetch;
+  try {
+    await assert.rejects(
+      () => setupProtection({ repo: "o/r", token: "t" }),
+      /could not read.*existing settings|WIPE/,
+    );
+    // Crucially: NO destructive PUT was made.
+    assert.equal(calls.filter((c) => c.method === "PUT").length, 0);
+  } finally {
+    globalThis.fetch = orig;
+  }
+});
+
+test("setupProtection: --force writes even when protection is unreadable (adds checks only)", async () => {
+  const { fn, calls } = stubFetch([
+    { match: /\/repos\/o\/r$/, method: "GET", body: { default_branch: "main", node_id: "n", allow_auto_merge: true } },
+    { match: /branches\/main\/protection$/, method: "GET", status: 403 },
+    { match: /branches\/main\/protection$/, method: "PUT", body: {} },
+  ]);
+  const orig = globalThis.fetch;
+  globalThis.fetch = fn as typeof fetch;
+  try {
+    const res = await setupProtection({ repo: "o/r", token: "t", force: true });
+    const put = calls.find((c) => c.method === "PUT")!;
+    assert.ok(put, "with --force the PUT proceeds");
+    assert.deepEqual(
+      (put.body as any).required_status_checks.checks.map((c: any) => c.context),
+      ["plumbline"],
+    );
+    assert.ok(res.branch === "main");
+  } finally {
+    globalThis.fetch = orig;
+  }
+});

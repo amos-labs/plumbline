@@ -151,6 +151,20 @@ These need repo-admin rights an agent doesn't have. Ask the user to do them once
    changed. Needs a token with repo-admin scope. (The manual path is GitHub →
    **Settings → Branches → Branch protection rules** → require `plumbline`; but
    the command gets the shape right every time, which hand-setup reliably does not.)
+
+   **Exactly what it changes (and what it does NOT):**
+   - **Adds** the required status checks (`plumbline` + any `--check` names),
+     forcing `strict:false` (no rebase-before-merge queue).
+   - **Enables** repository auto-merge.
+   - **Preserves** any existing `required_pull_request_reviews` (required
+     reviewers, code-owner review, approving-count) and `restrictions` (push
+     allow-lists) — it reads the current protection first and carries these back
+     verbatim. It will **never** remove a required-reviewer rule or push
+     restriction you already have.
+   - If it **can't read** the current protection (e.g. the token lacks the
+     scope), it **refuses to write** rather than risk clobbering those settings.
+     Pass `--force` to write anyway (only ever adding checks). Use `--dry-run`
+     first to preview.
 2. **Add the review API key secret** (semantic review needs it):
    GitHub → **Settings → Secrets and variables → Actions → New repository
    secret** → name **`ANTHROPIC_API_KEY`**, paste the key. (`GITHUB_TOKEN` is
