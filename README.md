@@ -95,8 +95,19 @@ npx github:amos-labs/plumbline receipt --write   # one idempotent step: scaffold
                                                  # diff_sha256, changed_files, and self_modifying derived from
                                                  # the policy's protected paths. Judgment fields never touched.
 # …fill intent / validation_plan / execution_evidence / result_summary (the judgment half — yours to assert)…
-npx github:amos-labs/plumbline check             # local pre-flight — same shape+diff checks as CI; must PASS before push
+npx github:amos-labs/plumbline check             # local pre-flight — the SHAPE floor + diff_sha256 only (fast, offline, free).
+                                                 # NOT the full verdict: the LLM semantic review runs in CI.
+npx github:amos-labs/plumbline check --review    # full parity — also runs the semantic review locally for the real verdict
+                                                 # (needs ANTHROPIC_API_KEY / PLUMBLINE_API_KEY; degrades to shape-only without one).
 ```
+
+> **`check` vs the CI gate.** Default `plumb check` verifies only the *shape* dimension
+> (receipt well-formed, `diff_sha256` matches the diff, protected-path floor) — it
+> deliberately does **not** call the LLM, so it stays fast/offline/free and prints a
+> scoped `shape pre-flight: PASS/FAIL` banner, never a bare `APPROVE`/`REVIEW`/`REWORK`.
+> A shape-PASS locally can still land on `REVIEW`/`REWORK` in CI once the semantic review
+> runs. Use `plumb check --review` to run that review locally and get the full verdict
+> before pushing.
 
 After more commits or a rebase, just run `receipt --write` again — it refreshes the
 mechanical fields and preserves everything you wrote. `receipt --check` (exit 1 when
@@ -281,7 +292,8 @@ plumb receipt --write  # one idempotent step: scaffold or refresh the per-PR rec
 plumb receipt --check  # mechanical staleness only; exit 1 if stale — pre-push-hook friendly
 plumb new              # lower-level: scaffold a fresh per-PR receipt (receipt --write supersedes)
 plumb stamp            # lower-level: fill diff_sha256 + changed_files only (receipt --write supersedes)
-plumb check            # local pre-flight: shape + diff_sha256, prints the would-be capsule — no push needed
+plumb check            # local pre-flight: SHAPE floor + diff_sha256 only (scoped banner, not the full verdict)
+plumb check --review   # full parity: shape + semantic review locally (needs a key; degrades to shape-only without one)
 plumb shape            # deterministic checks only — fast, no API key needed
 plumb review           # shape + semantic review, prints JSON verdict
 plumb run              # CI mode: shape + review + posts/updates the PR comment

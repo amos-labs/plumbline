@@ -1,0 +1,74 @@
+{
+  "_help": {
+    "_note": "Allowed values + requirements per field (this _help block is ignored by the gate — keep or delete). Run `plumb schema` for the full reference.",
+    "receipt_version": "one of: 1.0 — required — schema version",
+    "task_id": "required — ticket/issue/branch id (also the receipt filename)",
+    "agent_id": "required — which agent or human did the work",
+    "intent": "required — what + why, plain language — the semantic review reads this",
+    "self_modifying": "one of: true | false — required — MUST be true if changed_files touch policy.protected_paths; touching one with false is a hard fail; true routes to human review",
+    "policy_refs": "required — policy/mission docs you read",
+    "validation_plan": "required — each: { command, reason, required, id?, ci_covered? }",
+    "validation_plan[].required": "one of: true | false — required — is this check mandatory",
+    "validation_plan[].id": "optional — optional step id; evidence is matched to it via execution_evidence[].step (robust to a command wording diff)",
+    "validation_plan[].ci_covered": "one of: true | false — optional — step is corroborated by the ci-evidence gate (real CI run), not manual evidence — may be 'skipped'; also auto-recognized when command matches a policy ci_evidence_checks entry",
+    "execution_evidence": "required — each: { command, status, output_ref?, skip_reason?, step? }",
+    "execution_evidence[].status": "one of: passed | failed | skipped — required — required steps must be 'passed' (unless CI-covered); use skip_reason when 'skipped'",
+    "execution_evidence[].step": "optional — optional id of the validation_plan step this evidence is for (matches validation_plan[].id)",
+    "changed_files": "required — set by `plumb receipt --write` — don't hand-edit",
+    "diff_sha256": "required — set by `plumb receipt --write` — never hand-edit",
+    "result_summary": "required — what changed + how it was verified"
+  },
+  "receipt_version": "1.0",
+  "task_id": "39",
+  "agent_id": "claude-opus-4-8",
+  "intent": "Fix #39 — pre-flight honesty. Local `plumb check` printed the same `plumbline: APPROVE` banner as the CI gate, but it only ran the shape floor + diff_sha256 (the LLM semantic review runs only in CI), so a shape-PASS locally could still be REVIEW/REWORK in CI (it was, on the v0.2.1 release PR #38). This changes `check` (default) to print a scoped `shape pre-flight: PASS/FAIL` banner — never a bare gate verdict — and states the semantic review runs in CI. Adds `plumb check --review` for full local parity: it runs the semantic review through the SAME shared code path as the CI gate and prints the real verdict; with no provider key it degrades to the shape-only pre-flight and says so, never claiming a verdict it did not compute. Behavior of the CI gate, the receipt schema, and the shape/semantic logic is unchanged — only how `check` labels and composes existing checks locally.",
+  "self_modifying": false,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json",
+    "openspec/changes/pre-flight-honesty-scope-the-local-check-banner-optional-rev/proposal.md"
+  ],
+  "validation_plan": [
+    {
+      "command": "npx tsc --noEmit",
+      "reason": "Type-check the new src/preflight.ts and the reworked check-command control flow in src/cli.ts.",
+      "required": true,
+      "id": "typecheck",
+      "ci_covered": true
+    },
+    {
+      "command": "npm test",
+      "reason": "Runs the new preflight.test.ts (banner wording, no gate-verdict word) and cli-check.test.ts (default check prints the pre-flight banner not APPROVE; --review degrades to shape-only with an explicit note when no key), plus the full existing suite.",
+      "required": true,
+      "id": "test",
+      "ci_covered": true
+    },
+    {
+      "command": "npm run bundle && git diff --exit-code dist/index.js",
+      "reason": "dist/index.js must be the freshly bundled source; the dist-check job blocks drift between committed bundle and src.",
+      "required": true,
+      "id": "dist-check",
+      "ci_covered": true
+    }
+  ],
+  "execution_evidence": [
+    { "command": "npx tsc --noEmit", "status": "passed", "step": "typecheck", "output_ref": "TSC CLEAN (no errors)" },
+    { "command": "npm test", "status": "passed", "step": "test", "output_ref": "189/189 pass (5 new: 3 preflight + 2 cli-check)" },
+    { "command": "npm run bundle && git diff --exit-code dist/index.js", "status": "passed", "step": "dist-check", "output_ref": "bundle 233.0kb; committed dist/index.js matches" }
+  ],
+  "changed_files": [
+    "CHANGELOG.md",
+    "README.md",
+    "dist/index.js",
+    "openspec/changes/pre-flight-honesty-scope-the-local-check-banner-optional-rev/proposal.md",
+    "openspec/changes/pre-flight-honesty-scope-the-local-check-banner-optional-rev/specs/README.md",
+    "openspec/changes/pre-flight-honesty-scope-the-local-check-banner-optional-rev/specs/check/spec.md",
+    "openspec/changes/pre-flight-honesty-scope-the-local-check-banner-optional-rev/tasks.md",
+    "src/cli.ts",
+    "src/preflight.ts",
+    "src/test/cli-check.test.ts",
+    "src/test/preflight.test.ts"
+  ],
+  "diff_sha256": "55ff7a8d273301a3b6105bce1d2d28a999994e2b0b0fafe8762b287983ec01d1",
+  "result_summary": "New src/preflight.ts renderPreflight() prints a scoped `shape pre-flight: PASS/FAIL` banner (no APPROVE/REVIEW/REWORK). src/cli.ts: `check` reads a `--review` flag — default path prints the pre-flight banner + 'semantic review runs in CI' and returns early; `--review` probes selectProvider() and, if a key resolves, falls through to the shared shape+semantic path and prints the real verdict via renderComment (CI still authoritative on merge), else degrades to shape-only with an explicit fallback note. Help text + README document the split; CHANGELOG updated; openspec change (proposal/tasks/specs/check/spec.md) carries the contract. Verified: tsc clean, 189/189 tests pass (preflight.test.ts + cli-check.test.ts new), bundle byte-matches committed dist/index.js. Non-protected files only — self_modifying:false."
+}
