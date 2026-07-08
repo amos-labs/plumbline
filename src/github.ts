@@ -15,21 +15,27 @@ export function renderComment(result: GateResult): string {
   const cap = result.review?.failure_capsule;
   const agentActions = cap?.agent_actions ?? [];
   const humanActions = cap?.human_actions ?? [];
+  const advisory = cap?.advisory ?? [];
+  const didNotConverge = cap?.did_not_converge === true;
 
   if (result.final === "approve") {
     lines.push("> **✅ Passed — merging automatically. No action needed.**");
   } else if (result.final === "rework") {
+    // Turn-based (#41): rework is exclusively the agent's turn — the comment
+    // carries only 🤖 items (plus any advisory notes, which never block).
     lines.push(
       "> **🔁 Rework needed — the agent fixes the 🤖 items below and re-pushes. No human action required.**",
     );
-  } else if (agentActions.length > 0) {
-    // Review, but there's ALSO agent-doable work — don't pretend otherwise.
+  } else if (didNotConverge) {
+    // Convergence cap fired (#41, Change 3): the loop is over, a human decides.
     lines.push(
-      "> **⚠️ Human review required — and there are agent-fixable items too.** A maintainer decides the 🧑 items; an agent can address the 🤖 items now (in parallel). Override-merge when ready: `gh pr merge <PR> --squash --admin`.",
+      "> **🧑‍⚖️ Gate did not converge — human decides.** After 2 rework rounds the gate stops iterating the agent. A maintainer reviews the remaining 🧑 items and override-merges if sound: `gh pr merge <PR> --squash --admin`.",
     );
   } else {
+    // Turn-based (#41): review is exclusively the human's turn — by
+    // construction there are ZERO 🤖 items here.
     lines.push(
-      "> **⚠️ Human approval required — no agent rework needed, but this is NOT a rubber stamp.** Touches a protected/billing surface. **Read the review findings below (risk + validation notes) before override-merging:** `gh pr merge <PR> --squash --admin`.",
+      "> **⚠️ Human approval required — no agent rework needed, but this is NOT a rubber stamp.** A maintainer decides the 🧑 items below (protected surface, a real trade-off, or ambiguous intent). **Read the review findings (risk + validation notes) before override-merging:** `gh pr merge <PR> --squash --admin`.",
     );
   }
   lines.push("");
@@ -63,7 +69,9 @@ export function renderComment(result: GateResult): string {
       lines.push(`### What's needed — ${r.failure_capsule.failing_check}`);
       lines.push(`_${r.failure_capsule.suspected_cause}_`);
 
-      // The whole point: split who-must-act so neither side is buried.
+      // Turn-based (#41): a rework carries only 🤖 items, a review only 🧑 —
+      // the verdict already encodes whose turn it is, so neither list bleeds
+      // into the other. Render whichever blocking items are present.
       if (humanActions.length > 0) {
         lines.push("");
         lines.push("#### 🧑 Human must decide");
@@ -76,10 +84,19 @@ export function renderComment(result: GateResult): string {
         lines.push("");
         lines.push("_Agent: do the 🤖 items and re-push with an updated receipt._");
       }
-      // Fall back to the single next step when the model gave no split.
+      // Fall back to the single next step when there are no blocking items.
       if (humanActions.length === 0 && agentActions.length === 0) {
         lines.push("");
         lines.push(`**Next action:** ${r.failure_capsule.next_action_requested}`);
+      }
+
+      // Advisory notes (#41, Change 2): recorded and shown, NEVER verdict-
+      // affecting. Kept in a distinct section so they can never read as
+      // required work.
+      if (advisory.length > 0) {
+        lines.push("");
+        lines.push("#### 💡 Advisory — non-blocking (does not gate the merge)");
+        for (const a of advisory) lines.push(`- ${a}`);
       }
 
       lines.push("");
@@ -129,6 +146,8 @@ export function renderCiSummary(result: GateResult): CiAnnotation {
 
   if (result.final === "rework") {
     parts.push("Rework needed — the agent fixes the items in the PR comment and re-pushes.");
+  } else if (cap?.did_not_converge) {
+    parts.push("Gate did not converge after 2 rework rounds — a human decides the remaining items.");
   } else {
     parts.push("Human approval required (protected/billing surface) — NOT a rubber stamp.");
   }
@@ -320,6 +339,80 @@ export function appendAttemptHistory(
     blocks.map((b) => `${ATTEMPT_DELIM}\n${b}`).join("\n\n") +
     `\n</details>`
   );
+}
+
+// ── Re-review context: round count + prior capsule (#41, Change 3) ─────────
+//
+// The gate comment is the durable record of prior rounds. A re-review reads it
+// to (a) count how many rounds this PR has been through and (b) recover the
+// prior failure capsule, so the review can be convergent (verify prior items,
+// review only new hunks) instead of starting over each push.
+
+/**
+ * Count the rounds this PR has already been through, from its existing gate
+ * comment. Each archived attempt is one prior round; +1 for the current
+ * (top) result that is about to be superseded. A PR with no prior comment is
+ * round 1. Pure — unit-testable without network.
+ */
+export function countRounds(existingBody: string | undefined): number {
+  if (!existingBody) return 1;
+  const idx = existingBody.indexOf(HISTORY_MARKER);
+  if (idx < 0) return 2; // a current result exists but no archived history yet
+  const priorBlocks = existingBody
+    .slice(idx)
+    .split(ATTEMPT_DELIM)
+    .slice(1)
+    .filter((b) => b.trim());
+  // archived attempts + the current (soon-to-be-archived) result + this run
+  return priorBlocks.length + 2;
+}
+
+/**
+ * Recover the prior failure capsule from the current (top) section of the
+ * existing gate comment — it is rendered inside a `<summary>Full capsule
+ * (JSON)</summary>` details block. Returns undefined if absent/unparseable.
+ * Pure — unit-testable without network.
+ */
+export function extractPriorCapsule(
+  existingBody: string | undefined,
+): import("./types.js").FailureCapsule | undefined {
+  if (!existingBody) return undefined;
+  const hIdx = existingBody.indexOf(HISTORY_MARKER);
+  const current = hIdx >= 0 ? existingBody.slice(0, hIdx) : existingBody;
+  const m = current.match(/Full capsule \(JSON\)<\/summary>\s*```json\s*([\s\S]*?)```/);
+  if (!m) return undefined;
+  try {
+    return JSON.parse(m[1].trim()) as import("./types.js").FailureCapsule;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Fetch the existing plumbline gate comment body for a PR (for re-review
+ * context), or undefined if there is none / on any error. Best-effort: the gate
+ * must never fail because it couldn't read prior context.
+ */
+export async function fetchExistingGateComment(
+  repo: string,
+  prNumber: number,
+  token: string,
+): Promise<string | undefined> {
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${repo}/issues/${prNumber}/comments?per_page=100`,
+      { headers: GH_HEADERS(token) },
+    );
+    if (!res.ok) return undefined;
+    const comments = (await res.json()) as Array<{ body: string }>;
+    return comments.find(
+      (c) =>
+        c.body.includes("plumbline · proof-carrying gate") ||
+        c.body.includes("proofgate · proof-carrying gate"),
+    )?.body;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Post (or update) the gate comment on a PR. Requires GITHUB_TOKEN. */

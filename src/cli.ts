@@ -13,7 +13,14 @@ import {
 import { semanticReview, resolveReviewModel, PROMPT_VERSION } from "./review.js";
 import { selectProvider } from "./provider.js";
 import { shouldSkipReview, readReviewCache, writeReviewCache, protectedFloor } from "./cost.js";
-import { renderComment, renderCiSummary, verifyCiEvidence } from "./github.js";
+import {
+  renderComment,
+  renderCiSummary,
+  verifyCiEvidence,
+  fetchExistingGateComment,
+  countRounds,
+  extractPriorCapsule,
+} from "./github.js";
 import { detectCi, reportToCi } from "./ci.js";
 import { pickReceipt, type ReceiptCandidate } from "./receipt-select.js";
 import { runInit, sanitizeTaskId, newReceipt, formatSchemaReference, resolveStack } from "./scaffold.js";
@@ -46,6 +53,25 @@ function getDiff(baseRef: string, cwd: string): string {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
+}
+
+/**
+ * One-line summaries of the commits on this branch since it forked from the
+ * base — the "fix commits" fed into a convergent re-review (#41). Best-effort:
+ * returns [] if git is unavailable. Capped so a long branch can't blow the
+ * prompt budget.
+ */
+function fixCommitsSince(baseRef: string, cwd: string): string[] {
+  try {
+    const out = execFileSync(
+      "git",
+      ["log", "--no-merges", "--format=%h %s", "-n", "30", `${baseRef}..HEAD`],
+      { cwd, encoding: "utf8", maxBuffer: 4 * 1024 * 1024 },
+    );
+    return out.split("\n").map((l) => l.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -821,7 +847,30 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
       }
 
       if (!review) {
-        review = await semanticReview(mission, receipt, diff, policy, provider);
+        // Re-review context (#41, Change 3): on a re-push, feed the prior
+        // capsule + fix commits so the review is convergent (verify prior
+        // items, review only new hunks) and the round cap is enforced. Read
+        // from the durable gate comment; best-effort — never fail on this.
+        let reviewContext: import("./types.js").ReviewContext | undefined;
+        if (cmd === "run") {
+          const repo = process.env.GITHUB_REPOSITORY;
+          const token = process.env.GITHUB_TOKEN;
+          if (ci.provider === "github" && repo && token && ci.prNumber !== undefined) {
+            const existing = await fetchExistingGateComment(repo, ci.prNumber, token);
+            if (existing) {
+              const round = countRounds(existing);
+              reviewContext = {
+                round,
+                priorCapsule: extractPriorCapsule(existing),
+                fixCommits: skipGit ? undefined : fixCommitsSince(baseRef, cwd),
+              };
+              gate.reasons.push(
+                `Re-review round ${round} — convergent delta review against the prior capsule.`,
+              );
+            }
+          }
+        }
+        review = await semanticReview(mission, receipt, diff, policy, provider, reviewContext);
         // Only persist under a key we verified matches the actual diff — never
         // write a verdict under a stale/wrong diff_sha256.
         if (policy.review_cache.enabled && !skipGit && receipt.diff_sha256 && cacheKeyValid) {
