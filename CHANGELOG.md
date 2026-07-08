@@ -10,6 +10,8 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-08
+
 ### Security / Hardening
 - **`setup-protection` no longer clobbers existing branch protection.** It now
   GETs the current protection first and PRESERVES existing
@@ -158,6 +160,7 @@ floating `v0` tag: proof-carrying gate for AI agent work — structured receipt,
 deterministic shape check, an LLM semantic review against the repository's mission,
 and a failure-capsule rework loop. Single-repo, GitHub Actions + Anthropic API.
 
-[Unreleased]: https://github.com/amos-labs/plumbline/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/amos-labs/plumbline/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/amos-labs/plumbline/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/amos-labs/plumbline/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/amos-labs/plumbline/releases/tag/v0.1.0
