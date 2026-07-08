@@ -1,0 +1,94 @@
+{
+  "_help": {
+    "_note": "Allowed values + requirements per field (this _help block is ignored by the gate — keep or delete). Run `plumb schema` for the full reference.",
+    "receipt_version": "one of: 1.0 — required — schema version",
+    "task_id": "required — ticket/issue/branch id (also the receipt filename)",
+    "agent_id": "required — which agent or human did the work",
+    "intent": "required — what + why, plain language — the semantic review reads this",
+    "self_modifying": "one of: true | false — required — MUST be true if changed_files touch policy.protected_paths; touching one with false is a hard fail; true routes to human review",
+    "policy_refs": "required — policy/mission docs you read",
+    "validation_plan": "required — each: { command, reason, required, id?, ci_covered? }",
+    "validation_plan[].required": "one of: true | false — required — is this check mandatory",
+    "validation_plan[].id": "optional — optional step id; evidence is matched to it via execution_evidence[].step (robust to a command wording diff)",
+    "validation_plan[].ci_covered": "one of: true | false — optional — step is corroborated by the ci-evidence gate (real CI run), not manual evidence — may be 'skipped'; also auto-recognized when command matches a policy ci_evidence_checks entry",
+    "execution_evidence": "required — each: { command, status, output_ref?, skip_reason?, step? }",
+    "execution_evidence[].status": "one of: passed | failed | skipped — required — required steps must be 'passed' (unless CI-covered); use skip_reason when 'skipped'",
+    "execution_evidence[].step": "optional — optional id of the validation_plan step this evidence is for (matches validation_plan[].id)",
+    "changed_files": "required — set by `plumb receipt --write` — don't hand-edit",
+    "diff_sha256": "required — set by `plumb receipt --write` — never hand-edit",
+    "result_summary": "required — what changed + how it was verified"
+  },
+  "receipt_version": "1.0",
+  "task_id": "41",
+  "agent_id": "claude",
+  "intent": "Implements issue #41: make the gate verdict encode whose turn it is, exclusively. Observed live on amos-managed-platform PRs #63-65: REVIEW verdicts carried BOTH human (🧑) and agent (🤖) items (ambiguous whose turn it was), and re-reviews did not converge — each round reviewed the whole PR afresh and raised NEW nitpicks on unchanged code, looping agents through growing lists (#63: 8 items over 2 rounds). This change (1) derives the verdict mechanically from findings — any blocking+agent finding ⇒ rework even on a protected path (the floor forbids auto-approve but must not skip agent iteration), review only when the blocking-agent set is empty so a review carries zero 🤖 items; (2) tags findings blocking|advisory so advisory notes never gate; (3) makes re-reviews convergent (delta prompt over the prior capsule + fix commits, changed-hunks-only) with a convergence cap after 2 rework rounds that escalates non-regressions to human review.",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/AGENTS.md",
+    ".plumbline/policy.json"
+  ],
+  "validation_plan": [
+    {
+      "command": "npx tsc --noEmit",
+      "reason": "Type-checks the new finding model, verdict-selection logic, delta-prompt construction, and CLI wiring across review.ts/types.ts/github.ts/cli.ts.",
+      "required": true,
+      "id": "tsc"
+    },
+    {
+      "command": "npm test",
+      "reason": "Runs the full node:test suite (218 tests) including the new verdict-selection, advisory-partitioning, delta-prompt, and round-cap tests; proves turn-based verdicts and the convergence cap behave as specified.",
+      "required": true,
+      "id": "test",
+      "ci_covered": true
+    },
+    {
+      "command": "npm run bundle",
+      "reason": "Rebuilds the committed esbuild bundle (dist/index.js); the dist-check CI job fails if the committed bundle is stale relative to source.",
+      "required": true,
+      "id": "bundle",
+      "ci_covered": true
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npx tsc --noEmit",
+      "status": "passed",
+      "output_ref": "exit 0 — no type errors",
+      "step": "tsc"
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "# tests 218 / # pass 218 / # fail 0",
+      "step": "test"
+    },
+    {
+      "command": "npm run bundle && git diff --quiet -- dist/index.js",
+      "status": "passed",
+      "output_ref": "dist/index.js 239.9kb; git diff clean — committed bundle matches source (dist-check would pass)",
+      "step": "bundle"
+    }
+  ],
+  "changed_files": [
+    ".plumbline/AGENTS.md",
+    "CHANGELOG.md",
+    "README.md",
+    "dist/index.js",
+    "docs/AGENTS_ON_A_MISSION.md",
+    "openspec/changes/verdict-semantics-turn-based-rework-review-split-convergent/proposal.md",
+    "openspec/changes/verdict-semantics-turn-based-rework-review-split-convergent/specs/semantic-review/spec.md",
+    "openspec/changes/verdict-semantics-turn-based-rework-review-split-convergent/tasks.md",
+    "package-lock.json",
+    "src/cli.ts",
+    "src/github.ts",
+    "src/review.ts",
+    "src/test/github.test.ts",
+    "src/test/render-turn-based.test.ts",
+    "src/test/verdict-turn-based.test.ts",
+    "src/types.ts",
+    "templates/AGENTS.md"
+  ],
+  "diff_sha256": "285c8ab09261c7d307d9eb2212d3aeb26396c893511466989bf0287fefe9225c",
+  "result_summary": "Turn-based verdicts: selectVerdict derives the verdict from classified findings (any blocking+agent ⇒ rework, even on a protected path; blocking+human or protected floor with empty agent set ⇒ review; else approve). Findings tagged class(blocking|advisory)+actor(agent|human); advisory partitioned into its own non-blocking render section, never verdict-affecting. Review prompt/schema/parsing emit and consume findings; legacy agent_actions/human_actions still parsed as blocking for back-compat (receipt schema unchanged). Convergent re-review: buildDeltaSection feeds the prior capsule + fix commits and constrains the model to changed-hunks-only regression review; round count recovered from the durable gate comment (countRounds/extractPriorCapsule); applyConvergenceCap escalates non-regression blockers to human review after 2 rework rounds under a 'gate did not converge' banner. Docs updated to match the shipped semantics: README.md (verdict/lifecycle + capsule sections rewritten to turn-based REWORK/REVIEW/advisory, protected floor forbids only auto-APPROVE, convergent delta re-review + round cap), templates/AGENTS.md and the repo's own .plumbline/AGENTS.md (new 'Reading the gate's verdict' section — on REWORK fix and re-push, REVIEW is a human decision the agent must not loop on, advisory never blocks; self_modifying note clarified), docs/AGENTS_ON_A_MISSION.md ('Human vs. agent' section rewritten off the old both-lists model), and CHANGELOG.md [Unreleased] (three entries). Verified: npx tsc --noEmit exit 0; npm test 218/218 pass (new tests cover verdict selection incl. agent-blocking⇒rework on protected path, empty-agent⇒review, advisory never blocks, delta-prompt construction, and the round cap); npm run bundle rebuilt dist/index.js with git diff clean (dist-check passes — docs-only change on top of the implementation, no src touched). Self-modifying (touches src/review.ts logic plus protected src/github.ts, src/types.ts, .plumbline/) — expected to route to human REVIEW; made clean and well-tested for easy review."
+}

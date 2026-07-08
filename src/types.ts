@@ -197,27 +197,75 @@ export const PolicySchema = z.object({
 
 export type Policy = z.infer<typeof PolicySchema>;
 
+/**
+ * A single review finding, classified on two independent axes (#41):
+ *  - `class` — does it BLOCK (a defect: failed/missing validation, a bug, a
+ *    security regression, receipt≠diff, an untested critical path) or is it
+ *    ADVISORY (a "consider…", a style nit, a nice-to-have)? Only `blocking`
+ *    findings ever affect the verdict. Advisory findings are recorded and
+ *    rendered in their own section — never verdict-affecting.
+ *  - `actor` — whose turn is it: can an AGENT fix it now, or does it need a
+ *    HUMAN decision (protected-surface override, a real trade-off, irreducibly
+ *    ambiguous intent)?
+ *
+ * The verdict is then derived MECHANICALLY from the partition of findings
+ * (see selectVerdict), not taken from the model's own verdict field — so the
+ * verdict encodes whose turn it is, exclusively.
+ */
+export interface ReviewFinding {
+  /** The finding itself, as a concrete, actionable sentence. */
+  description: string;
+  /** blocking = a defect that must be resolved; advisory = never gates. */
+  class: "blocking" | "advisory";
+  /** agent = an agent can do it now; human = needs human judgment. */
+  actor: "agent" | "human";
+  /**
+   * True when this finding is a REGRESSION introduced by the fix commits under
+   * re-review (Change 3). On/after the convergence cap, only regressions may
+   * block; everything else escalates to human review.
+   */
+  regression?: boolean;
+}
+
 /** Structured rework prompt — what the agent gets instead of a log dump. */
 export interface FailureCapsule {
   failing_check: string;
   suspected_cause: string;
   next_action_requested: string;
   /**
+   * Classified findings (#41). The source of truth for verdict selection and
+   * rendering: `agent_actions`/`human_actions` below are DERIVED from the
+   * blocking subset for backward-compatible consumers. Advisory findings live
+   * only here (and in the advisory render section), never in the action lists.
+   */
+  findings?: ReviewFinding[];
+  /**
    * Concrete fixes an AGENT can do right now — code, security, tests, docs.
-   * Populated independently of verdict: a PR sent to human review can still
-   * carry a list of agent-actionable items to tackle in parallel while a human
-   * decides the human_actions. `[]` when there's genuinely nothing for an agent to do.
+   * DERIVED from the blocking + agent findings. A PR sent to human review has
+   * this empty by construction (#41): a REVIEW is a pure human decision list.
+   * `[]` when there's genuinely nothing for an agent to do.
    */
   agent_actions?: string[];
   /**
    * Decisions only a HUMAN can make — protected/billing override, ambiguous
    * intent, an invariant trade-off, anything unverifiable from the evidence.
-   * `[]` when nothing actually requires a human.
+   * DERIVED from the blocking + human findings. `[]` when nothing requires a human.
    */
   human_actions?: string[];
+  /**
+   * Advisory notes — "consider…", style, nice-to-haves. Recorded and rendered
+   * in their own section; NEVER verdict-affecting (#41).
+   */
+  advisory?: string[];
   changed_files_implicated: string[];
   relevant_excerpt?: string;
   severity: "fixable" | "fatal" | "review";
+  /**
+   * Set true when the convergence cap fired (#41): after 2 rework rounds only
+   * regressions-in-fixes may block; anything else escalated to human review
+   * under a "gate did not converge — human decides" banner.
+   */
+  did_not_converge?: boolean;
 }
 
 export type Verdict = "approve" | "rework" | "review";
@@ -257,3 +305,27 @@ export interface GateResult {
   final: Verdict;
   reasons: string[];
 }
+
+/**
+ * Re-review context (#41, Change 3). Present only on a re-review (round >= 2):
+ * carries the prior failure capsule and the commits that were pushed since,
+ * so the prompt can (a) verify the previously-named blocking items are fixed
+ * and (b) review ONLY the new/changed hunks for regressions — never re-litigate
+ * unchanged code. `round` is 1 on the first review and increments per re-run.
+ */
+export interface ReviewContext {
+  /** 1 = first review; 2 = first re-review; etc. */
+  round: number;
+  /** The prior run's failure capsule (the items the agent was asked to fix). */
+  priorCapsule?: FailureCapsule;
+  /** One-line summaries of the commits pushed since the prior review. */
+  fixCommits?: string[];
+}
+
+/**
+ * Rework rounds after which the convergence cap engages (#41). At round
+ * CONVERGENCE_CAP_ROUND and beyond, only regressions-in-fixes may block;
+ * anything else escalates to human review. Round 1 = first review, round 2 =
+ * first re-review, round 3 = the cap fires (i.e. "after 2 rework rounds").
+ */
+export const CONVERGENCE_CAP_ROUND = 3;

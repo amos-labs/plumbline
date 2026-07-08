@@ -69,16 +69,15 @@ function reviewResult(opts: { agent: string[]; human: string[] }): GateResult {
   };
 }
 
-test("review WITH agent_actions: shows both lists, no 'nothing for the agent' claim", () => {
-  const md = renderComment(
-    reviewResult({ agent: ["Escape user input in the attribute"], human: ["Approve the migration"] }),
-  );
+test("review is the human's turn only (#41): human items render, banner is human-decides", () => {
+  // Under turn-based verdicts a REVIEW is emitted only when the agent set is
+  // empty — a review comment is a pure human decision list. (Any agent-fixable
+  // defect would have made the verdict REWORK instead.)
+  const md = renderComment(reviewResult({ agent: [], human: ["Approve the migration"] }));
   assert.ok(md.includes("🧑 Human must decide"));
   assert.ok(md.includes("Approve the migration"));
-  assert.ok(md.includes("🤖 Agent can do now"));
-  assert.ok(md.includes("Escape user input in the attribute"));
-  assert.ok(md.includes("agent-fixable items too"));
-  assert.ok(!md.includes("nothing for the agent to fix"));
+  assert.ok(!md.includes("🤖 Agent can do now"));
+  assert.ok(md.includes("Human approval required"));
 });
 
 test("review with NO agent_actions: human-approval banner still flags findings to read", () => {

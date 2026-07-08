@@ -118,22 +118,44 @@ agent does work
   -> emits .plumbline/receipt.json   (intent, validation plan, evidence, changed files, self_modifying flag)
   -> shape gate                       deterministic: schema, evidence coverage, protected paths, SHA/diff integrity
   -> semantic review                  one LLM call vs your MISSION.md: coverage, alignment, risk
-  -> verdict
-       approve   -> CI check green, merges automatically
-       rework    -> capsule's 🤖 agent_actions; agent reworks and resubmits (no human needed)
-       review    -> capsule's 🧑 human_actions; a human decides (always for self-modifying)
+  -> verdict = whose turn it is
+       approve   -> CI check green, merges automatically (no blocking findings)
+       rework    -> the agent's turn: fix the 🤖 items and re-push (no human needed)
+       review    -> the human's turn: decide the 🧑 items (zero 🤖 items by construction)
 ```
 
 Two-tier validation, on purpose: the shape gate never pretends to understand meaning, and the reviewer never re-does deterministic checks.
 
-**The capsule splits who must act.** Every failure capsule separates `agent_actions`
-(concrete fixes an agent can do now) from `human_actions` (decisions only a human can
-make) — and a PR can carry **both**. A `review` still lists `agent_actions` so the
-agent-fixable parts proceed in parallel while a human decides the rest; it no longer
-pretends "there's nothing for the agent to do." How aggressively work routes to humans
-is the `human_review_level` dial (`low` / `balanced` / `high`) in `policy.json` — it
-tunes the split only and never lowers the hard floor (protected paths + `self_modifying`
-always need a human).
+**The verdict is whose turn it is — exclusively.** It is derived mechanically from the
+classified findings, not taken from the model. Each finding is tagged on two axes:
+`class` (`blocking` — a defect: failed/missing validation, a bug, a security regression,
+receipt≠diff, an untested critical path — or `advisory` — a "consider…", a style nit, a
+nice-to-have) and `actor` (`agent` — an agent can fix it now — or `human` — needs human
+judgment). The rule:
+
+- **Any blocking + agent finding ⇒ REWORK**, the agent's turn — *even on a protected /
+  `self_modifying` path.* The protected floor only forbids auto-APPROVE; it never skips
+  the agent's rework phase. A REWORK self-clears on re-push once the agent set is empty.
+- **REVIEW** is emitted only when the blocking + agent set is *empty*, so a REVIEW is by
+  construction a pure human decision list — **zero 🤖 items**. A REVIEW never self-clears;
+  the human decides it (protected-surface override, a real trade-off, or ambiguous intent).
+- **Advisory findings never gate.** They render in their own 💡 section and are recorded
+  in the capsule; they never affect the verdict and never block a merge.
+
+Lifecycle: **REWORK → (agent fixes, re-push) → … → REVIEW (humans-only) or APPROVE.**
+
+How aggressively judgment calls route to a human vs. an agent is the `human_review_level`
+dial (`low` / `balanced` / `high`) in `policy.json` — it tunes the agent/human split of
+blocking findings only and never lowers the hard floor (protected paths + `self_modifying`
+always need a human before merge).
+
+**Re-review is convergent (delta), not a fresh pass.** On a re-review the prompt receives
+the prior capsule + the fix commits; its contract is (a) verify the previously-named
+blocking items were addressed and (b) review ONLY the new/changed hunks for regressions —
+it must not raise fresh findings on unchanged code it already reviewed. A **convergence
+cap** bounds the loop: after 2 rework rounds only regressions in the fix commits may
+block; anything else escalates to REVIEW under a "gate did not converge — human decides"
+banner. No unbounded nitpick loops.
 
 ## Quick start
 
@@ -333,9 +355,9 @@ The contract an agent must satisfy (`templates/receipt.example.json`):
 
 ## Design rules inherited from AMOS
 
-- **Self-modifying work has no override path.** Changes to auth, payments, migrations, the gate itself — whatever you mark protected — always require a human, regardless of how good the review looks.
+- **Self-modifying work has no auto-approve path.** Changes to auth, payments, migrations, the gate itself — whatever you mark protected — always require a human *before merge*, regardless of how good the review looks. The floor only forbids auto-APPROVE: a protected PR with agent-fixable defects still gets REWORK first (the agent iterates), and routes to REVIEW only once the agent set is empty.
 - **Low confidence never auto-approves.** Verdicts below `min_review_confidence` are downgraded to review.
-- **Failure capsules, not log dumps.** A rework verdict includes the failing check, suspected cause, implicated files, and a single concrete next action — structured to be fed straight back to the agent.
+- **Failure capsules, not log dumps.** A capsule carries the failing check, suspected cause, implicated files, the classified findings split into 🤖 agent actions and 🧑 human actions, a separate 💡 advisory section, and a concrete next action — structured to be fed straight back to the agent. A REWORK capsule carries only 🤖 items; a REVIEW capsule only 🧑 items.
 - **The gate protects itself.** `.plumbline/**` (and legacy `.proofgate/**`) and your workflows belong in `protected_paths`.
 
 ## Running agents at scale
