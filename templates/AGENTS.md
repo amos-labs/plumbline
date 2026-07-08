@@ -40,8 +40,10 @@ pass — no red-CI round-trips. (Semantic review still runs server-side in CI.)
 - `self_modifying` — **`true` if the diff touches plumbline's own config or
   guardrails** (`.plumbline/**`, `.github/workflows/**`, or whatever the repo's
   `protected_paths` lists). Touching a protected path with `self_modifying:false`
-  is a hard fail. When `true`, the gate routes to **human review** — it will
-  not auto-approve.
+  is a hard fail. When `true`, the gate will **not auto-approve** — a human must
+  approve before merge. It does **not** skip your rework phase: if a protected-path
+  PR has agent-fixable defects, you still get REWORK first and fix them; it routes
+  to REVIEW (human) only once there's nothing left for you to fix.
 - `validation_plan` — the checks you intend to run; each is
   `{ command, reason, required }` where **`required` is a boolean** (`true`/`false`).
 - `execution_evidence` — the checks you actually ran; each is
@@ -136,6 +138,35 @@ is why the binding diff *excludes* the receipts directory.
   your diff to a single intended receipt.
 - A no-op or wrong `diff_sha256` is the #1 false failure — always finish with
   `plumb receipt --write` then `plumb check`.
+
+## Reading the gate's verdict (what to do with each)
+
+The verdict tells you **whose turn it is** — nothing else. It is derived from the
+review's findings; act on it literally:
+
+- **APPROVE** ✅ — no blocking findings. The PR merges automatically. Nothing to do.
+- **REWORK** 🔁 — *your turn.* The comment lists **🤖 Agent can do now** items — each
+  is a concrete defect (failed/missing validation, a bug, a security regression,
+  receipt≠diff, an untested critical path). **Fix every listed item, re-run
+  `plumb receipt --write`, and re-push.** A REWORK self-clears once the agent set is
+  empty — even on a protected path (the floor blocks only auto-APPROVE, not your
+  rework). By construction a REWORK comment contains **no** 🧑 human items.
+- **REVIEW** ⚠️ — *the human's turn, not yours.* By construction a REVIEW contains
+  **zero 🤖 items** — there is nothing for you to fix. It lists **🧑 Human must
+  decide** items (a protected-surface/billing override, a real trade-off, or
+  irreducibly ambiguous intent). **Do NOT loop trying to satisfy a REVIEW** — do
+  not invent code changes to clear it. Relay it to the user and stop; a maintainer
+  decides and override-merges.
+- **💡 Advisory** — non-blocking notes ("consider…", style, nice-to-haves). These
+  **never block** and never change the verdict. Address them if cheap, or leave them;
+  either way they do not hold up the merge and are not rework.
+
+**Re-review is convergent.** On a re-push the gate verifies your fixes and reviews only
+the changed hunks for regressions — it won't re-litigate code it already passed, so you
+won't chase a growing nitpick list. After 2 rework rounds a **convergence cap** engages:
+only regressions in your fixes can still block; everything else escalates to a REVIEW
+(human decides) rather than looping you again. If you see "gate did not converge," stop
+reworking and relay to the user.
 
 ## Human-only steps (agent: relay these to the user)
 

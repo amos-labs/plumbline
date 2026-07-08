@@ -38,18 +38,28 @@ implement (test-first) ─▶ adversarial self/2nd-agent review ─▶ PR with a
 
 ## Human vs. agent, made explicit
 
-The failure capsule plumbline returns is **split by who must act** — and a single PR
-can have both:
+The verdict encodes **whose turn it is — exclusively.** It is derived mechanically from
+the review's classified findings (`class`: blocking/advisory, `actor`: agent/human):
 
-- **`agent_actions`** — concrete fixes an agent can do now (code, security, tests).
-  Populated even on `review`, so a PR sent to human review still hands the agent its
-  actionable list to work in parallel.
-- **`human_actions`** — decisions only a human can make (protected/billing override,
-  a real trade-off, ambiguous intent).
+- **`rework`** — the agent's turn. The capsule's **`agent_actions`** are concrete fixes
+  an agent can do now (code, security, tests). Any blocking + agent-fixable finding forces
+  REWORK, *even on a protected path* — the floor blocks only auto-APPROVE, not the agent's
+  rework. A REWORK carries **no** `human_actions` and self-clears on re-push.
+- **`review`** — the human's turn. The capsule's **`human_actions`** are decisions only a
+  human can make (protected/billing override, a real trade-off, ambiguous intent). A REVIEW
+  is emitted only when the agent-fixable set is empty, so by construction it carries **zero**
+  `agent_actions` — there is nothing for the agent to do. The agent must NOT loop trying to
+  clear a REVIEW.
+- **Advisory** notes ("consider…", style) render separately and **never** gate the merge.
 
 How aggressively work routes to humans is the **`human_review_level`** policy dial
-(`low` / `balanced` / `high`). It tunes the split only — it never lowers the hard
-floor: protected paths and `self_modifying` work always require a human, at any level.
+(`low` / `balanced` / `high`). It tunes the agent/human split of *blocking* findings only —
+it never lowers the hard floor: protected paths and `self_modifying` work always require a
+human before merge, at any level.
+
+Re-review is **convergent**: it verifies prior fixes and reviews only changed hunks for
+regressions, and a **round cap** escalates to a human after 2 rework rounds — no unbounded
+nitpick loops.
 
 ## Guardrails (don't skip these)
 

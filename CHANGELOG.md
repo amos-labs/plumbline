@@ -10,6 +10,28 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
 
 ## [Unreleased]
 
+### Changed
+- **Turn-based verdicts — the verdict now encodes whose turn it is, exclusively (#41).**
+  The verdict is derived mechanically from classified findings, not taken from the model.
+  ANY blocking + agent-fixable finding ⇒ **REWORK** (the agent's turn), *even on a
+  protected / `self_modifying` path* — the protected floor only forbids auto-APPROVE, it
+  no longer skips the agent iteration phase. **REVIEW** is emitted only when the
+  blocking + agent set is empty, so a REVIEW is by construction a pure human decision list
+  with **zero 🤖 items**. Replaces the old "worst-trigger" behavior where a REVIEW could
+  still hand the agent homework.
+
+### Added
+- **Blocking vs advisory findings (#41).** Findings are classified on two axes:
+  `class` (`blocking` = a defect that gates, `advisory` = a "consider…"/style/nice-to-have)
+  and `actor` (`agent` / `human`). Only blocking findings affect the verdict; advisory
+  notes render in their own 💡 section, are recorded in the capsule, and never block a merge.
+- **Convergent (delta) re-review with a round cap (#41).** On re-review the prompt receives
+  the prior capsule + the fix commits and reviews ONLY the new/changed hunks for regressions
+  — it must not raise fresh findings on unchanged code it already reviewed. After 2 rework
+  rounds a convergence cap engages: only regressions in the fix commits may block; anything
+  else escalates to REVIEW under a "gate did not converge — human decides" banner, so the
+  loop is always bounded (no unbounded nitpick loops).
+
 ## [0.2.1] - 2026-07-08
 
 ### Security / Hardening
