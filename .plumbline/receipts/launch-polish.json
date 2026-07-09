@@ -43,13 +43,31 @@
       "step": "test"
     },
     {
-      "command": "npm run bundle",
+      "command": "npm run bundle && git diff --exit-code dist/index.js",
       "status": "passed",
-      "output_ref": "dist/index.js 240.4kb; re-bundled and committed so it matches src",
+      "output_ref": "dist/index.js 240.4kb; re-bundled and committed so it matches src (dist-check clean)",
       "step": "bundle"
     }
   ],
-  "changed_files": [],
-  "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "changed_files": [
+    "README.md",
+    "action.yml",
+    "assets/plumbline-lockup.png",
+    "assets/plumbline-lockup.svg",
+    "assets/plumbline-mark.png",
+    "assets/plumbline-mark.svg",
+    "assets/plumbline-social-preview.png",
+    "assets/plumbline-social-preview.svg",
+    "dist/index.js",
+    "src/ci.ts",
+    "src/cli.ts",
+    "src/github.ts",
+    "src/provider.ts",
+    "src/review.ts",
+    "src/test/base-detect.test.ts",
+    "src/test/diff-formula.test.ts",
+    "src/test/schema-discoverability.test.ts"
+  ],
+  "diff_sha256": "3385eacc0ba1c5aa811cc8e479907dc761f9a20ec9ac35f707d3ea171335c1da",
   "result_summary": "Marketplace launch polish. action.yml: name 'Plumbline', branding target/blue. README: 'Why Plumbline' section (verbatim), logo referenced top-right, social-preview-must-be-uploaded-as-PNG comment (points at assets/plumbline-social-preview.png), a rendered sample REVIEW capsule (banner, shape pass, semantic notes, a human item, an advisory item, footer) based on the real src/github.ts render, and a 'Compatibility / legacy naming' note explaining the retained proofgate aliases. Added the real Codex-authored brand kit: assets/plumbline-mark.{svg,png}, plumbline-lockup.{svg,png}, plumbline-social-preview.{svg,png}; README hero uses the self-contained lockup SVG. Cosmetic proofgate-drift cleanup: renamed test temp-dir prefixes (proofgate-base-/proofgate-diff- -> plumbline-*) and command-name test descriptions/comments (proofgate schema/stamp -> plumb). Documented every retained back-compat proofgate surface with inline comments (provider.ts, review.ts, cli.ts, ci.ts, github.ts). ALL backward-compat preserved: .proofgate/ dual-dir resolution, PROOFGATE_* env aliases, proofgate bin alias, .gitignore, MISSION invariant, CHANGELOG record, and the legacy footer match. self_modifying: true (touches src/github.ts, action.yml, .plumbline/** — protected paths). Verified: tsc clean, 218/218 tests pass, dist re-bundled to match src."
 }
