@@ -17,7 +17,7 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 test("stamp auto-detects a master default branch (no --base, no ambiguous-arg error)", () => {
-  const root = mkdtempSync(join(tmpdir(), "proofgate-base-"));
+  const root = mkdtempSync(join(tmpdir(), "plumbline-base-"));
   const repo = join(root, "repo");
   const origin = join(root, "origin.git");
   try {

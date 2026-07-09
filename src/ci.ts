@@ -46,6 +46,7 @@ export function detectCi(): CiContext {
   if (process.env.GITHUB_ACTIONS === "true") {
     const prNumber = Number(
       process.env.PLUMBLINE_PR_NUMBER ||
+      // Legacy alias (proofgate→Plumbline rename), retained for back-compat.
       process.env.PROOFGATE_PR_NUMBER ||
         (process.env.GITHUB_REF?.match(/refs\/pull\/(\d+)\//)?.[1] ?? NaN),
     );

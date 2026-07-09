@@ -465,6 +465,7 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
       }
     }
     const taskId = sanitizeTaskId(arg("task", branch || "TASK")!);
+    // PROOFGATE_AGENT_ID is a legacy alias (proofgate→Plumbline rename), retained for back-compat.
     const agentId = arg("agent", process.env.PLUMBLINE_AGENT_ID || process.env.PROOFGATE_AGENT_ID || "agent")!;
     let diffSha: string | undefined;
     let changed: string[] | undefined;
@@ -572,6 +573,7 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
     // --write
     if (!existsSync(destAbs)) {
       const taskId = sanitizeTaskId(arg("task", dest.replace(/^.*\/|\.json$/g, ""))!);
+      // PROOFGATE_AGENT_ID is a legacy alias (proofgate→Plumbline rename), retained for back-compat.
       const agentId = arg("agent", process.env.PLUMBLINE_AGENT_ID || process.env.PROOFGATE_AGENT_ID || "agent")!;
       const receipt = newReceipt({
         taskId,
@@ -906,6 +908,7 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
 
   // --- CI reporting ---
   if (cmd === "run") {
+    // PROOFGATE_PR_NUMBER is a legacy alias (proofgate→Plumbline rename), retained for back-compat.
     const prOverride = process.env.PLUMBLINE_PR_NUMBER || process.env.PROOFGATE_PR_NUMBER;
     if (ci.prNumber !== undefined && prOverride) {
       ci.prNumber = Number(prOverride);

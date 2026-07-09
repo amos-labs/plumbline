@@ -1,0 +1,34 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Plumbline mark</title>
+  <desc id="desc">A vertical plumb line suspending a weighted proof mark, representing mission alignment for AI-written code.</desc>
+  <defs>
+    <linearGradient id="bg" x1="72" y1="48" x2="440" y2="464" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#111D2F"/>
+      <stop offset="1" stop-color="#0A0F19"/>
+    </linearGradient>
+    <linearGradient id="line" x1="256" y1="72" x2="256" y2="420" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8CB3FF"/>
+      <stop offset="1" stop-color="#4F8CFF"/>
+    </linearGradient>
+    <filter id="soft-shadow" x="104" y="92" width="304" height="372" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="18"/>
+      <feGaussianBlur stdDeviation="22"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.019 0 0 0 0 0.041 0 0 0 0 0.086 0 0 0 0.55 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_1"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_1" result="shape"/>
+    </filter>
+  </defs>
+  <rect x="24" y="24" width="464" height="464" rx="96" fill="url(#bg)"/>
+  <path d="M126 401H386" stroke="#2FBF71" stroke-width="16" stroke-linecap="round" opacity="0.95"/>
+  <path d="M174 213C202 233 230 243 256 243C282 243 310 233 338 213" stroke="#29405F" stroke-width="18" stroke-linecap="round"/>
+  <path d="M256 78V278" stroke="url(#line)" stroke-width="14" stroke-linecap="round"/>
+  <circle cx="256" cy="78" r="18" fill="#E8EDF4"/>
+  <circle cx="256" cy="78" r="7" fill="#4F8CFF"/>
+  <g filter="url(#soft-shadow)">
+    <path d="M256 278L326 357L256 438L186 357L256 278Z" fill="#0E1420" stroke="#5B8DEF" stroke-width="16" stroke-linejoin="round"/>
+    <path d="M222 357L248 383L295 323" stroke="#2FBF71" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
