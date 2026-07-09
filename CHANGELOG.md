@@ -10,7 +10,15 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-09
+
 ### Changed
+- **Launch polish for the GitHub Marketplace (#43).** Marketplace metadata
+  (`action.yml` name → `Plumbline`, branding `target`/`blue`), a "Why Plumbline"
+  section, the brand kit under `assets/`, a sample failure-capsule in the README,
+  and a documented backward-compatibility note for the retained `proofgate`
+  aliases (`.proofgate/` dirs, `PROOFGATE_*` env vars, the `proofgate` CLI alias).
+
 - **Turn-based verdicts — the verdict now encodes whose turn it is, exclusively (#41).**
   The verdict is derived mechanically from classified findings, not taken from the model.
   ANY blocking + agent-fixable finding ⇒ **REWORK** (the agent's turn), *even on a
@@ -194,7 +202,8 @@ floating `v0` tag: proof-carrying gate for AI agent work — structured receipt,
 deterministic shape check, an LLM semantic review against the repository's mission,
 and a failure-capsule rework loop. Single-repo, GitHub Actions + Anthropic API.
 
-[Unreleased]: https://github.com/amos-labs/plumbline/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/amos-labs/plumbline/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/amos-labs/plumbline/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/amos-labs/plumbline/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/amos-labs/plumbline/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/amos-labs/plumbline/releases/tag/v0.1.0

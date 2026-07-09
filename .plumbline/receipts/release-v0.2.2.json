@@ -1,0 +1,73 @@
+{
+  "receipt_version": "1.0",
+  "task_id": "release-v0.2.2",
+  "agent_id": "claude-opus-4-8",
+  "intent": "Cut the v0.2.2 release so the GitHub Marketplace listing publishes from a tag that carries the full current feature set + correct branding. Rolls the accumulated [Unreleased] CHANGELOG into [0.2.2] - 2026-07-09: turn-based REWORK/REVIEW verdicts + blocking-vs-advisory findings + convergent re-review (#41), the scoped shape pre-flight banner + `plumb check --review` (#39/#40), and the Marketplace launch polish (#43: action.yml Plumbline/target/blue branding, Why section, brand kit, sample capsule, documented proofgate back-compat). Version-only ceremony per RELEASING.md: bump package.json 0.2.1->0.2.2, roll the changelog, update compare links. No source/action/workflow/policy changes. The v0.2.2 tag is pushed after merge; the release workflow verifies tag==package.json and publishes notes from the [0.2.2] section.",
+  "self_modifying": false,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json",
+    "RELEASING.md"
+  ],
+  "validation_plan": [
+    {
+      "command": "npx tsc --noEmit",
+      "reason": "Repo still type-checks (release workflow runs it against the tag).",
+      "required": true,
+      "id": "typecheck",
+      "ci_covered": true
+    },
+    {
+      "command": "npm test",
+      "reason": "Full suite green (release workflow gates publication on it).",
+      "required": true,
+      "id": "test",
+      "ci_covered": true
+    },
+    {
+      "command": "npm run bundle && git diff --exit-code dist/index.js",
+      "reason": "dist unchanged (no source touched); dist-check confirms the committed bundle matches.",
+      "required": true,
+      "id": "dist-check",
+      "ci_covered": true
+    },
+    {
+      "command": "grep -q '\"version\": \"0.2.2\"' package.json && grep -q '## \\[0.2.2\\]' CHANGELOG.md",
+      "reason": "Version + CHANGELOG agree with the tag v0.2.2 (release workflow fails if tag != package.json).",
+      "required": true,
+      "id": "version-consistency"
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npx tsc --noEmit",
+      "status": "skipped",
+      "step": "typecheck",
+      "skip_reason": "CI-covered by the test job; no source changed."
+    },
+    {
+      "command": "npm test",
+      "status": "skipped",
+      "step": "test",
+      "skip_reason": "CI-covered by the required test job."
+    },
+    {
+      "command": "npm run bundle && git diff --exit-code dist/index.js",
+      "status": "skipped",
+      "step": "dist-check",
+      "skip_reason": "CI-covered by the dist-check job."
+    },
+    {
+      "command": "grep -q '\"version\": \"0.2.2\"' package.json && grep -q '## \\[0.2.2\\]' CHANGELOG.md",
+      "status": "passed",
+      "step": "version-consistency",
+      "output_ref": "package.json=0.2.2; CHANGELOG has '## [0.2.2] - 2026-07-09'"
+    }
+  ],
+  "result_summary": "package.json 0.2.1->0.2.2; CHANGELOG [Unreleased] rolled into [0.2.2] - 2026-07-09 (turn-based verdicts #41, pre-flight honesty #39/#40, launch polish #43) with a fresh empty [Unreleased] and updated compare links. No src/action/workflow/policy changes (self_modifying:false). Version/CHANGELOG agreement verified locally; type-check/test/dist-check are CI-covered and re-run by the release workflow against the tag before publishing.",
+  "diff_sha256": "5f81698be1b3da6ea65050b4c927f8c2f377e10665099955816a92e74ee6674d",
+  "changed_files": [
+    "CHANGELOG.md",
+    "package.json"
+  ]
+}
