@@ -1,5 +1,5 @@
-name: "Plumbline"
-description: "Plumbline (the plumb line of Amos 7:7-8) — proof-carrying gate for AI agent work: receipt shape check + LLM semantic review + failure-capsule rework loop."
+name: "Plumbline Gate"
+description: "Mission-alignment gate for AI agent PRs: proof receipts, deterministic checks, semantic review, and failure capsules."
 author: "AMOS Labs"
 branding:
   icon: "target"

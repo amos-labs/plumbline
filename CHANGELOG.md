@@ -10,6 +10,14 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-07-09
+
+### Changed
+- **Marketplace listing metadata (`action.yml`).** `name` → `Plumbline Gate`
+  (the bare "Plumbline" is taken on the Marketplace) and `description` shortened
+  to under GitHub's 125-char listing limit. No behavior change.
+
+
 ## [0.2.2] - 2026-07-09
 
 ### Changed
@@ -202,7 +210,8 @@ floating `v0` tag: proof-carrying gate for AI agent work — structured receipt,
 deterministic shape check, an LLM semantic review against the repository's mission,
 and a failure-capsule rework loop. Single-repo, GitHub Actions + Anthropic API.
 
-[Unreleased]: https://github.com/amos-labs/plumbline/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/amos-labs/plumbline/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/amos-labs/plumbline/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/amos-labs/plumbline/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/amos-labs/plumbline/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/amos-labs/plumbline/compare/v0.1.0...v0.2.0

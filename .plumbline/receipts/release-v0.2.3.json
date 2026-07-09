@@ -1,0 +1,93 @@
+{
+  "_help": {
+    "_note": "Allowed values + requirements per field (this _help block is ignored by the gate \u2014 keep or delete). Run `plumb schema` for the full reference.",
+    "receipt_version": "one of: 1.0 \u2014 required \u2014 schema version",
+    "task_id": "required \u2014 ticket/issue/branch id (also the receipt filename)",
+    "agent_id": "required \u2014 which agent or human did the work",
+    "intent": "required \u2014 what + why, plain language \u2014 the semantic review reads this",
+    "self_modifying": "one of: true | false \u2014 required \u2014 MUST be true if changed_files touch policy.protected_paths; touching one with false is a hard fail; true routes to human review",
+    "policy_refs": "required \u2014 policy/mission docs you read",
+    "validation_plan": "required \u2014 each: { command, reason, required, id?, ci_covered? }",
+    "validation_plan[].required": "one of: true | false \u2014 required \u2014 is this check mandatory",
+    "validation_plan[].id": "optional \u2014 optional step id; evidence is matched to it via execution_evidence[].step (robust to a command wording diff)",
+    "validation_plan[].ci_covered": "one of: true | false \u2014 optional \u2014 step is corroborated by the ci-evidence gate (real CI run), not manual evidence \u2014 may be 'skipped'; also auto-recognized when command matches a policy ci_evidence_checks entry",
+    "execution_evidence": "required \u2014 each: { command, status, output_ref?, skip_reason?, step? }",
+    "execution_evidence[].status": "one of: passed | failed | skipped \u2014 required \u2014 required steps must be 'passed' (unless CI-covered); use skip_reason when 'skipped'",
+    "execution_evidence[].step": "optional \u2014 optional id of the validation_plan step this evidence is for (matches validation_plan[].id)",
+    "changed_files": "required \u2014 set by `plumb receipt --write` \u2014 don't hand-edit",
+    "diff_sha256": "required \u2014 set by `plumb receipt --write` \u2014 never hand-edit",
+    "result_summary": "required \u2014 what changed + how it was verified"
+  },
+  "receipt_version": "1.0",
+  "task_id": "release-v0.2.3",
+  "agent_id": "claude-opus-4-8",
+  "intent": "Cut v0.2.3 to fix the GitHub Marketplace listing metadata so the listing can publish: action.yml name Plumbline->\"Plumbline Gate\" (bare \"Plumbline\" is already taken as a Marketplace/action/org name) and description shortened to 117 chars (GitHub's listing limit is <125). Pure metadata: no logic, no behavior change. self_modifying is true only because action.yml is a protected path. package.json 0.2.2->0.2.3 + CHANGELOG rolled; the v0.2.3 tag is pushed after merge and the release workflow re-validates + publishes.",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json",
+    "RELEASING.md"
+  ],
+  "validation_plan": [
+    {
+      "command": "npx tsc --noEmit",
+      "reason": "repo still type-checks (release workflow reruns against the tag)",
+      "required": true,
+      "id": "tc",
+      "ci_covered": true
+    },
+    {
+      "command": "npm test",
+      "reason": "full suite green (release workflow gates on it)",
+      "required": true,
+      "id": "t",
+      "ci_covered": true
+    },
+    {
+      "command": "npm run bundle && git diff --exit-code dist/index.js",
+      "reason": "no src changed; committed bundle unchanged",
+      "required": true,
+      "id": "d",
+      "ci_covered": true
+    },
+    {
+      "command": "node -e \"c=require('fs').readFileSync('action.yml','utf8');d=c.match(/description: \\\"(.*)\\\"/)[1];process.exit(d.length<125&&/Plumbline Gate/.test(c)?0:1)\"",
+      "reason": "action.yml name is Plumbline Gate and description <125",
+      "required": true,
+      "id": "meta"
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npx tsc --noEmit",
+      "status": "skipped",
+      "step": "tc",
+      "skip_reason": "CI-covered"
+    },
+    {
+      "command": "npm test",
+      "status": "skipped",
+      "step": "t",
+      "skip_reason": "CI-covered"
+    },
+    {
+      "command": "npm run bundle && git diff --exit-code dist/index.js",
+      "status": "skipped",
+      "step": "d",
+      "skip_reason": "CI-covered"
+    },
+    {
+      "command": "action.yml name+desc check",
+      "status": "passed",
+      "step": "meta",
+      "output_ref": "name=Plumbline Gate; description=117 chars"
+    }
+  ],
+  "changed_files": [
+    "CHANGELOG.md",
+    "action.yml",
+    "package.json"
+  ],
+  "diff_sha256": "ea01371f643f36ccd090ac436b64b20d4d7740b3921da127d1f86f310b01d67e",
+  "result_summary": "action.yml name -> 'Plumbline Gate', description shortened to 117 chars (Marketplace limits: unique name + <125 desc). package.json 0.2.2->0.2.3, CHANGELOG [0.2.3] added, compare links updated. No source/logic change; self_modifying:true solely because action.yml is protected. Verified name+desc locally; tsc/test/dist-check CI-covered and re-run by the release workflow before publishing."
+}
