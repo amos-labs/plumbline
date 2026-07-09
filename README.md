@@ -132,6 +132,25 @@ npx github:amos-labs/plumbline archive rotate-auth-session-tokens
 `ANTHROPIC_API_KEY` secret) — also spelled out in `.plumbline/AGENTS.md`. See that
 file for the full agent guide.
 
+## Teach your agent the gate
+
+The action enforces; the **[`plumbline` skill](skills/plumbline/SKILL.md)** teaches.
+`init`'s `AGENTS.md` is per-repo and drifts; the skill travels with your agent across
+every repo, loads whenever it sees a `.plumbline/` directory (or gets asked about
+receipts, verdicts, or the gate), and carries the judgment AGENTS.md can't: how to
+write receipts that deserve to pass, and how to behave on REWORK vs REVIEW. This repo
+is also a Claude Code plugin — two commands make any Claude gate-native:
+
+```shell
+/plugin marketplace add amos-labs/plumbline
+/plugin install plumbline@amos-labs
+```
+
+The plugin ships the skill only — install `plumb` itself per the
+[Quick start](#quick-start-agent-installable) above (`npx github:amos-labs/plumbline`).
+Other harnesses can drop [`skills/plumbline/SKILL.md`](skills/plumbline/SKILL.md)
+straight into their agent instructions.
+
 ## The problem
 
 AI agents multiply your velocity until the codebase quietly diverges from your intent — every PR looks fine, the project drifts. Reviewing everything yourself caps velocity at your reading speed. Trusting the agent loses the project over time. Plumbline is the missing middle: **legibility as the control surface.** Work carries proof; humans review exceptions.
