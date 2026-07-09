@@ -52,9 +52,24 @@
     }
   ],
   "execution_evidence": [
-    { "command": "npx tsc --noEmit", "status": "passed", "step": "typecheck", "output_ref": "TSC CLEAN (no errors)" },
-    { "command": "npm test", "status": "passed", "step": "test", "output_ref": "189/189 pass (5 new: 3 preflight + 2 cli-check)" },
-    { "command": "npm run bundle && git diff --exit-code dist/index.js", "status": "passed", "step": "dist-check", "output_ref": "bundle 233.0kb; committed dist/index.js matches" }
+    {
+      "command": "npx tsc --noEmit",
+      "status": "passed",
+      "step": "typecheck",
+      "output_ref": "TSC CLEAN (no errors)"
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "step": "test",
+      "output_ref": "189/189 pass (5 new: 3 preflight + 2 cli-check)"
+    },
+    {
+      "command": "npm run bundle && git diff --exit-code dist/index.js",
+      "status": "passed",
+      "step": "dist-check",
+      "output_ref": "bundle 233.0kb; committed dist/index.js matches"
+    }
   ],
   "changed_files": [
     "CHANGELOG.md",
@@ -69,6 +84,6 @@
     "src/test/cli-check.test.ts",
     "src/test/preflight.test.ts"
   ],
-  "diff_sha256": "55ff7a8d273301a3b6105bce1d2d28a999994e2b0b0fafe8762b287983ec01d1",
+  "diff_sha256": "a4478bded1bbb5b9452afd83e274ae6ce239a8982fa057bd5b5458ae82e16d6b",
   "result_summary": "New src/preflight.ts renderPreflight() prints a scoped `shape pre-flight: PASS/FAIL` banner (no APPROVE/REVIEW/REWORK). src/cli.ts: `check` reads a `--review` flag — default path prints the pre-flight banner + 'semantic review runs in CI' and returns early; `--review` probes selectProvider() and, if a key resolves, falls through to the shared shape+semantic path and prints the real verdict via renderComment (CI still authoritative on merge), else degrades to shape-only with an explicit fallback note. Help text + README document the split; CHANGELOG updated; openspec change (proposal/tasks/specs/check/spec.md) carries the contract. Verified: tsc clean, 189/189 tests pass (preflight.test.ts + cli-check.test.ts new), bundle byte-matches committed dist/index.js. Non-protected files only — self_modifying:false."
 }
