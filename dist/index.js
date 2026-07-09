@@ -5288,6 +5288,27 @@ async function postPrComment(repo, prNumber, body, token) {
   }
 }
 
+// src/preflight.ts
+function renderPreflight(shape) {
+  const lines = [];
+  lines.push(`## \u{1F50E} plumbline shape pre-flight: ${shape.pass ? "PASS" : "FAIL"}`);
+  lines.push("");
+  if (shape.pass) {
+    lines.push(
+      "> **Shape floor + diff_sha256 verified locally \u2014 this is NOT the full gate verdict.** The LLM semantic review runs in CI. Run `plumb check --review` to get the full verdict (shape + semantic) locally."
+    );
+  } else {
+    lines.push(
+      "> **Shape floor / diff_sha256 problems below \u2014 fix before pushing.** The semantic review (run in CI, or locally via `plumb check --review`) is a separate dimension not checked here."
+    );
+  }
+  lines.push("");
+  lines.push(`**Shape gate:** ${shape.pass ? "pass" : "FAIL"}`);
+  for (const e of shape.errors) lines.push(`- \u274C ${e}`);
+  for (const w of shape.warnings) lines.push(`- \u26A0\uFE0F ${w}`);
+  return lines.join("\n");
+}
+
 // src/ci.ts
 import { appendFileSync } from "fs";
 function escapeAnnotation(s) {
@@ -6435,7 +6456,7 @@ usage:
   plumb receipt --check   (mechanical staleness only; exit 1 if stale \u2014 pre-push-hook friendly)
   plumb schema  (print the receipt field reference \u2014 every field + allowed enum values)
   plumb stamp   [--receipt path] [--base ref]   (fill diff_sha256 + changed_files from the real diff)
-  plumb check   [--receipt path] [--policy path] [--base ref]   (local pre-flight: shape + diff_sha256, prints the capsule)
+  plumb check   [--receipt path] [--policy path] [--base ref] [--review]   (local pre-flight: shape + diff_sha256 only; --review also runs the semantic review for the full verdict)
   plumb shape   [--receipt path] [--policy path] [--base ref] [--no-git]
   plumb review  [--receipt path] [--policy path] [--base ref] [--mission path]
   plumb run     [--receipt path] [--policy path] [--base ref]   (shape + review + PR comment in CI)
@@ -6783,6 +6804,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
     console.error(`  changed_files (${changed.length}): ${changed.join(", ") || "(none)"}`);
     return 0;
   }
+  const wantReview = flag("review");
   if (cmd === "check") {
     if (!skipGit) preflightWarnings(cwd, baseRef);
     const { result: shape2 } = shapeCheck(rawReceipt, policy, {
@@ -6790,18 +6812,27 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
       cwd,
       skipGit
     });
-    const gate2 = {
-      shape: shape2,
-      final: shape2.pass ? "approve" : "rework",
-      reasons: []
-    };
-    console.log(renderComment(gate2));
-    for (const e of shape2.errors) console.error(`shape \u274C ${e}`);
-    for (const w of shape2.warnings) console.error(`shape \u26A0\uFE0F  ${w}`);
-    console.error(
-      shape2.pass ? "\u2713 pre-flight PASS \u2014 shape + diff_sha256 OK. Safe to push (semantic review still runs in CI)." : "\u2717 pre-flight FAIL \u2014 fix the above before pushing. Tip: `plumb receipt --write` fixes diff_sha256/changed_files."
-    );
-    return shape2.pass ? 0 : 1;
+    let canReviewLocally = false;
+    if (wantReview) {
+      try {
+        selectProvider(policy);
+        canReviewLocally = true;
+      } catch (e) {
+        console.error(`plumb check --review: ${e.message}`);
+        console.error(
+          "Falling back to shape-only pre-flight \u2014 set ANTHROPIC_API_KEY (or PLUMBLINE_API_KEY) to run the semantic review locally."
+        );
+      }
+    }
+    if (!wantReview || !canReviewLocally) {
+      for (const e of shape2.errors) console.error(`shape \u274C ${e}`);
+      for (const w of shape2.warnings) console.error(`shape \u26A0\uFE0F  ${w}`);
+      console.log(renderPreflight(shape2));
+      console.error(
+        shape2.pass ? "\u2713 shape pre-flight PASS \u2014 shape + diff_sha256 OK. This is NOT the full verdict: the LLM semantic review runs in CI. Run `plumb check --review` to get the full verdict locally." : "\u2717 shape pre-flight FAIL \u2014 fix the above before pushing. Tip: `plumb receipt --write` fixes diff_sha256/changed_files."
+      );
+      return shape2.pass ? 0 : 1;
+    }
   }
   const { result: shape, receipt } = shapeCheck(rawReceipt, policy, {
     baseRef: skipGit ? void 0 : baseRef,
@@ -6991,6 +7022,11 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
       console.error("plumb: no PR context detected \u2014 printing comment:\n");
       console.log(renderComment(gate));
     }
+  } else if (cmd === "check") {
+    console.log(renderComment(gate));
+    console.error(
+      "\n\u2713 local full review complete (shape + semantic) \u2014 verdict above. CI re-runs this on the PR and remains authoritative on merge."
+    );
   } else {
     console.log(JSON.stringify(gate, null, 2));
   }

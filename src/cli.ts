@@ -21,6 +21,7 @@ import {
   countRounds,
   extractPriorCapsule,
 } from "./github.js";
+import { renderPreflight } from "./preflight.js";
 import { detectCi, reportToCi } from "./ci.js";
 import { pickReceipt, type ReceiptCandidate } from "./receipt-select.js";
 import { runInit, sanitizeTaskId, newReceipt, formatSchemaReference, resolveStack } from "./scaffold.js";
@@ -266,7 +267,7 @@ usage:
   plumb receipt --check   (mechanical staleness only; exit 1 if stale — pre-push-hook friendly)
   plumb schema  (print the receipt field reference — every field + allowed enum values)
   plumb stamp   [--receipt path] [--base ref]   (fill diff_sha256 + changed_files from the real diff)
-  plumb check   [--receipt path] [--policy path] [--base ref]   (local pre-flight: shape + diff_sha256, prints the capsule)
+  plumb check   [--receipt path] [--policy path] [--base ref] [--review]   (local pre-flight: shape + diff_sha256 only; --review also runs the semantic review for the full verdict)
   plumb shape   [--receipt path] [--policy path] [--base ref] [--no-git]
   plumb review  [--receipt path] [--policy path] [--base ref] [--mission path]
   plumb run     [--receipt path] [--policy path] [--base ref]   (shape + review + PR comment in CI)
@@ -661,10 +662,19 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
     return 0;
   }
 
-  // --- check: local pre-flight — shape + diff_sha256, render the would-be capsule (#4) ---
-  // Same shape + diff integrity the action runs in CI, but in the working tree —
-  // so a shape/sha error is caught before pushing (no red CI round-trip, no
-  // wasted Actions minutes). Semantic review still runs server-side in CI.
+  // --- check: local pre-flight (#4, #39) ---
+  // DEFAULT (no --review): runs the shape floor + diff_sha256 in the working
+  // tree ONLY — the LLM semantic review does NOT run locally (it needs a key,
+  // costs tokens, adds latency). So the default check must NEVER print a bare
+  // APPROVE/REVIEW/REWORK verdict — that reads as the final gate verdict when
+  // only the shape dimension was actually checked. It prints a scoped
+  // "shape pre-flight" banner and says the semantic review still runs in CI.
+  //
+  // WITH --review: also runs the semantic review locally (same shared code path
+  // as `plumb run`), so it prints the real verdict — full parity with CI. If no
+  // provider key is available it degrades to the shape-only pre-flight with an
+  // explicit note (never silently claims a verdict it didn't compute).
+  const wantReview = flag("review");
   if (cmd === "check") {
     if (!skipGit) preflightWarnings(cwd, baseRef);
     const { result: shape } = shapeCheck(rawReceipt, policy, {
@@ -672,22 +682,36 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
       cwd,
       skipGit,
     });
-    const gate: GateResult = {
-      shape,
-      final: shape.pass ? "approve" : "rework",
-      reasons: [],
-    };
-    // Print the same capsule CI would post, so the author sees exactly what the
-    // gate will say.
-    console.log(renderComment(gate));
-    for (const e of shape.errors) console.error(`shape ❌ ${e}`);
-    for (const w of shape.warnings) console.error(`shape ⚠️  ${w}`);
-    console.error(
-      shape.pass
-        ? "✓ pre-flight PASS — shape + diff_sha256 OK. Safe to push (semantic review still runs in CI)."
-        : "✗ pre-flight FAIL — fix the above before pushing. Tip: `plumb receipt --write` fixes diff_sha256/changed_files.",
-    );
-    return shape.pass ? 0 : 1;
+
+    // Can we run the full review locally? Only if --review AND a provider key
+    // resolves. Probe here so a missing key degrades cleanly to shape-only.
+    let canReviewLocally = false;
+    if (wantReview) {
+      try {
+        selectProvider(policy);
+        canReviewLocally = true;
+      } catch (e) {
+        console.error(`plumb check --review: ${(e as Error).message}`);
+        console.error(
+          "Falling back to shape-only pre-flight — set ANTHROPIC_API_KEY (or PLUMBLINE_API_KEY) to run the semantic review locally.",
+        );
+      }
+    }
+
+    if (!wantReview || !canReviewLocally) {
+      // Shape-only pre-flight: assert ONLY the dimension we actually ran.
+      for (const e of shape.errors) console.error(`shape ❌ ${e}`);
+      for (const w of shape.warnings) console.error(`shape ⚠️  ${w}`);
+      console.log(renderPreflight(shape));
+      console.error(
+        shape.pass
+          ? "✓ shape pre-flight PASS — shape + diff_sha256 OK. This is NOT the full verdict: the LLM semantic review runs in CI. Run `plumb check --review` to get the full verdict locally."
+          : "✗ shape pre-flight FAIL — fix the above before pushing. Tip: `plumb receipt --write` fixes diff_sha256/changed_files.",
+      );
+      return shape.pass ? 0 : 1;
+    }
+    // --review with a provider available → fall through to the shared
+    // shape+semantic path below (single code path — never a parallel copy).
   }
 
   // --- Shape gate (always runs) ---
@@ -928,6 +952,14 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
       console.error("plumb: no PR context detected — printing comment:\n");
       console.log(renderComment(gate));
     }
+  } else if (cmd === "check") {
+    // `check --review`: full local parity (shape + semantic) — print the REAL
+    // verdict, since we actually ran the review. CI still re-runs on merge and
+    // remains authoritative (freshest diff, CI-evidence corroboration).
+    console.log(renderComment(gate));
+    console.error(
+      "\n✓ local full review complete (shape + semantic) — verdict above. CI re-runs this on the PR and remains authoritative on merge.",
+    );
   } else {
     console.log(JSON.stringify(gate, null, 2));
   }

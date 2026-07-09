@@ -31,6 +31,18 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
   rounds a convergence cap engages: only regressions in the fix commits may block; anything
   else escalates to REVIEW under a "gate did not converge — human decides" banner, so the
   loop is always bounded (no unbounded nitpick loops).
+- **`plumb check` no longer prints a bare gate verdict.** The local pre-flight
+  runs only the shape floor + `diff_sha256` (the LLM semantic review runs in CI),
+  so it now prints a scoped `shape pre-flight: PASS/FAIL` banner instead of
+  `APPROVE`/`REVIEW`/`REWORK` — a shape-PASS locally can still be `REVIEW`/`REWORK`
+  in CI, and the banner says so. (#39)
+
+### Added
+- **`plumb check --review`** — full local parity: runs the semantic review too and
+  prints the real verdict (same code path as the CI gate). Requires a provider key
+  (`ANTHROPIC_API_KEY` / `PLUMBLINE_API_KEY`); with no key it degrades to the
+  shape-only pre-flight and says so explicitly (never claims a verdict it didn't
+  compute). (#39)
 
 ## [0.2.1] - 2026-07-08
 
