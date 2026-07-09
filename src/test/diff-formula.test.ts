@@ -10,13 +10,13 @@ import { gitDiffExcludingReceipt, computeDiffSha256 } from "../shape.js";
 // what the CI gate computes (the gate runs this exact function via `cli.js run`).
 // The contract: `git diff <base>...HEAD` (3-dot / merge-base), over the
 // COMMITTED HEAD, excluding the receipt file(s). NOT 2-dot, NOT --cached, NOT
-// the working tree. A local `proofgate stamp`/`check` therefore matches CI.
+// the working tree. A local `plumb stamp`/`check` therefore matches CI.
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" });
 }
 
 test("gitDiffExcludingReceipt is 3-dot, committed-HEAD, receipt-excluded", () => {
-  const dir = mkdtempSync(join(tmpdir(), "proofgate-diff-"));
+  const dir = mkdtempSync(join(tmpdir(), "plumbline-diff-"));
   try {
     git(dir, "init", "-q");
     git(dir, "config", "user.email", "t@t.dev");

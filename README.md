@@ -1,4 +1,10 @@
+<img src="assets/plumbline-logo.svg" width="72" align="right" alt="Plumbline"/>
+
 # Plumbline
+
+<!-- Social preview: GitHub's repo Settings → Social preview does NOT accept SVG.
+     A human must export assets/plumbline-social.svg to a 1280×640 PNG and upload it
+     there manually — this is a repo-settings step, not something the repo can commit. -->
 
 *“Behold, I will set a plumb line in the midst of my people” — Amos 7:8. The prophet’s own symbol: the line work is measured against.*
 
@@ -9,6 +15,14 @@ Extracted from the [AMOS](https://github.com/amos-labs) proof-carrying autonomou
 **Plumbline gates Plumbline.** This repo runs its own gate on every PR — self-modifying changes to the gate itself route to human review. The loop is proven on the tool that implements it.
 
 **Compatible with [OpenSpec](https://github.com/Fission-AI/OpenSpec). Dependent on nothing.** The intake and archive ends of the loop follow OpenSpec's format and lifecycle conventions (MIT — see `THIRD-PARTY.md`), so existing `openspec/` folders just work — and every stage is adoptable on its own.
+
+## Why Plumbline
+
+AI writes most of the code now; the bottleneck is no longer typing — it's **trust**. When an agent opens a PR, a human still has to reconstruct what it was trying to do, whether it actually did that, and whether it stayed inside what the project is *for*. That reconstruction doesn't scale.
+
+Plumbline makes the work **prove itself**: every agent PR carries a receipt (intent, checks, evidence) bound to the real diff; a deterministic check confirms the receipt matches reality; an LLM reviews it against your repo's written mission; anything touching a protected surface routes to a human. What's left to read is a verdict and a reason — not a diff to re-derive.
+
+**This is the path to fully autonomous agent work** — not faster review, but review you can trust to run *unattended*. Once agents write the code, alignment (not speed) becomes the scarce thing, and Plumbline is where you make it enforceable.
 
 ## Three ways in — adopt what you want
 
@@ -157,6 +171,55 @@ cap** bounds the loop: after 2 rework rounds only regressions in the fix commits
 block; anything else escalates to REVIEW under a "gate did not converge — human decides"
 banner. No unbounded nitpick loops.
 
+### What the gate posts
+
+A REVIEW verdict renders on the PR like this — the human reads a verdict and a reason, not a diff:
+
+```markdown
+## ⚠️ plumbline: REVIEW
+
+> **⚠️ Human approval required — no agent rework needed, but this is NOT a rubber stamp.** A maintainer decides the 🧑 items below (protected surface, a real trade-off, or ambiguous intent). **Read the review findings (risk + validation notes) before override-merging:** `gh pr merge <PR> --squash --admin`.
+
+> 📋 **Review findings below — don't merge without reading them:** 1 risk finding, plus validation-coverage and mission-alignment notes.
+
+**Shape gate:** pass
+
+**Semantic review:** review (confidence 0.86)
+
+- **Validation coverage:** `cargo test` covers the new token-refresh path; no test asserts the *old* session is invalidated after rotation — the security-relevant half of the change is unverified.
+- **Mission alignment:** In scope — session hardening is squarely within the auth mission. No mission invariant is weakened.
+- **Risk:** 1) Rotating tokens touches `src/auth/` — a protected surface — so a human must confirm the migration path can't strand live sessions.
+
+### What's needed — protected_paths
+_The change is sound and in-scope, but it edits a protected surface (`src/auth/**`) and self_modifying is set, so it cannot auto-approve._
+
+#### 🧑 Human must decide
+- [ ] Confirm existing sessions are invalidated (not silently kept valid) after a token rotation, then override-merge.
+
+#### 💡 Advisory — non-blocking (does not gate the merge)
+- Consider logging rotation events at `info` so the change is observable in prod.
+
+<details><summary>Full capsule (JSON)</summary>
+
+```json
+{
+  "failing_check": "protected_paths",
+  "suspected_cause": "Protected surface (src/auth/**) touched; self_modifying requires a human.",
+  "human_actions": [
+    "Confirm existing sessions are invalidated (not silently kept valid) after a token rotation, then override-merge."
+  ],
+  "agent_actions": [],
+  "advisory": [
+    "Consider logging rotation events at info so the change is observable in prod."
+  ],
+  "next_action_requested": "Human decides the 🧑 item, then override-merges."
+}
+```
+</details>
+
+<sub>plumbline · proof-carrying gate for agent work</sub>
+```
+
 ## Quick start
 
 1. **Write your constitution.** Copy `templates/MISSION.md` to `.plumbline/MISSION.md` and fill it in. This is the highest-leverage hour you'll spend: state what the project is for, the invariants no change may weaken, and which surfaces are protected.
@@ -237,6 +300,23 @@ Author the intent/plan/evidence; let `stamp` handle the mechanical fields.
 Common flags: `--receipt <path>` `--policy <path>` `--base <ref>` `--mission <path>` `--no-git` (fixture testing).
 
 Exit code is the gate: `0` only on approve.
+
+### Compatibility / legacy naming (why you still see `proofgate`)
+
+This project was renamed **proofgate → Plumbline**. If you were an early adopter, nothing
+breaks — the old names are retained **on purpose** as aliases, not left behind as
+deprecation surprises:
+
+- **`.proofgate/`** config and receipt dirs are still read (a repo with `.proofgate/` keeps
+  working with no changes).
+- **`PROOFGATE_*`** env vars still work as aliases for the `PLUMBLINE_*` ones
+  (`PROOFGATE_API_KEY`, `PROOFGATE_MODEL`, `PROOFGATE_PR_NUMBER`, `PROOFGATE_AGENT_ID`, …).
+- **`proofgate`** is a CLI-command alias for **`plumb`**.
+- Gate comments posted by the pre-rename version (footer `proofgate · proof-carrying gate`)
+  are still recognized on re-run so history isn't lost.
+
+**New users:** use `.plumbline/`, `PLUMBLINE_*`, and `plumb`. The `proofgate` names exist only
+for back-compat and won't be removed out from under existing adopters.
 
 ### Evidence integrity (`ci_evidence_checks`)
 

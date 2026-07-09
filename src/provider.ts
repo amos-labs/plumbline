@@ -125,6 +125,8 @@ export const ENV = {
   provider: "PLUMBLINE_PROVIDER",
   apiBase: "PLUMBLINE_API_BASE",
   apiKey: "PLUMBLINE_API_KEY",
+  // Back-compat alias from the proofgate→Plumbline rename — retained on purpose
+  // so early adopters' env keeps working; PLUMBLINE_API_KEY is the canonical name.
   apiKeyLegacy: "PROOFGATE_API_KEY",
   anthropicKey: "ANTHROPIC_API_KEY",
 } as const;

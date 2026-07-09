@@ -408,6 +408,8 @@ export async function fetchExistingGateComment(
     return comments.find(
       (c) =>
         c.body.includes("plumbline · proof-carrying gate") ||
+        // Legacy footer from the pre-rename (proofgate→Plumbline) version —
+        // still matched so re-runs update the existing thread instead of stacking.
         c.body.includes("proofgate · proof-carrying gate"),
     )?.body;
   } catch {
@@ -436,6 +438,7 @@ export async function postPrComment(
     const mine = comments.find(
       (c) =>
         c.body.includes("plumbline · proof-carrying gate") ||
+        // Legacy footer from the pre-rename (proofgate→Plumbline) version.
         c.body.includes("proofgate · proof-carrying gate"),
     );
     if (mine) {

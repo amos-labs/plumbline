@@ -40,9 +40,9 @@ test("schema reference lists the status enum", () => {
   assert.match(schemaHelpBlock()["execution_evidence[].status"], /passed \| failed \| skipped/);
 });
 
-// #4 — `proofgate schema` prints the enums from the built CLI (discoverable
+// #4 — `plumb schema` prints the enums from the built CLI (discoverable
 // without failing the gate, no repo/policy/git needed).
-test("`proofgate schema` prints the receipt field reference + enums", () => {
+test("`plumb schema` prints the receipt field reference + enums", () => {
   const out = execFileSync("node", [CLI, "schema"], { encoding: "utf8" });
   assert.match(out, /receipt schema/i);
   assert.match(out, /passed \| failed \| skipped/);

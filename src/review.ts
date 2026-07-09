@@ -218,6 +218,8 @@ export function selectVerdict(
  * then the budget cheaper-model tier, then policy.review_model.
  */
 export function resolveReviewModel(policy: Policy): string {
+  // PROOFGATE_MODEL is a legacy alias (proofgate→Plumbline rename), kept so
+  // existing adopters' env still works; PLUMBLINE_MODEL is the canonical name.
   return process.env.PLUMBLINE_MODEL || process.env.PROOFGATE_MODEL || resolveModel(policy);
 }
 

@@ -4612,6 +4612,8 @@ var ENV = {
   provider: "PLUMBLINE_PROVIDER",
   apiBase: "PLUMBLINE_API_BASE",
   apiKey: "PLUMBLINE_API_KEY",
+  // Back-compat alias from the proofgate→Plumbline rename — retained on purpose
+  // so early adopters' env keeps working; PLUMBLINE_API_KEY is the canonical name.
   apiKeyLegacy: "PROOFGATE_API_KEY",
   anthropicKey: "ANTHROPIC_API_KEY"
 };
@@ -5249,7 +5251,9 @@ async function fetchExistingGateComment(repo, prNumber, token) {
     if (!res.ok) return void 0;
     const comments = await res.json();
     return comments.find(
-      (c) => c.body.includes("plumbline \xB7 proof-carrying gate") || c.body.includes("proofgate \xB7 proof-carrying gate")
+      (c) => c.body.includes("plumbline \xB7 proof-carrying gate") || // Legacy footer from the pre-rename (proofgate→Plumbline) version —
+      // still matched so re-runs update the existing thread instead of stacking.
+      c.body.includes("proofgate \xB7 proof-carrying gate")
     )?.body;
   } catch {
     return void 0;
@@ -5266,7 +5270,8 @@ async function postPrComment(repo, prNumber, body, token) {
   if (list.ok) {
     const comments = await list.json();
     const mine = comments.find(
-      (c) => c.body.includes("plumbline \xB7 proof-carrying gate") || c.body.includes("proofgate \xB7 proof-carrying gate")
+      (c) => c.body.includes("plumbline \xB7 proof-carrying gate") || // Legacy footer from the pre-rename (proofgate→Plumbline) version.
+      c.body.includes("proofgate \xB7 proof-carrying gate")
     );
     if (mine) {
       const merged = appendAttemptHistory(body, mine.body);
@@ -5304,7 +5309,8 @@ function writeGitHubStepSummary(markdown) {
 function detectCi() {
   if (process.env.GITHUB_ACTIONS === "true") {
     const prNumber = Number(
-      process.env.PLUMBLINE_PR_NUMBER || process.env.PROOFGATE_PR_NUMBER || (process.env.GITHUB_REF?.match(/refs\/pull\/(\d+)\//)?.[1] ?? NaN)
+      process.env.PLUMBLINE_PR_NUMBER || // Legacy alias (proofgate→Plumbline rename), retained for back-compat.
+      process.env.PROOFGATE_PR_NUMBER || (process.env.GITHUB_REF?.match(/refs\/pull\/(\d+)\//)?.[1] ?? NaN)
     );
     return {
       provider: "github",
