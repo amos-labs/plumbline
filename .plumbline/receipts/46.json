@@ -1,0 +1,97 @@
+{
+  "receipt_version": "1.0",
+  "task_id": "46",
+  "agent_id": "claude-fable-5",
+  "intent": "Implements issue #46: ship the plumbline Claude Skill (skills/plumbline/SKILL.md) plus Claude Code plugin packaging (.claude-plugin/plugin.json + marketplace.json, repo doubles as its own single-plugin marketplace via source './') and a README 'Teach your agent the gate' section. The action enforces; this teaches: the per-repo AGENTS.md that plumb init scaffolds is repo-scoped and drifts, while the skill travels with a user's Claude across every gated repo — loading on .plumbline/ detection or gate-related intent — and carries the judgment layer: honest receipt-writing (intent/validation_plan/evidence), turn-based verdict handling (APPROVE / REWORK / REVIEW), the known footguns (ci_covered vs manual evidence, protected-path floor, per-PR receipts, rebase re-stamp), and the ethics of never gaming or routing around the gate. Docs-only + JSON packaging; no gate/src behavior change; npm files array untouched.",
+  "self_modifying": false,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json",
+    ".plumbline/AGENTS.md"
+  ],
+  "validation_plan": [
+    {
+      "command": "npm test",
+      "reason": "full node:test suite stays green — proves the docs/packaging change breaks no gate behavior",
+      "required": true,
+      "id": "test",
+      "ci_covered": true
+    },
+    {
+      "command": "npx tsc --noEmit",
+      "reason": "repo still type-checks (no src touched; guards against accidental source edits)",
+      "required": true,
+      "id": "tsc"
+    },
+    {
+      "command": "npm run bundle && git diff --exit-code dist/index.js",
+      "reason": "committed esbuild bundle unchanged — confirms docs-only change, dist-check CI job passes",
+      "required": true,
+      "id": "dist"
+    },
+    {
+      "command": "node -e \"JSON.parse(require('fs').readFileSync('.claude-plugin/plugin.json','utf8'));JSON.parse(require('fs').readFileSync('.claude-plugin/marketplace.json','utf8'))\"",
+      "reason": "both plugin manifests are valid JSON",
+      "required": true,
+      "id": "json"
+    },
+    {
+      "command": "claude plugin validate .",
+      "reason": "manifests conform to current Claude Code plugin/marketplace schema (checked against code.claude.com/docs/en/plugins)",
+      "required": true,
+      "id": "plugval"
+    },
+    {
+      "command": "node dist/cli.js --help && node dist/cli.js schema",
+      "reason": "every command, flag, env var, verdict name, and receipt field documented in SKILL.md cross-checked against the v0.2.3 CLI help + schema output, CHANGELOG 0.2.2/0.2.3, and templates/AGENTS.md — the skill must not contradict what the tool actually does",
+      "required": true,
+      "id": "accuracy"
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npm test",
+      "status": "passed",
+      "step": "test",
+      "output_ref": "# tests 223 / # pass 223 / # fail 0 (also CI-covered by the 'test' check)"
+    },
+    {
+      "command": "npx tsc --noEmit",
+      "status": "passed",
+      "step": "tsc",
+      "output_ref": "exit 0 — no type errors"
+    },
+    {
+      "command": "npm run bundle && git diff --exit-code dist/index.js",
+      "status": "passed",
+      "step": "dist",
+      "output_ref": "git diff clean — committed bundle matches source (docs-only change)"
+    },
+    {
+      "command": "node -e \"JSON.parse(require('fs').readFileSync('.claude-plugin/plugin.json','utf8'));JSON.parse(require('fs').readFileSync('.claude-plugin/marketplace.json','utf8'))\"",
+      "status": "passed",
+      "step": "json",
+      "output_ref": "JSON OK"
+    },
+    {
+      "command": "claude plugin validate .",
+      "status": "passed",
+      "step": "plugval",
+      "output_ref": "'Validation passed' (after adding the marketplace description the first run warned about)"
+    },
+    {
+      "command": "node dist/cli.js --help && node dist/cli.js schema",
+      "status": "passed",
+      "step": "accuracy",
+      "output_ref": "SKILL.md verified against v0.2.3 build from this branch: commands (propose/receipt --write/--check/check/--review/schema/run/archive), verdicts (APPROVE/REWORK/REVIEW, advisory, convergence cap after 2 rounds), receipt fields + status enum passed|failed|skipped, ci_covered semantics, 3-dot committed-HEAD diff hash, env vars (ANTHROPIC_API_KEY, PLUMBLINE_MODEL/PROVIDER/API_BASE/API_KEY), 'shape pre-flight PASS/FAIL' banner wording (src/cli.ts:708)"
+    }
+  ],
+  "changed_files": [
+    ".claude-plugin/marketplace.json",
+    ".claude-plugin/plugin.json",
+    "README.md",
+    "skills/plumbline/SKILL.md"
+  ],
+  "diff_sha256": "5608b69f2a79243fe421b3f4e45da4ab399058dfd72c701f43fb1dedd94e6a8b",
+  "result_summary": "Added skills/plumbline/SKILL.md (~230-line gate-native operator playbook: detect .plumbline//.proofgate, propose->work->receipt --write->check->PR loop, receipt-writing quality, turn-based APPROVE/REWORK/REVIEW semantics incl. convergent re-review + round cap, four footguns, ethics section, command quick-reference), .claude-plugin/plugin.json + marketplace.json (plugin name 'plumbline' v0.2.3 matching package.json; repo is its own marketplace 'amos-labs' with source './', so install is '/plugin marketplace add amos-labs/plumbline' + '/plugin install plumbline@amos-labs'), and a README 'Teach your agent the gate' section placed after the agent-installable Quick start. Verified: 223/223 tests, tsc clean, dist bundle unchanged, JSON valid, 'claude plugin validate' passes, and every documented command/flag/verdict/field cross-checked against the v0.2.3 CLI help + schema output. New files only; no gate logic, npm 'files' array, or scaffolded AGENTS.md content changed."
+}
