@@ -1,10 +1,10 @@
-<img src="assets/plumbline-logo.svg" width="72" align="right" alt="Plumbline"/>
+<img src="assets/plumbline-lockup.svg" alt="Plumbline — mission-alignment gate for AI agent PRs" width="640"/>
 
 # Plumbline
 
-<!-- Social preview: GitHub's repo Settings → Social preview does NOT accept SVG.
-     A human must export assets/plumbline-social.svg to a 1280×640 PNG and upload it
-     there manually — this is a repo-settings step, not something the repo can commit. -->
+<!-- Social preview (manual, human-only repo step): GitHub's Settings → Social preview
+     does NOT accept SVG. Upload assets/plumbline-social-preview.png (1280×640) there by hand —
+     it's a repo-settings action, not something the repo can commit. -->
 
 *“Behold, I will set a plumb line in the midst of my people” — Amos 7:8. The prophet’s own symbol: the line work is measured against.*
 
