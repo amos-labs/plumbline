@@ -1,0 +1,21 @@
+{
+  "name": "amos-labs",
+  "description": "Amos Labs plugins — Plumbline, the proof-carrying gate for AI agent work, and companions.",
+  "owner": {
+    "name": "Amos Labs",
+    "url": "https://github.com/amos-labs"
+  },
+  "plugins": [
+    {
+      "name": "plumbline",
+      "source": "./",
+      "description": "Make your agent Plumbline-native: the operator playbook for proof-carrying gated repos — honest receipts, plumb receipt --write / plumb check, and turn-based verdict handling (APPROVE / REWORK / REVIEW).",
+      "version": "0.2.3",
+      "author": {
+        "name": "Amos Labs"
+      },
+      "license": "Apache-2.0",
+      "homepage": "https://github.com/amos-labs/plumbline"
+    }
+  ]
+}

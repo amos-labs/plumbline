@@ -1,0 +1,13 @@
+{
+  "name": "plumbline",
+  "description": "Make your agent Plumbline-native: the operator playbook for proof-carrying gated repos — honest receipts, plumb receipt --write / plumb check, and turn-based verdict handling (APPROVE / REWORK / REVIEW).",
+  "version": "0.2.3",
+  "author": {
+    "name": "Amos Labs",
+    "url": "https://github.com/amos-labs"
+  },
+  "homepage": "https://github.com/amos-labs/plumbline",
+  "repository": "https://github.com/amos-labs/plumbline",
+  "license": "Apache-2.0",
+  "keywords": ["plumbline", "proof-receipt", "gate", "ai-agents", "code-review"]
+}
