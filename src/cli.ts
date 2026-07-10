@@ -14,8 +14,7 @@ import {
   semanticReview,
   resolveReviewModel,
   PROMPT_VERSION,
-  reviewUnavailableVerdict,
-  reviewSkippedUnavailableVerdict,
+  resolveUnavailableVerdict,
 } from "./review.js";
 import { selectProvider } from "./provider.js";
 import { shouldSkipReview, readReviewCache, writeReviewCache, protectedFloor } from "./cost.js";
@@ -853,19 +852,18 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
       if (!provider) {
         const reason =
           "the review provider could not be constructed (no API key or misconfigured provider)";
+        review = resolveUnavailableVerdict(policy, reason, shape.pass);
         if (policy.require_semantic_review) {
           console.error(
             `semantic review: REQUIRED but unavailable — FAILING CLOSED. ${reason}. ` +
               `Set ANTHROPIC_API_KEY / PLUMBLINE_API_KEY, or set require_semantic_review:false in policy to allow a shape-only pass.`,
           );
-          review = reviewUnavailableVerdict(reason);
           gate.reasons.push("Semantic review required but unavailable — failing closed (verdict: review).");
         } else {
           console.error(
             `semantic review: unavailable and require_semantic_review is false — ` +
               `shape-only pass with a LOUD note (review did NOT run). ${reason}.`,
           );
-          review = reviewSkippedUnavailableVerdict(reason, shape.pass);
           gate.reasons.push(
             "⚠️ Semantic review did NOT run (require_semantic_review:false + provider unavailable) — verdict rests on the shape gate alone.",
           );
@@ -949,11 +947,11 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
           review = await semanticReview(mission, receipt, diff, policy, provider, reviewContext);
         } catch (e) {
           const reason = `the review provider call failed (${(e as Error).message})`;
+          review = resolveUnavailableVerdict(policy, reason, shape.pass);
           if (policy.require_semantic_review) {
             console.error(
               `semantic review: REQUIRED but the provider call FAILED — FAILING CLOSED. ${reason}.`,
             );
-            review = reviewUnavailableVerdict(reason);
             gate.reasons.push(
               "Semantic review required but the provider call failed — failing closed (verdict: review).",
             );
@@ -962,7 +960,6 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
               `semantic review: provider call failed and require_semantic_review is false — ` +
                 `shape-only pass with a LOUD note (review did NOT run). ${reason}.`,
             );
-            review = reviewSkippedUnavailableVerdict(reason, shape.pass);
             gate.reasons.push(
               "⚠️ Semantic review did NOT run (require_semantic_review:false + provider call failed) — verdict rests on the shape gate alone.",
             );

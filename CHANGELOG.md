@@ -10,7 +10,9 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
 
 ## [Unreleased]
 
-### Changed
+## [0.3.0] - 2026-07-10
+
+### ⚠️ BREAKING
 - **The gate now fails CLOSED when the semantic review is required but can't run
   (trust-integrity).** Previously, if the review provider was absent or
   unreachable (no API key, provider/API error, timeout) the gate could fall back
@@ -18,21 +20,30 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
   gate that fails *open* is a bug in the thesis. Now, when the semantic review is
   required and cannot run, the verdict is a **BLOCK** (`review`) with a loud
   *"semantic review unavailable — failing closed"* capsule — never a silent
-  shape-only pass. Governed by the new `require_semantic_review` policy flag.
+  shape-only pass. Governed by the new `require_semantic_review` policy flag,
+  which **defaults to `true`.**
 
-  **Migration.** `require_semantic_review` **defaults to `true`.** A repo that
-  was (perhaps unknowingly) relying on the old shape-only fallback with no
-  provider key will now see the gate BLOCK instead of pass. To keep the previous
-  behavior for a **deliberately offline / self-hosted / air-gapped** repo, set
+  **Why this is BREAKING:** any repo that was (perhaps unknowingly) relying on
+  the old shape-only fallback with **no provider key configured** will now see
+  the `plumbline` check go **red (BLOCK)** instead of passing. Repos that already
+  provide a provider key (`ANTHROPIC_API_KEY` / `PLUMBLINE_API_KEY`) are
+  unaffected — the review runs exactly as before.
+
+  **Migration.** Either (a) add a provider key (recommended — you get the
+  semantic half of the gate you were missing), or (b) for a **deliberately
+  offline / self-hosted / air-gapped** repo, set
   `"require_semantic_review": false` in `policy.json` — the shape gate may then
   PASS, but the verdict and PR comment state *loudly* that the semantic review
-  did not run (never a silent pass). Repos that already provide a provider key
-  are unaffected. This is why consumers should pin a released tag, not `@master`:
-  a behavior change like this arrives as a deliberate, CHANGELOG-noted upgrade.
+  did not run (never a silent pass). This is exactly why consumers should pin a
+  released tag, not `@master`: a breaking change like this arrives as a
+  deliberate, CHANGELOG-noted upgrade rather than shifting under a floating ref.
 
 ### Added
 - **`require_semantic_review` policy flag** (default `true`) — the fail-closed
   switch above. See "How it works" and the cost-controls section in the README.
+  Enforced at both unavailability points (provider construction with no key, and
+  a runtime provider-call failure — API error / network / timeout), via a single
+  shared `resolveUnavailableVerdict` decision so the two paths cannot drift.
 - **README honesty note on what "proof" means.** "Proof-carrying" here =
   diff-binding (`diff_sha256`) + CI evidence corroboration + a *probabilistic*
   semantic review, gated on that review actually having run — **not** a

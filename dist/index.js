@@ -4941,6 +4941,9 @@ function reviewSkippedUnavailableVerdict(reason, shapePassed) {
     risk_notes: note
   };
 }
+function resolveUnavailableVerdict(policy, reason, shapePassed) {
+  return policy.require_semantic_review ? reviewUnavailableVerdict(reason) : reviewSkippedUnavailableVerdict(reason, shapePassed);
+}
 async function semanticReview(mission, receipt, diff, policy, provider, context) {
   const prompt = buildReviewPrompt(mission, receipt, diff, policy.human_review_level, context);
   const model = resolveReviewModel(policy);
@@ -6991,17 +6994,16 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
       let review = null;
       if (!provider) {
         const reason = "the review provider could not be constructed (no API key or misconfigured provider)";
+        review = resolveUnavailableVerdict(policy, reason, shape.pass);
         if (policy.require_semantic_review) {
           console.error(
             `semantic review: REQUIRED but unavailable \u2014 FAILING CLOSED. ${reason}. Set ANTHROPIC_API_KEY / PLUMBLINE_API_KEY, or set require_semantic_review:false in policy to allow a shape-only pass.`
           );
-          review = reviewUnavailableVerdict(reason);
           gate.reasons.push("Semantic review required but unavailable \u2014 failing closed (verdict: review).");
         } else {
           console.error(
             `semantic review: unavailable and require_semantic_review is false \u2014 shape-only pass with a LOUD note (review did NOT run). ${reason}.`
           );
-          review = reviewSkippedUnavailableVerdict(reason, shape.pass);
           gate.reasons.push(
             "\u26A0\uFE0F Semantic review did NOT run (require_semantic_review:false + provider unavailable) \u2014 verdict rests on the shape gate alone."
           );
@@ -7064,11 +7066,11 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
           review = await semanticReview(mission, receipt, diff, policy, provider, reviewContext);
         } catch (e) {
           const reason = `the review provider call failed (${e.message})`;
+          review = resolveUnavailableVerdict(policy, reason, shape.pass);
           if (policy.require_semantic_review) {
             console.error(
               `semantic review: REQUIRED but the provider call FAILED \u2014 FAILING CLOSED. ${reason}.`
             );
-            review = reviewUnavailableVerdict(reason);
             gate.reasons.push(
               "Semantic review required but the provider call failed \u2014 failing closed (verdict: review)."
             );
@@ -7076,7 +7078,6 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
             console.error(
               `semantic review: provider call failed and require_semantic_review is false \u2014 shape-only pass with a LOUD note (review did NOT run). ${reason}.`
             );
-            review = reviewSkippedUnavailableVerdict(reason, shape.pass);
             gate.reasons.push(
               "\u26A0\uFE0F Semantic review did NOT run (require_semantic_review:false + provider call failed) \u2014 verdict rests on the shape gate alone."
             );

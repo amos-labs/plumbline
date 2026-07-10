@@ -312,6 +312,26 @@ export function reviewSkippedUnavailableVerdict(reason: string, shapePassed: boo
 }
 
 /**
+ * Resolve the verdict for a review that COULD NOT RUN — the single decision
+ * point shared by BOTH unavailability paths in the CLI:
+ *   • provider construction failed (no key / misconfig), and
+ *   • the runtime provider call threw (API error / network / timeout).
+ * Centralizing it here guarantees the two paths can never drift, and makes the
+ * fail-closed contract directly unit-testable without a live provider. When the
+ * review is required → fail CLOSED (a blocking `review`); otherwise → the loud
+ * opt-out verdict resting on the shape gate.
+ */
+export function resolveUnavailableVerdict(
+  policy: Pick<Policy, "require_semantic_review">,
+  reason: string,
+  shapePassed: boolean,
+): ReviewResult {
+  return policy.require_semantic_review
+    ? reviewUnavailableVerdict(reason)
+    : reviewSkippedUnavailableVerdict(reason, shapePassed);
+}
+
+/**
  * Run the semantic review. The LLM call is delegated to a `ReviewProvider`
  * (Anthropic by default, any OpenAI-compatible endpoint via config) so the
  * prompt and verdict schema stay provider-independent. Pass an explicit
