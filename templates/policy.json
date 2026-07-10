@@ -8,6 +8,7 @@
     ".github/workflows/**"
   ],
   "min_review_confidence": 0.8,
+  "require_semantic_review": true,
   "human_review_level": "balanced",
   "review_model": "claude-sonnet-4-6",
   "review_provider": "anthropic",

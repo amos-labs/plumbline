@@ -10,6 +10,35 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
 
 ## [Unreleased]
 
+### Changed
+- **The gate now fails CLOSED when the semantic review is required but can't run
+  (trust-integrity).** Previously, if the review provider was absent or
+  unreachable (no API key, provider/API error, timeout) the gate could fall back
+  to the deterministic shape checks alone and still PASS. A proof-carrying trust
+  gate that fails *open* is a bug in the thesis. Now, when the semantic review is
+  required and cannot run, the verdict is a **BLOCK** (`review`) with a loud
+  *"semantic review unavailable — failing closed"* capsule — never a silent
+  shape-only pass. Governed by the new `require_semantic_review` policy flag.
+
+  **Migration.** `require_semantic_review` **defaults to `true`.** A repo that
+  was (perhaps unknowingly) relying on the old shape-only fallback with no
+  provider key will now see the gate BLOCK instead of pass. To keep the previous
+  behavior for a **deliberately offline / self-hosted / air-gapped** repo, set
+  `"require_semantic_review": false` in `policy.json` — the shape gate may then
+  PASS, but the verdict and PR comment state *loudly* that the semantic review
+  did not run (never a silent pass). Repos that already provide a provider key
+  are unaffected. This is why consumers should pin a released tag, not `@master`:
+  a behavior change like this arrives as a deliberate, CHANGELOG-noted upgrade.
+
+### Added
+- **`require_semantic_review` policy flag** (default `true`) — the fail-closed
+  switch above. See "How it works" and the cost-controls section in the README.
+- **README honesty note on what "proof" means.** "Proof-carrying" here =
+  diff-binding (`diff_sha256`) + CI evidence corroboration + a *probabilistic*
+  semantic review, gated on that review actually having run — **not** a
+  cryptographic attestation of the agent's work. Receipt signing is planned, not
+  shipped; the README keeps that distinction explicit.
+
 ## [0.2.3] - 2026-07-09
 
 ### Changed

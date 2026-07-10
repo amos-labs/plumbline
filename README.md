@@ -201,6 +201,39 @@ cap** bounds the loop: after 2 rework rounds only regressions in the fix commits
 block; anything else escalates to REVIEW under a "gate did not converge — human decides"
 banner. No unbounded nitpick loops.
 
+**The gate fails CLOSED.** A proof-carrying trust gate that passes on the deterministic
+shape half alone when the semantic review couldn't run would fail *open* — the exact bug
+the tool exists to prevent. So when the semantic review is required and **cannot run** — no
+API key, a provider construction error, an API error, or a timeout — the verdict is a
+**BLOCK** (`review`, with a loud *"semantic review unavailable — failing closed"* capsule),
+never a silent shape-only pass. This is governed by `require_semantic_review` in
+`policy.json`, which **defaults to `true`**.
+
+For a deliberately offline / self-hosted / air-gapped repo that runs the deterministic
+shape gate without an LLM, set `require_semantic_review: false`. That is an **explicit
+opt-out**: the shape gate can PASS, but the verdict and the PR comment state *loudly* that
+the semantic review did **not** run — the gate never silently pretends judgment happened.
+(This is orthogonal to the `skip_review` cost knobs, which are intentional per-diff skips
+that still count as a completed review decision.)
+
+### What "proof" means here
+
+Be precise about the claim. A plumbline receipt binds three things:
+
+1. **Diff-binding** — `diff_sha256` cryptographically binds the receipt to the exact diff it
+   describes (the gate recomputes it; a stale/forged hash fails the shape gate).
+2. **CI evidence** — required checks are corroborated against the repo's *real* CI check-runs
+   (`ci_evidence_checks`), not the receipt's self-report.
+3. **Probabilistic semantic review** — one LLM call judges coverage, mission alignment, and
+   risk. It is a *judgment*, not a proof — strong signal, but fallible, and that's why the
+   gate fails closed rather than pretending a missing review was a pass.
+
+What "proof" is **not** (yet): a **cryptographic attestation** of the *work* — a signed
+receipt whose signature a third party could verify offline. Receipt signing is **planned**,
+not shipped. Today "proof-carrying" means *diff-bound + CI-corroborated + semantically
+reviewed*, gated on a real judgment having happened — not a cryptographic proof of the agent's
+behavior. We keep that distinction honest on purpose.
+
 ### What the gate posts
 
 A REVIEW verdict renders on the PR like this — the human reads a verdict and a reason, not a diff:
@@ -288,6 +321,11 @@ released major tag:
 Releases are cut from semver tags and carry notes from
 [CHANGELOG.md](CHANGELOG.md). See **[RELEASING.md](RELEASING.md)** for how a maintainer
 cuts a release and moves the major tag.
+
+> Pinning is also *why behavior changes ship in a release, not silently.* The fail-closed
+> default (`require_semantic_review: true`) is one such change: a `@master` consumer would
+> have inherited it with no version bump, whereas a tag-pinned consumer upgrades into it
+> deliberately after reading the CHANGELOG. Pin a tag.
 
 ## CLI
 
@@ -406,16 +444,25 @@ verdict schema are identical across providers — only the transport changes.
 
 A non-Anthropic provider needs its **own** key (`PLUMBLINE_API_KEY`) — the gate will
 **not** fall back to `ANTHROPIC_API_KEY` for it, because sending your Anthropic key to a
-third-party/self-hosted endpoint would leak that credential. Missing key → a clear error.
+third-party/self-hosted endpoint would leak that credential. **Missing key → the gate fails
+closed** (verdict `review`) by default, not a shape-only pass — see
+[the fail-closed behavior](#how-it-works) and `require_semantic_review`.
 
 ### Cost + determinism controls (opt-in)
 
-The semantic review is the differentiated value, so nothing here makes judgment optional —
-these controls reduce spend without weakening the gate, and **all default to off** (review
-runs exactly as before). Configure in `policy.json`:
+The semantic review is the differentiated value, so nothing here makes judgment silently
+optional — these controls reduce spend without weakening the gate, and **all default to
+off** (review runs exactly as before). The one deliberate escape hatch is
+`require_semantic_review: false` (offline/self-hosted), and even that fails *loud*, not
+silent. Configure in `policy.json`:
 
 ```jsonc
 {
+  // Fail CLOSED when the required semantic review can't run (no key / provider
+  // error / timeout): verdict = review, never a shape-only pass. DEFAULT true.
+  // Set false ONLY for a deliberately offline/self-hosted repo — the shape gate
+  // may then PASS, but the verdict/comment state LOUDLY that review did not run.
+  "require_semantic_review": true,
   // Skip the LLM for low-risk diffs — pass on the shape gate alone.
   // HARD FLOOR: self_modifying / protected_paths changes are NEVER skipped.
   "skip_review": {

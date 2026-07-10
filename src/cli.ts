@@ -10,7 +10,13 @@ import {
   gitChangedFiles,
   isReceiptPath,
 } from "./shape.js";
-import { semanticReview, resolveReviewModel, PROMPT_VERSION } from "./review.js";
+import {
+  semanticReview,
+  resolveReviewModel,
+  PROMPT_VERSION,
+  reviewUnavailableVerdict,
+  reviewSkippedUnavailableVerdict,
+} from "./review.js";
 import { selectProvider } from "./provider.js";
 import { shouldSkipReview, readReviewCache, writeReviewCache, protectedFloor } from "./cost.js";
 import {
@@ -695,6 +701,11 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
         console.error(
           "Falling back to shape-only pre-flight — set ANTHROPIC_API_KEY (or PLUMBLINE_API_KEY) to run the semantic review locally.",
         );
+        if (policy.require_semantic_review) {
+          console.error(
+            "NOTE: require_semantic_review is true — CI (`plumb run`) will FAIL CLOSED (verdict: review) without a provider, not pass on shape alone. This local pre-flight is a convenience only.",
+          );
+        }
       }
     }
 
@@ -817,7 +828,11 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
         gate.reasons.push(`Semantic review enforced: ${skip.reason}.`);
       }
 
+      const model = resolveReviewModel(policy);
+
       // Cost control (#26): reuse a cached verdict for an identical diff.
+      // The provider is CONSTRUCTED here (needs a key + valid config). When it
+      // can't be — no key, misconfig — the review is UNAVAILABLE.
       const provider = (() => {
         try {
           return selectProvider(policy);
@@ -826,11 +841,40 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
           return null;
         }
       })();
-      if (!provider) return 1;
+
+      let review: Awaited<ReturnType<typeof semanticReview>> | null = null;
+
+      // FAIL CLOSED: the review is required but the provider can't be
+      // constructed (no key / misconfig). A proof-carrying gate does not pass on
+      // the deterministic shape half alone when a required semantic judgment
+      // never happened. `require_semantic_review` defaults to true; an explicit
+      // `false` is the offline/self-hosted opt-out → shape-only pass with a
+      // LOUD "review did NOT run" note (never a silent shape-only pass).
+      if (!provider) {
+        const reason =
+          "the review provider could not be constructed (no API key or misconfigured provider)";
+        if (policy.require_semantic_review) {
+          console.error(
+            `semantic review: REQUIRED but unavailable — FAILING CLOSED. ${reason}. ` +
+              `Set ANTHROPIC_API_KEY / PLUMBLINE_API_KEY, or set require_semantic_review:false in policy to allow a shape-only pass.`,
+          );
+          review = reviewUnavailableVerdict(reason);
+          gate.reasons.push("Semantic review required but unavailable — failing closed (verdict: review).");
+        } else {
+          console.error(
+            `semantic review: unavailable and require_semantic_review is false — ` +
+              `shape-only pass with a LOUD note (review did NOT run). ${reason}.`,
+          );
+          review = reviewSkippedUnavailableVerdict(reason, shape.pass);
+          gate.reasons.push(
+            "⚠️ Semantic review did NOT run (require_semantic_review:false + provider unavailable) — verdict rests on the shape gate alone.",
+          );
+        }
+        gate.review = review;
+        gate.final = review.verdict as Verdict;
+      }
 
       const cacheDir = join(cwd, policy.review_cache.dir);
-      const model = resolveReviewModel(policy);
-      let review: Awaited<ReturnType<typeof semanticReview>> | null = null;
 
       // Cache validation: only trust the cache key when receipt.diff_sha256
       // actually matches the current diff. The shape gate's diff_integrity check
@@ -838,7 +882,7 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
       // recompute independently here. A mismatch → treat as a cache MISS (run a
       // live review) rather than serve a verdict keyed on a stale/wrong hash.
       let cacheKeyValid = false;
-      if (policy.review_cache.enabled && !skipGit && receipt.diff_sha256) {
+      if (provider && policy.review_cache.enabled && !skipGit && receipt.diff_sha256) {
         try {
           const actualSha = computeDiffSha256(gitDiffExcludingReceipt(baseRef, cwd));
           cacheKeyValid = actualSha === receipt.diff_sha256;
@@ -855,7 +899,7 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
         }
       }
 
-      if (cacheKeyValid) {
+      if (provider && cacheKeyValid) {
         const hit = readReviewCache(
           cacheDir,
           receipt.diff_sha256!,
@@ -872,7 +916,7 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
         }
       }
 
-      if (!review) {
+      if (provider && !review) {
         // Re-review context (#41, Change 3): on a re-push, feed the prior
         // capsule + fix commits so the review is convergent (verify prior
         // items, review only new hunks) and the round cap is enforced. Read
@@ -896,10 +940,44 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
             }
           }
         }
-        review = await semanticReview(mission, receipt, diff, policy, provider, reviewContext);
-        // Only persist under a key we verified matches the actual diff — never
-        // write a verdict under a stale/wrong diff_sha256.
-        if (policy.review_cache.enabled && !skipGit && receipt.diff_sha256 && cacheKeyValid) {
+        // FAIL CLOSED on a runtime provider failure too. The provider was
+        // constructed (a key is present) but the call itself can still fail —
+        // API error (5xx/429/auth), a network/DNS error, or a timeout. That is
+        // ALSO a review that did not complete, so it must not silently fall
+        // through to a shape-only pass: same require_semantic_review contract.
+        try {
+          review = await semanticReview(mission, receipt, diff, policy, provider, reviewContext);
+        } catch (e) {
+          const reason = `the review provider call failed (${(e as Error).message})`;
+          if (policy.require_semantic_review) {
+            console.error(
+              `semantic review: REQUIRED but the provider call FAILED — FAILING CLOSED. ${reason}.`,
+            );
+            review = reviewUnavailableVerdict(reason);
+            gate.reasons.push(
+              "Semantic review required but the provider call failed — failing closed (verdict: review).",
+            );
+          } else {
+            console.error(
+              `semantic review: provider call failed and require_semantic_review is false — ` +
+                `shape-only pass with a LOUD note (review did NOT run). ${reason}.`,
+            );
+            review = reviewSkippedUnavailableVerdict(reason, shape.pass);
+            gate.reasons.push(
+              "⚠️ Semantic review did NOT run (require_semantic_review:false + provider call failed) — verdict rests on the shape gate alone.",
+            );
+          }
+        }
+        // Only persist a REAL, provider-produced verdict under a key we verified
+        // matches the actual diff — never cache a fail-closed/unavailable verdict
+        // (audit is undefined on those), and never under a stale/wrong sha.
+        if (
+          review.audit &&
+          policy.review_cache.enabled &&
+          !skipGit &&
+          receipt.diff_sha256 &&
+          cacheKeyValid
+        ) {
           writeReviewCache(
             cacheDir,
             receipt.diff_sha256,
@@ -911,8 +989,10 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
         }
       }
 
-      gate.review = review;
-      gate.final = review.verdict as Verdict;
+      // review is always set by now: a cache hit, a live verdict, or a
+      // fail-closed/opt-out verdict from an unavailable provider.
+      gate.review = review!;
+      gate.final = review!.verdict as Verdict;
 
       // Budget: soft per-PR spend cap is informational — surface it for audit.
       if (policy.budget.max_usd_per_pr > 0) {
@@ -922,11 +1002,11 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
       }
 
       console.error(
-        `semantic review: ${review.verdict} (confidence ${review.confidence}) [${review.audit?.provider}/${model}, temp ${review.audit?.temperature}, prompt ${review.audit?.prompt_version}${review.audit?.cached ? ", cached" : ""}]`,
+        `semantic review: ${review!.verdict} (confidence ${review!.confidence}) [${review!.audit?.provider ?? "unavailable"}/${model}, temp ${review!.audit?.temperature}, prompt ${review!.audit?.prompt_version}${review!.audit?.cached ? ", cached" : ""}]`,
       );
-      console.error(`  coverage: ${review.validation_coverage_notes}`);
-      console.error(`  mission:  ${review.mission_alignment_notes}`);
-      console.error(`  risk:     ${review.risk_notes}`);
+      console.error(`  coverage: ${review!.validation_coverage_notes}`);
+      console.error(`  mission:  ${review!.mission_alignment_notes}`);
+      console.error(`  risk:     ${review!.risk_notes}`);
     }
   }
 
