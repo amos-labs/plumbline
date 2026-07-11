@@ -1,0 +1,79 @@
+{
+  "_help": {
+    "_note": "Allowed values + requirements per field (this _help block is ignored by the gate — keep or delete). Run `plumb schema` for the full reference.",
+    "receipt_version": "one of: 1.0 — required — schema version",
+    "task_id": "required — ticket/issue/branch id (also the receipt filename)",
+    "agent_id": "required — which agent or human did the work",
+    "intent": "required — what + why, plain language — the semantic review reads this",
+    "self_modifying": "one of: true | false — required — MUST be true if changed_files touch policy.protected_paths; touching one with false is a hard fail; true routes to human review",
+    "policy_refs": "required — policy/mission docs you read",
+    "validation_plan": "required — each: { command, reason, required, id?, ci_covered? }",
+    "validation_plan[].required": "one of: true | false — required — is this check mandatory",
+    "validation_plan[].id": "optional — optional step id; evidence is matched to it via execution_evidence[].step (robust to a command wording diff)",
+    "validation_plan[].ci_covered": "one of: true | false — optional — step is corroborated by the ci-evidence gate (real CI run), not manual evidence — may be 'skipped'; also auto-recognized when command matches a policy ci_evidence_checks entry",
+    "execution_evidence": "required — each: { command, status, output_ref?, skip_reason?, step? }",
+    "execution_evidence[].status": "one of: passed | failed | skipped — required — required steps must be 'passed' (unless CI-covered); use skip_reason when 'skipped'",
+    "execution_evidence[].step": "optional — optional id of the validation_plan step this evidence is for (matches validation_plan[].id)",
+    "changed_files": "required — set by `plumb receipt --write` — don't hand-edit",
+    "diff_sha256": "required — set by `plumb receipt --write` — never hand-edit",
+    "result_summary": "required — what changed + how it was verified"
+  },
+  "receipt_version": "1.0",
+  "task_id": "fail-closed-semantic-review",
+  "agent_id": "claude-opus-4-8",
+  "intent": "P1 trust-integrity fix: make the gate FAIL CLOSED when the semantic review is required but cannot run. Today, if the review provider is absent/unreachable (no API key, provider construction error, API error, or timeout) the gate could fall back to the deterministic shape checks alone and still PASS — a proof-carrying trust product that fails OPEN is a bug in the thesis. This adds a require_semantic_review policy flag (DEFAULT true, given this is a trust product) with an explicit opt-out for offline/self-hosted repos. When the review is required and unavailable, the verdict is now a BLOCK (review) carrying a clear 'semantic review unavailable — failing closed' capsule, never a silent shape-only pass. When require_semantic_review:false, the shape gate may PASS but the verdict and PR comment state LOUDLY that the semantic review did not run — never a silent pretend-pass. review.ts exposes reviewUnavailableVerdict / reviewSkippedUnavailableVerdict plus a single shared resolveUnavailableVerdict decision point; cli.ts calls resolveUnavailableVerdict at BOTH failure points — provider construction (no key/misconfig) and the runtime provider call (API error/network/timeout) — so the two paths can never drift. This revision closes the three advisory findings the gate's own REVIEW raised on the first pass: (1) the runtime-call catch branch is now directly tested (a throwing provider) rather than only reachable via the construction branch; (2) require_semantic_review:false combined with a shape FAILURE is tested to still BLOCK (the opt-out only governs the review-unavailable case, never a broken receipt); (3) the cache guard (review.audit && … before writeReviewCache) is tested so a fail-closed verdict is never persisted or served as a real hit. Docs: README gains a fail-closed section, an honest 'what proof means' note (diff-binding + CI evidence + probabilistic semantic review, NOT a cryptographic attestation — receipt signing is planned), and a pinning note tying the behavior change to tag-pinning; AGENTS.md documents the fail-closed default + opt-out; CHANGELOG marks the fail-closed default-true as a BREAKING change under a [0.3.0] heading and package.json is bumped to 0.3.0. templates/policy.json makes the true default explicit for new adopters.",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json"
+  ],
+  "validation_plan": [
+    {
+      "command": "npm run check",
+      "reason": "Type-check every changed module: the extended Policy type (require_semantic_review), the two new review.ts verdict builders, and the cli.ts rewiring of the provider-construction + runtime-call failure paths (review is now nullable through the block).",
+      "required": true
+    },
+    {
+      "command": "npm run package",
+      "reason": "tsc must still emit dist/cli.js + dist/test/, and esbuild must rebuild the committed action bundle dist/index.js so the self-hosted gate runs the changed logic (dist-check CI job guards staleness).",
+      "required": true
+    },
+    {
+      "command": "npm test",
+      "reason": "Full suite (policy required_check + ci_evidence 'test'), including fail-closed.test.ts (12 tests): require_semantic_review defaults to true; the unavailable verdict is a blocking human-turn review with no audit; end-to-end `plumb run` with no key blocks (fail closed) when required and passes-with-loud-note when opted out; the runtime-call catch branch via a throwing provider; shape-fail + opt-out still blocks; and the cache guard never persists/serves a fail-closed verdict. Confirms the 223 pre-existing tests still pass.",
+      "required": true,
+      "ci_covered": true
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npm run check",
+      "status": "passed",
+      "output_ref": "tsc --noEmit: 0 errors"
+    },
+    {
+      "command": "npm run package",
+      "status": "passed",
+      "output_ref": "tsc + esbuild: dist/index.js rebundled (248.3kb), committed"
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "235 tests, 235 pass, 0 fail (incl. 12 fail-closed tests: +7 for the runtime-catch, shape-fail+opt-out, and cache-guard coverage)"
+    }
+  ],
+  "changed_files": [
+    ".plumbline/AGENTS.md",
+    "CHANGELOG.md",
+    "README.md",
+    "dist/index.js",
+    "package.json",
+    "src/cli.ts",
+    "src/review.ts",
+    "src/test/fail-closed.test.ts",
+    "src/types.ts",
+    "templates/policy.json"
+  ],
+  "diff_sha256": "255fc6fb0d0fa7f4ab31cf702262f9280c248ceed31202a53e9757258485e39b",
+  "result_summary": "The gate now fails closed when a required semantic review cannot run. New require_semantic_review policy flag (default true) gates the behavior; review.ts exposes two verdict builders plus a shared resolveUnavailableVerdict decision point, and cli.ts calls it at both failure points (provider construction with no key, and the runtime provider call on API error/network/timeout) so they cannot drift — routing the verdict through the normal CI-report/exit path so the check goes red with a self-describing capsule. This revision closes the three advisory findings from the gate's own first-pass REVIEW: the runtime-catch branch is now directly tested via a throwing provider; require_semantic_review:false + a shape FAILURE is tested to still BLOCK; and the cache guard is tested so a fail-closed verdict (no audit) is never persisted or served. Verified by `npm run check` (0 type errors), `npm run package` (dist bundle rebuilt to 248.3kb + committed for the self-hosted action), and `npm test` (235/235 pass, 12 fail-closed tests). Docs (README, AGENTS.md, CHANGELOG under a [0.3.0] BREAKING heading, package.json bumped to 0.3.0, template policy) updated to describe the fail-closed default, the opt-out, the honest scope of 'proof' (no cryptographic attestation yet), and tag-pinning guidance. self_modifying:true — touches src/types.ts and .plumbline/**, routes to human review."
+}

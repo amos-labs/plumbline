@@ -240,6 +240,98 @@ export function resolveReviewTemperature(policy: Policy): number | undefined {
 }
 
 /**
+ * The verdict when the semantic review is REQUIRED but could NOT run — no API
+ * key, a provider construction error, an API error, or a timeout. This is the
+ * fail-CLOSED path: a proof-carrying trust gate must not pass on the shape half
+ * alone when a required judgment never happened. Returns a BLOCKING `review`
+ * (human's turn) so the check goes red with a self-describing capsule, not a
+ * silent shape-only pass.
+ *
+ * `reason` is the concrete cause (e.g. the provider error message) surfaced in
+ * the comment so a maintainer knows exactly what to fix (add the key / restore
+ * connectivity) — or how to opt out (`require_semantic_review: false`) if this
+ * repo is deliberately offline.
+ */
+export function reviewUnavailableVerdict(reason: string): ReviewResult {
+  const message =
+    "Semantic review is required by policy (require_semantic_review: true) but " +
+    `could not run: ${reason}. The gate is FAILING CLOSED — a proof-carrying ` +
+    "gate does not pass on the deterministic shape checks alone when the " +
+    "required semantic judgment never happened.";
+  return {
+    verdict: "review",
+    confidence: 0,
+    validation_coverage_notes: "Not evaluated — semantic review unavailable (failing closed).",
+    mission_alignment_notes: "Not evaluated — semantic review unavailable (failing closed).",
+    risk_notes: message,
+    failure_capsule: {
+      failing_check: "semantic review unavailable — failing closed",
+      suspected_cause: reason,
+      next_action_requested:
+        "Restore the review provider (set ANTHROPIC_API_KEY / PLUMBLINE_API_KEY, fix connectivity, or raise the timeout) and re-run the gate. " +
+        "For a deliberately offline/self-hosted repo, set require_semantic_review: false in policy to allow a shape-only pass (the comment will state loudly that review did not run).",
+      findings: [
+        {
+          description:
+            "Semantic review could not run and is required — restore the provider and re-run, or explicitly opt out with require_semantic_review: false.",
+          class: "blocking",
+          actor: "human",
+        },
+      ],
+      agent_actions: [],
+      human_actions: [
+        "Semantic review could not run and is required — restore the provider (API key / connectivity) and re-run, or explicitly opt out with require_semantic_review: false.",
+      ],
+      changed_files_implicated: [],
+      severity: "review",
+    },
+  };
+}
+
+/**
+ * The verdict when the semantic review is NOT required (require_semantic_review:
+ * false) and could not run. This is the explicit OPT-OUT path: the shape gate's
+ * verdict stands (so the gate can PASS), but every surface states LOUDLY that
+ * the semantic review did NOT run — the gate never silently pretends judgment
+ * happened. `shapePassed` decides whether this reads as an approve or a rework.
+ */
+export function reviewSkippedUnavailableVerdict(reason: string, shapePassed: boolean): ReviewResult {
+  const note =
+    "⚠️ SEMANTIC REVIEW DID NOT RUN. require_semantic_review is false and the " +
+    `review provider was unavailable (${reason}). This verdict rests on the ` +
+    "DETERMINISTIC SHAPE GATE ALONE — no mission-alignment / validation-coverage " +
+    "judgment was made. Set require_semantic_review: true (the default) to fail " +
+    "closed instead.";
+  return {
+    verdict: shapePassed ? "approve" : "rework",
+    confidence: 0,
+    validation_coverage_notes: "Not evaluated — semantic review did not run (opted out, provider unavailable).",
+    mission_alignment_notes: "Not evaluated — semantic review did not run (opted out, provider unavailable).",
+    risk_notes: note,
+  };
+}
+
+/**
+ * Resolve the verdict for a review that COULD NOT RUN — the single decision
+ * point shared by BOTH unavailability paths in the CLI:
+ *   • provider construction failed (no key / misconfig), and
+ *   • the runtime provider call threw (API error / network / timeout).
+ * Centralizing it here guarantees the two paths can never drift, and makes the
+ * fail-closed contract directly unit-testable without a live provider. When the
+ * review is required → fail CLOSED (a blocking `review`); otherwise → the loud
+ * opt-out verdict resting on the shape gate.
+ */
+export function resolveUnavailableVerdict(
+  policy: Pick<Policy, "require_semantic_review">,
+  reason: string,
+  shapePassed: boolean,
+): ReviewResult {
+  return policy.require_semantic_review
+    ? reviewUnavailableVerdict(reason)
+    : reviewSkippedUnavailableVerdict(reason, shapePassed);
+}
+
+/**
  * Run the semantic review. The LLM call is delegated to a `ReviewProvider`
  * (Anthropic by default, any OpenAI-compatible endpoint via config) so the
  * prompt and verdict schema stay provider-independent. Pass an explicit

@@ -165,7 +165,12 @@ These need repo-admin rights an agent doesn't have. Ask the user to do them once
 2. **Add the review API key secret** (semantic review needs it):
    GitHub → **Settings → Secrets and variables → Actions → New repository
    secret** → name **`ANTHROPIC_API_KEY`**, paste the key. (`GITHUB_TOKEN` is
-   provided automatically.)
+   provided automatically.) **This is required:** the gate **fails closed** —
+   with no key the verdict is `review` (a BLOCK), never a shape-only pass —
+   because `require_semantic_review` defaults to `true`. Only a deliberately
+   offline/self-hosted repo sets `require_semantic_review: false` in
+   `policy.json`, which lets the shape gate PASS but states loudly, on the
+   verdict and PR comment, that the semantic review did not run.
 3. **First run:** open any PR; the `plumbline` check runs and becomes selectable
    in step 1.
 

@@ -95,6 +95,29 @@ export const PolicySchema = z.object({
   /** Semantic review verdicts below this confidence are downgraded to review. */
   min_review_confidence: z.number().min(0).max(1).default(0.8),
   /**
+   * Fail CLOSED when the semantic review is REQUIRED but cannot run.
+   *
+   * plumbline is a proof-carrying TRUST product: a gate that silently degrades
+   * to shape-only when the review provider is missing/unreachable would let work
+   * through on the deterministic half alone — proof-carrying trust that fails
+   * OPEN is a bug in the thesis. So when this is `true` (the DEFAULT) and the
+   * semantic review CANNOT run — no API key, provider construction error, an API
+   * error, or a timeout — the gate BLOCKS (verdict `review`, a loud
+   * "semantic review unavailable — failing closed" capsule) instead of passing
+   * on shape alone.
+   *
+   * Set it to `false` ONLY for an offline / self-hosted / air-gapped repo that
+   * deliberately runs the deterministic shape gate without an LLM. That is an
+   * explicit opt-out: the shape gate can still PASS, but the verdict and the PR
+   * comment state LOUDLY that the semantic review did NOT run — the gate never
+   * silently pretends a review happened.
+   *
+   * This floor is orthogonal to `skip_review` (an intentional, per-diff cost
+   * skip that still counts as a completed review decision) — a required review
+   * that the provider is simply unavailable to run is NOT a skip.
+   */
+  require_semantic_review: z.boolean().default(true),
+  /**
    * How readily the semantic gate routes judgment calls to a HUMAN vs. lets an
    * AGENT handle them — the user's "how much goes to human review" dial:
    *   "low"      — send to human review only what genuinely needs a human; prefer agent_actions.

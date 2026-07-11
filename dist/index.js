@@ -4119,6 +4119,29 @@ var PolicySchema = external_exports.object({
   /** Semantic review verdicts below this confidence are downgraded to review. */
   min_review_confidence: external_exports.number().min(0).max(1).default(0.8),
   /**
+   * Fail CLOSED when the semantic review is REQUIRED but cannot run.
+   *
+   * plumbline is a proof-carrying TRUST product: a gate that silently degrades
+   * to shape-only when the review provider is missing/unreachable would let work
+   * through on the deterministic half alone — proof-carrying trust that fails
+   * OPEN is a bug in the thesis. So when this is `true` (the DEFAULT) and the
+   * semantic review CANNOT run — no API key, provider construction error, an API
+   * error, or a timeout — the gate BLOCKS (verdict `review`, a loud
+   * "semantic review unavailable — failing closed" capsule) instead of passing
+   * on shape alone.
+   *
+   * Set it to `false` ONLY for an offline / self-hosted / air-gapped repo that
+   * deliberately runs the deterministic shape gate without an LLM. That is an
+   * explicit opt-out: the shape gate can still PASS, but the verdict and the PR
+   * comment state LOUDLY that the semantic review did NOT run — the gate never
+   * silently pretends a review happened.
+   *
+   * This floor is orthogonal to `skip_review` (an intentional, per-diff cost
+   * skip that still counts as a completed review decision) — a required review
+   * that the provider is simply unavailable to run is NOT a skip.
+   */
+  require_semantic_review: external_exports.boolean().default(true),
+  /**
    * How readily the semantic gate routes judgment calls to a HUMAN vs. lets an
    * AGENT handle them — the user's "how much goes to human review" dial:
    *   "low"      — send to human review only what genuinely needs a human; prefer agent_actions.
@@ -4879,6 +4902,47 @@ function resolveReviewTemperature(policy) {
     if (Number.isFinite(n) && n >= 0 && n <= 2) return n;
   }
   return policy.review_temperature;
+}
+function reviewUnavailableVerdict(reason) {
+  const message = `Semantic review is required by policy (require_semantic_review: true) but could not run: ${reason}. The gate is FAILING CLOSED \u2014 a proof-carrying gate does not pass on the deterministic shape checks alone when the required semantic judgment never happened.`;
+  return {
+    verdict: "review",
+    confidence: 0,
+    validation_coverage_notes: "Not evaluated \u2014 semantic review unavailable (failing closed).",
+    mission_alignment_notes: "Not evaluated \u2014 semantic review unavailable (failing closed).",
+    risk_notes: message,
+    failure_capsule: {
+      failing_check: "semantic review unavailable \u2014 failing closed",
+      suspected_cause: reason,
+      next_action_requested: "Restore the review provider (set ANTHROPIC_API_KEY / PLUMBLINE_API_KEY, fix connectivity, or raise the timeout) and re-run the gate. For a deliberately offline/self-hosted repo, set require_semantic_review: false in policy to allow a shape-only pass (the comment will state loudly that review did not run).",
+      findings: [
+        {
+          description: "Semantic review could not run and is required \u2014 restore the provider and re-run, or explicitly opt out with require_semantic_review: false.",
+          class: "blocking",
+          actor: "human"
+        }
+      ],
+      agent_actions: [],
+      human_actions: [
+        "Semantic review could not run and is required \u2014 restore the provider (API key / connectivity) and re-run, or explicitly opt out with require_semantic_review: false."
+      ],
+      changed_files_implicated: [],
+      severity: "review"
+    }
+  };
+}
+function reviewSkippedUnavailableVerdict(reason, shapePassed) {
+  const note = `\u26A0\uFE0F SEMANTIC REVIEW DID NOT RUN. require_semantic_review is false and the review provider was unavailable (${reason}). This verdict rests on the DETERMINISTIC SHAPE GATE ALONE \u2014 no mission-alignment / validation-coverage judgment was made. Set require_semantic_review: true (the default) to fail closed instead.`;
+  return {
+    verdict: shapePassed ? "approve" : "rework",
+    confidence: 0,
+    validation_coverage_notes: "Not evaluated \u2014 semantic review did not run (opted out, provider unavailable).",
+    mission_alignment_notes: "Not evaluated \u2014 semantic review did not run (opted out, provider unavailable).",
+    risk_notes: note
+  };
+}
+function resolveUnavailableVerdict(policy, reason, shapePassed) {
+  return policy.require_semantic_review ? reviewUnavailableVerdict(reason) : reviewSkippedUnavailableVerdict(reason, shapePassed);
 }
 async function semanticReview(mission, receipt, diff, policy, provider, context) {
   const prompt = buildReviewPrompt(mission, receipt, diff, policy.human_review_level, context);
@@ -6822,6 +6886,11 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
         console.error(
           "Falling back to shape-only pre-flight \u2014 set ANTHROPIC_API_KEY (or PLUMBLINE_API_KEY) to run the semantic review locally."
         );
+        if (policy.require_semantic_review) {
+          console.error(
+            "NOTE: require_semantic_review is true \u2014 CI (`plumb run`) will FAIL CLOSED (verdict: review) without a provider, not pass on shape alone. This local pre-flight is a convenience only."
+          );
+        }
       }
     }
     if (!wantReview || !canReviewLocally) {
@@ -6913,6 +6982,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
       if (skip.reason) {
         gate.reasons.push(`Semantic review enforced: ${skip.reason}.`);
       }
+      const model = resolveReviewModel(policy);
       const provider = (() => {
         try {
           return selectProvider(policy);
@@ -6921,12 +6991,29 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
           return null;
         }
       })();
-      if (!provider) return 1;
-      const cacheDir = join7(cwd, policy.review_cache.dir);
-      const model = resolveReviewModel(policy);
       let review = null;
+      if (!provider) {
+        const reason = "the review provider could not be constructed (no API key or misconfigured provider)";
+        review = resolveUnavailableVerdict(policy, reason, shape.pass);
+        if (policy.require_semantic_review) {
+          console.error(
+            `semantic review: REQUIRED but unavailable \u2014 FAILING CLOSED. ${reason}. Set ANTHROPIC_API_KEY / PLUMBLINE_API_KEY, or set require_semantic_review:false in policy to allow a shape-only pass.`
+          );
+          gate.reasons.push("Semantic review required but unavailable \u2014 failing closed (verdict: review).");
+        } else {
+          console.error(
+            `semantic review: unavailable and require_semantic_review is false \u2014 shape-only pass with a LOUD note (review did NOT run). ${reason}.`
+          );
+          gate.reasons.push(
+            "\u26A0\uFE0F Semantic review did NOT run (require_semantic_review:false + provider unavailable) \u2014 verdict rests on the shape gate alone."
+          );
+        }
+        gate.review = review;
+        gate.final = review.verdict;
+      }
+      const cacheDir = join7(cwd, policy.review_cache.dir);
       let cacheKeyValid = false;
-      if (policy.review_cache.enabled && !skipGit && receipt.diff_sha256) {
+      if (provider && policy.review_cache.enabled && !skipGit && receipt.diff_sha256) {
         try {
           const actualSha = computeDiffSha256(gitDiffExcludingReceipt(baseRef, cwd));
           cacheKeyValid = actualSha === receipt.diff_sha256;
@@ -6939,7 +7026,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
           cacheKeyValid = false;
         }
       }
-      if (cacheKeyValid) {
+      if (provider && cacheKeyValid) {
         const hit = readReviewCache(
           cacheDir,
           receipt.diff_sha256,
@@ -6955,7 +7042,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
           gate.reasons.push(`Reused cached verdict for this diff (diff_sha256, ${provider.id}/${model}).`);
         }
       }
-      if (!review) {
+      if (provider && !review) {
         let reviewContext;
         if (cmd === "run") {
           const repo = process.env.GITHUB_REPOSITORY;
@@ -6975,8 +7062,28 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
             }
           }
         }
-        review = await semanticReview(mission, receipt, diff, policy, provider, reviewContext);
-        if (policy.review_cache.enabled && !skipGit && receipt.diff_sha256 && cacheKeyValid) {
+        try {
+          review = await semanticReview(mission, receipt, diff, policy, provider, reviewContext);
+        } catch (e) {
+          const reason = `the review provider call failed (${e.message})`;
+          review = resolveUnavailableVerdict(policy, reason, shape.pass);
+          if (policy.require_semantic_review) {
+            console.error(
+              `semantic review: REQUIRED but the provider call FAILED \u2014 FAILING CLOSED. ${reason}.`
+            );
+            gate.reasons.push(
+              "Semantic review required but the provider call failed \u2014 failing closed (verdict: review)."
+            );
+          } else {
+            console.error(
+              `semantic review: provider call failed and require_semantic_review is false \u2014 shape-only pass with a LOUD note (review did NOT run). ${reason}.`
+            );
+            gate.reasons.push(
+              "\u26A0\uFE0F Semantic review did NOT run (require_semantic_review:false + provider call failed) \u2014 verdict rests on the shape gate alone."
+            );
+          }
+        }
+        if (review.audit && policy.review_cache.enabled && !skipGit && receipt.diff_sha256 && cacheKeyValid) {
           writeReviewCache(
             cacheDir,
             receipt.diff_sha256,
@@ -6995,7 +7102,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
         );
       }
       console.error(
-        `semantic review: ${review.verdict} (confidence ${review.confidence}) [${review.audit?.provider}/${model}, temp ${review.audit?.temperature}, prompt ${review.audit?.prompt_version}${review.audit?.cached ? ", cached" : ""}]`
+        `semantic review: ${review.verdict} (confidence ${review.confidence}) [${review.audit?.provider ?? "unavailable"}/${model}, temp ${review.audit?.temperature}, prompt ${review.audit?.prompt_version}${review.audit?.cached ? ", cached" : ""}]`
       );
       console.error(`  coverage: ${review.validation_coverage_notes}`);
       console.error(`  mission:  ${review.mission_alignment_notes}`);
