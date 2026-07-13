@@ -7,7 +7,10 @@ import {
   shapeCheck,
   computeDiffSha256,
   gitDiffExcludingReceipt,
+  gitDiffExcludingReceiptFrom,
   gitChangedFiles,
+  gitChangedFilesFrom,
+  gitMergeBase,
   isReceiptPath,
 } from "./shape.js";
 import {
@@ -475,10 +478,16 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
     const agentId = arg("agent", process.env.PLUMBLINE_AGENT_ID || process.env.PROOFGATE_AGENT_ID || "agent")!;
     let diffSha: string | undefined;
     let changed: string[] | undefined;
+    let baseSha: string | undefined;
     if (!skipGit && baseRef) {
       try {
-        diffSha = computeDiffSha256(gitDiffExcludingReceipt(baseRef, cwd));
-        changed = gitChangedFiles(baseRef, cwd).filter((f) => !isReceiptPath(f));
+        baseSha = gitMergeBase(baseRef, cwd) ?? undefined;
+        diffSha = computeDiffSha256(
+          baseSha ? gitDiffExcludingReceiptFrom(baseSha, cwd) : gitDiffExcludingReceipt(baseRef, cwd),
+        );
+        changed = (baseSha ? gitChangedFilesFrom(baseSha, cwd) : gitChangedFiles(baseRef, cwd)).filter(
+          (f) => !isReceiptPath(f),
+        );
       } catch {
         /* leave placeholders; author runs `plumb receipt --write` later */
       }
@@ -492,7 +501,7 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
       return 0;
     }
     mkdirSync(dirname(dest), { recursive: true });
-    const receipt = newReceipt({ taskId, agentId, diffSha256: diffSha, changedFiles: changed });
+    const receipt = newReceipt({ taskId, agentId, diffSha256: diffSha, changedFiles: changed, baseSha });
     writeFileSync(dest, `${JSON.stringify(receipt, null, 2)}\n`);
     console.error(
       `created ${dir}/receipts/${taskId}.json (diff-stamped: ${diffSha ? "yes" : "no — run 'plumb receipt --write'"})\n` +
@@ -524,11 +533,22 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
     }
     let mech: MechanicalFields;
     try {
-      const changed = gitChangedFiles(baseRef, cwd).filter((f) => !isReceiptPath(f));
+      // Pin the diff base: resolve the merge-base ONCE and compute the hash +
+      // file list against that exact commit (2-dot), so the receipt records the
+      // base and the gate verifies deterministically against it. Falls back to
+      // the live 3-dot when the merge-base can't be resolved (shallow clone / no
+      // common ancestor) so `receipt --write` never hard-fails on the pin.
+      const baseSha = gitMergeBase(baseRef, cwd) ?? undefined;
+      const changed = (baseSha ? gitChangedFilesFrom(baseSha, cwd) : gitChangedFiles(baseRef, cwd)).filter(
+        (f) => !isReceiptPath(f),
+      );
       mech = {
-        diffSha256: computeDiffSha256(gitDiffExcludingReceipt(baseRef, cwd)),
+        diffSha256: computeDiffSha256(
+          baseSha ? gitDiffExcludingReceiptFrom(baseSha, cwd) : gitDiffExcludingReceipt(baseRef, cwd),
+        ),
         changedFiles: changed,
         hits: protectedHits(changed, policy.protected_paths),
+        baseSha,
       };
     } catch (e) {
       console.error(`plumb receipt: git failed: ${String(e)}`);
@@ -586,6 +606,7 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
         agentId,
         diffSha256: mech.diffSha256,
         changedFiles: mech.changedFiles,
+        baseSha: mech.baseSha,
       });
       if (mech.hits.length > 0) {
         receipt.self_modifying = true;
@@ -648,21 +669,30 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
     }
     let diffSha: string;
     let changed: string[];
+    let baseSha: string | undefined;
     try {
-      diffSha = computeDiffSha256(gitDiffExcludingReceipt(baseRef, cwd));
-      changed = gitChangedFiles(baseRef, cwd).filter((f) => !isReceiptPath(f));
+      // Pin the base (merge-base) so the diff hash is deterministic at gate time.
+      baseSha = gitMergeBase(baseRef, cwd) ?? undefined;
+      diffSha = computeDiffSha256(
+        baseSha ? gitDiffExcludingReceiptFrom(baseSha, cwd) : gitDiffExcludingReceipt(baseRef, cwd),
+      );
+      changed = (baseSha ? gitChangedFilesFrom(baseSha, cwd) : gitChangedFiles(baseRef, cwd)).filter(
+        (f) => !isReceiptPath(f),
+      );
     } catch (e) {
       console.error(`plumb stamp: git failed: ${String(e)}`);
       return 1;
     }
     const prevSha = receiptObj.diff_sha256;
+    if (baseSha) receiptObj.base_sha = baseSha;
     receiptObj.diff_sha256 = diffSha;
     receiptObj.changed_files = changed;
     writeFileSync(receiptPath, `${JSON.stringify(receiptObj, null, 2)}\n`);
-    console.error(`stamped ${receiptPath} (base ${baseRef}):`);
+    console.error(`stamped ${receiptPath} (base ${baseRef}${baseSha ? `, pinned @ ${baseSha.slice(0, 12)}…` : ""}):`);
     console.error(
       `  diff_sha256:   ${diffSha}${prevSha && prevSha !== diffSha ? `  (was ${String(prevSha)})` : ""}`,
     );
+    if (baseSha) console.error(`  base_sha:      ${baseSha}`);
     console.error(`  changed_files (${changed.length}): ${changed.join(", ") || "(none)"}`);
     return 0;
   }
@@ -882,7 +912,13 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
       let cacheKeyValid = false;
       if (provider && policy.review_cache.enabled && !skipGit && receipt.diff_sha256) {
         try {
-          const actualSha = computeDiffSha256(gitDiffExcludingReceipt(baseRef, cwd));
+          // Recompute against the receipt's pinned base_sha when present (the
+          // deterministic path the shape gate used), else the live 3-dot.
+          const actualSha = computeDiffSha256(
+            receipt.base_sha
+              ? gitDiffExcludingReceiptFrom(receipt.base_sha, cwd)
+              : gitDiffExcludingReceipt(baseRef, cwd),
+          );
           cacheKeyValid = actualSha === receipt.diff_sha256;
           if (!cacheKeyValid) {
             console.error(

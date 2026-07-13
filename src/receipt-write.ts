@@ -33,6 +33,13 @@ export interface MechanicalFields {
   diffSha256: string;
   changedFiles: string[];
   hits: ProtectedHit[];
+  /**
+   * The pinned merge-base commit the diff was computed against (`git merge-base
+   * <base> HEAD`). Recorded as the receipt's `base_sha` so the gate verifies
+   * deterministically against this exact commit rather than re-deriving the
+   * base from a moving origin/main. Undefined only if git couldn't resolve it.
+   */
+  baseSha?: string;
 }
 
 export interface RefreshResult {
@@ -62,6 +69,16 @@ export function refreshMechanical(
       `diff_sha256: ${String(out.diff_sha256 ?? "(unset)").slice(0, 12)}… → ${mech.diffSha256.slice(0, 12)}…`,
     );
     out.diff_sha256 = mech.diffSha256;
+    changed = true;
+  }
+  // Pin the base: record the exact merge-base so the gate verifies against it
+  // deterministically. Only written when git resolved one — never blanks an
+  // existing base_sha on a git failure.
+  if (mech.baseSha && out.base_sha !== mech.baseSha) {
+    notes.push(
+      `base_sha: ${String(out.base_sha ?? "(unset)").slice(0, 12)}… → ${mech.baseSha.slice(0, 12)}… (pinned diff base)`,
+    );
+    out.base_sha = mech.baseSha;
     changed = true;
   }
   const prevFiles = JSON.stringify(out.changed_files ?? []);
@@ -111,6 +128,14 @@ export function checkMechanical(
   if (receipt.diff_sha256 !== mech.diffSha256) {
     problems.push(
       `diff_sha256 is stale: receipt=${String(receipt.diff_sha256 ?? "(unset)")} actual=${mech.diffSha256}`,
+    );
+  }
+  // A missing base_sha isn't "stale" (old-format receipts verify via the
+  // fallback), but a base_sha that disagrees with the current merge-base is —
+  // the diff was pinned to a different fork point than HEAD now has.
+  if (mech.baseSha && receipt.base_sha && receipt.base_sha !== mech.baseSha) {
+    problems.push(
+      `base_sha is stale: receipt=${String(receipt.base_sha)} actual merge-base=${mech.baseSha} — run 'plumb receipt --write' to re-pin`,
     );
   }
   const declared = JSON.stringify(receipt.changed_files ?? []);

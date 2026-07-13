@@ -165,7 +165,8 @@ export const RECEIPT_FIELD_REFERENCE: FieldRef[] = [
   { field: "execution_evidence[].status", type: "enum", required: true, allowed: ["passed", "failed", "skipped"], note: "required steps must be 'passed' (unless CI-covered); use skip_reason when 'skipped'" },
   { field: "execution_evidence[].step", type: "string", required: false, note: "optional id of the validation_plan step this evidence is for (matches validation_plan[].id)" },
   { field: "changed_files", type: "string[] (≥1)", required: true, note: "set by `plumb receipt --write` — don't hand-edit" },
-  { field: "diff_sha256", type: "string (64-char lowercase hex)", required: true, note: "set by `plumb receipt --write` — never hand-edit" },
+  { field: "base_sha", type: "string (git commit sha)", required: false, note: "pinned merge-base the diff was computed against — makes gate verification deterministic; set by `plumb receipt --write` — never hand-edit" },
+  { field: "diff_sha256", type: "string (64-char lowercase hex)", required: true, note: "set by `plumb receipt --write` — never hand-edit (computed from base_sha)" },
   { field: "result_summary", type: "string (≥40 chars)", required: true, note: "what changed + how it was verified" },
 ];
 
@@ -218,6 +219,8 @@ export function newReceipt(opts: {
   agentId: string;
   diffSha256?: string;
   changedFiles?: string[];
+  /** Pinned merge-base commit — written as base_sha for deterministic verification. */
+  baseSha?: string;
 }): Record<string, unknown> {
   return {
     _help: schemaHelpBlock(),
@@ -243,6 +246,10 @@ export function newReceipt(opts: {
       },
     ],
     changed_files: opts.changedFiles ?? [],
+    // base_sha is emitted before diff_sha256 (the diff is computed FROM it).
+    // Only present when git resolved a merge-base — an unpinned scaffold omits
+    // it and verifies via the back-compat fallback.
+    ...(opts.baseSha ? { base_sha: opts.baseSha } : {}),
     diff_sha256: opts.diffSha256 ?? "0".repeat(64),
     result_summary:
       "TODO: summarize the change and how it was verified (≥40 chars).",

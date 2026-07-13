@@ -4092,8 +4092,11 @@ var ReceiptSchema = external_exports.object({
   validation_plan: external_exports.array(ValidationStepSchema).min(1),
   execution_evidence: external_exports.array(ExecutionEvidenceSchema).min(1),
   changed_files: external_exports.array(external_exports.string()).min(1),
+  base_sha: external_exports.string().regex(/^[0-9a-f]{7,40}$/, "base_sha must be a 7\u201340 char lowercase hex git commit sha").optional().describe(
+    "The exact merge-base commit the diff was computed against at stamp time (`git merge-base <default-branch> HEAD`). PINS the diff base so verification is deterministic: the gate diffs `git diff <base_sha>..HEAD` against THIS commit instead of re-deriving the merge-base from a live origin/main that concurrent merges may have moved (the recurring cause of spurious diff_sha256 REWORKs). The gate also asserts base_sha is a real ancestor of the default branch, so a forged base can't hide changes. Set by `plumb receipt --write`/`stamp`. OPTIONAL for back-compat: a receipt without it verifies via the legacy origin/main 3-dot path."
+  ),
   diff_sha256: external_exports.string().regex(/^[0-9a-f]{64}$/, "diff_sha256 must be a 64-char lowercase hex SHA-256").describe(
-    "sha256 of `git diff <base>...HEAD -- . ':(exclude).plumbline/receipt.json' ':(exclude).plumbline/receipts/*.json' ':(exclude).proofgate/receipt.json' ':(exclude).proofgate/receipts/*.json'` \u2014 binds the receipt to the diff content. The receipt file(s) are excluded so it's computable BEFORE committing the receipt (a commit can never contain its own SHA), and so the per-PR receipt at .plumbline/receipts/<task_id>.json (or legacy .proofgate/) doesn't affect it."
+    "sha256 of `git diff <base_sha>..HEAD -- . ':(exclude).plumbline/receipt.json' ':(exclude).plumbline/receipts/*.json' ':(exclude).proofgate/receipt.json' ':(exclude).proofgate/receipts/*.json'` \u2014 binds the receipt to the diff content. Computed from the pinned `base_sha` (2-dot, deterministic; equivalent to the legacy `<base>...HEAD` 3-dot). The receipt file(s) are excluded so it's computable BEFORE committing the receipt (a commit can never contain its own SHA), and so the per-PR receipt at .plumbline/receipts/<task_id>.json (or legacy .proofgate/) doesn't affect it."
   ),
   result_summary: external_exports.string().min(40)
 });
@@ -4386,6 +4389,44 @@ function isReceiptPath(file) {
 function computeDiffSha256(diff) {
   return createHash("sha256").update(diff, "utf8").digest("hex");
 }
+function gitMergeBase(baseRef, cwd) {
+  try {
+    return execFileSync("git", ["merge-base", baseRef, "HEAD"], {
+      cwd,
+      encoding: "utf8"
+    }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+function gitDiffExcludingReceiptFrom(baseSha, cwd) {
+  return execFileSync(
+    "git",
+    ["diff", `${baseSha}..HEAD`, ...RECEIPT_DIFF_SPEC],
+    { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }
+  );
+}
+function gitChangedFilesFrom(baseSha, cwd) {
+  const out = execFileSync(
+    "git",
+    ["diff", "--name-only", `${baseSha}..HEAD`],
+    { cwd, encoding: "utf8" }
+  );
+  return out.split("\n").map((l) => l.trim()).filter(Boolean);
+}
+function isAncestor(ancestor, ref, cwd) {
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", ancestor, ref], {
+      cwd,
+      encoding: "utf8"
+    });
+    return true;
+  } catch (e) {
+    const code = e.status;
+    if (code === 1) return false;
+    return null;
+  }
+}
 function commandMatchesCheck(command, check) {
   const escaped = check.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(^|\\s)${escaped}(\\s|$)`).test(command);
@@ -4521,11 +4562,59 @@ function shapeCheck(rawReceipt, policy, opts = {}) {
   }
   if (!opts.skipGit) {
     const cwd = opts.cwd ?? process.cwd();
+    const pinnedBase = receipt.base_sha;
     try {
-      if (!opts.baseRef) {
+      if (!opts.baseRef && !pinnedBase) {
         warnings.push("no base ref provided \u2014 diff integrity (diff_sha256) not verified");
       }
-      if (opts.baseRef) {
+      if (pinnedBase) {
+        if (opts.baseRef) {
+          const anc = isAncestor(pinnedBase, opts.baseRef, cwd);
+          if (anc === false) {
+            findings.push({
+              check: "diff_integrity",
+              message: `base_sha ${pinnedBase} is NOT an ancestor of ${opts.baseRef} \u2014 the pinned diff base is forged or from an unrelated history. The receipt's diff can't be trusted. Re-stamp on a branch forked from ${opts.baseRef}: plumb receipt --write`
+            });
+          } else if (anc === null) {
+            warnings.push(
+              `could not verify base_sha ${pinnedBase} is an ancestor of ${opts.baseRef} (unknown commit or git error) \u2014 treating the pinned base as unverified`
+            );
+          }
+        } else {
+          warnings.push(
+            `no base ref provided \u2014 cannot verify base_sha ${pinnedBase} is an ancestor of the default branch`
+          );
+        }
+        const actualHash = computeDiffSha256(gitDiffExcludingReceiptFrom(pinnedBase, cwd));
+        if (actualHash !== receipt.diff_sha256) {
+          findings.push({
+            check: "diff_integrity",
+            message: `diff_sha256 mismatch: receipt=${receipt.diff_sha256} actual=${actualHash} (computed against pinned base_sha ${pinnedBase}: git diff ${pinnedBase}..HEAD -- . ':(exclude).plumbline/receipts/*.json' \u2026 | sha256 \u2014 or just: plumb receipt --write)`
+          });
+        }
+        const actual = gitChangedFilesFrom(pinnedBase, cwd).filter((f) => !isReceiptPath(f));
+        const declared = new Set(receipt.changed_files);
+        const undeclared = actual.filter((f) => !declared.has(f));
+        if (undeclared.length > 0) {
+          findings.push({
+            check: "undeclared_files",
+            message: `files changed but not declared in receipt: ${undeclared.join(", ")}`
+          });
+        }
+        const phantom = receipt.changed_files.filter((f) => !actual.includes(f));
+        if (phantom.length > 0) {
+          warnings.push(`receipt declares files with no diff vs base_sha ${pinnedBase}: ${phantom.join(", ")}`);
+        }
+        for (const f of actual) {
+          const hit = matchesAny(f, policy.protected_paths);
+          if (hit && !receipt.self_modifying) {
+            findings.push({
+              check: "protected_paths",
+              message: `actual diff touches protected path ${f} (matches ${hit}) but self_modifying is false`
+            });
+          }
+        }
+      } else if (opts.baseRef) {
         const actualHash = computeDiffSha256(gitDiffExcludingReceipt(opts.baseRef, cwd));
         if (actualHash !== receipt.diff_sha256) {
           findings.push({
@@ -5696,7 +5785,8 @@ var RECEIPT_FIELD_REFERENCE = [
   { field: "execution_evidence[].status", type: "enum", required: true, allowed: ["passed", "failed", "skipped"], note: "required steps must be 'passed' (unless CI-covered); use skip_reason when 'skipped'" },
   { field: "execution_evidence[].step", type: "string", required: false, note: "optional id of the validation_plan step this evidence is for (matches validation_plan[].id)" },
   { field: "changed_files", type: "string[] (\u22651)", required: true, note: "set by `plumb receipt --write` \u2014 don't hand-edit" },
-  { field: "diff_sha256", type: "string (64-char lowercase hex)", required: true, note: "set by `plumb receipt --write` \u2014 never hand-edit" },
+  { field: "base_sha", type: "string (git commit sha)", required: false, note: "pinned merge-base the diff was computed against \u2014 makes gate verification deterministic; set by `plumb receipt --write` \u2014 never hand-edit" },
+  { field: "diff_sha256", type: "string (64-char lowercase hex)", required: true, note: "set by `plumb receipt --write` \u2014 never hand-edit (computed from base_sha)" },
   { field: "result_summary", type: "string (\u226540 chars)", required: true, note: "what changed + how it was verified" }
 ];
 function schemaHelpBlock() {
@@ -5754,6 +5844,10 @@ function newReceipt(opts) {
       }
     ],
     changed_files: opts.changedFiles ?? [],
+    // base_sha is emitted before diff_sha256 (the diff is computed FROM it).
+    // Only present when git resolved a merge-base — an unpinned scaffold omits
+    // it and verifies via the back-compat fallback.
+    ...opts.baseSha ? { base_sha: opts.baseSha } : {},
     diff_sha256: opts.diffSha256 ?? "0".repeat(64),
     result_summary: "TODO: summarize the change and how it was verified (\u226540 chars)."
   };
@@ -5945,6 +6039,13 @@ function refreshMechanical(receipt, mech) {
     out.diff_sha256 = mech.diffSha256;
     changed = true;
   }
+  if (mech.baseSha && out.base_sha !== mech.baseSha) {
+    notes.push(
+      `base_sha: ${String(out.base_sha ?? "(unset)").slice(0, 12)}\u2026 \u2192 ${mech.baseSha.slice(0, 12)}\u2026 (pinned diff base)`
+    );
+    out.base_sha = mech.baseSha;
+    changed = true;
+  }
   const prevFiles = JSON.stringify(out.changed_files ?? []);
   if (prevFiles !== JSON.stringify(mech.changedFiles)) {
     notes.push(`changed_files: ${mech.changedFiles.length} file(s) from the actual diff`);
@@ -5976,6 +6077,11 @@ function checkMechanical(receipt, mech) {
   if (receipt.diff_sha256 !== mech.diffSha256) {
     problems.push(
       `diff_sha256 is stale: receipt=${String(receipt.diff_sha256 ?? "(unset)")} actual=${mech.diffSha256}`
+    );
+  }
+  if (mech.baseSha && receipt.base_sha && receipt.base_sha !== mech.baseSha) {
+    problems.push(
+      `base_sha is stale: receipt=${String(receipt.base_sha)} actual merge-base=${mech.baseSha} \u2014 run 'plumb receipt --write' to re-pin`
     );
   }
   const declared = JSON.stringify(receipt.changed_files ?? []);
@@ -6700,10 +6806,16 @@ Commit the archive: git add openspec/ && git commit -m "chore(openspec): archive
     const agentId = arg("agent", process.env.PLUMBLINE_AGENT_ID || process.env.PROOFGATE_AGENT_ID || "agent");
     let diffSha;
     let changed;
+    let baseSha;
     if (!skipGit && baseRef) {
       try {
-        diffSha = computeDiffSha256(gitDiffExcludingReceipt(baseRef, cwd));
-        changed = gitChangedFiles(baseRef, cwd).filter((f) => !isReceiptPath(f));
+        baseSha = gitMergeBase(baseRef, cwd) ?? void 0;
+        diffSha = computeDiffSha256(
+          baseSha ? gitDiffExcludingReceiptFrom(baseSha, cwd) : gitDiffExcludingReceipt(baseRef, cwd)
+        );
+        changed = (baseSha ? gitChangedFilesFrom(baseSha, cwd) : gitChangedFiles(baseRef, cwd)).filter(
+          (f) => !isReceiptPath(f)
+        );
       } catch {
       }
     }
@@ -6715,7 +6827,7 @@ Commit the archive: git add openspec/ && git commit -m "chore(openspec): archive
       return 0;
     }
     mkdirSync5(dirname4(dest), { recursive: true });
-    const receipt2 = newReceipt({ taskId, agentId, diffSha256: diffSha, changedFiles: changed });
+    const receipt2 = newReceipt({ taskId, agentId, diffSha256: diffSha, changedFiles: changed, baseSha });
     writeFileSync5(dest, `${JSON.stringify(receipt2, null, 2)}
 `);
     console.error(
@@ -6738,11 +6850,17 @@ Fill intent / validation_plan / execution_evidence / result_summary, then: plumb
     }
     let mech;
     try {
-      const changed = gitChangedFiles(baseRef, cwd).filter((f) => !isReceiptPath(f));
+      const baseSha = gitMergeBase(baseRef, cwd) ?? void 0;
+      const changed = (baseSha ? gitChangedFilesFrom(baseSha, cwd) : gitChangedFiles(baseRef, cwd)).filter(
+        (f) => !isReceiptPath(f)
+      );
       mech = {
-        diffSha256: computeDiffSha256(gitDiffExcludingReceipt(baseRef, cwd)),
+        diffSha256: computeDiffSha256(
+          baseSha ? gitDiffExcludingReceiptFrom(baseSha, cwd) : gitDiffExcludingReceipt(baseRef, cwd)
+        ),
         changedFiles: changed,
-        hits: protectedHits(changed, policy.protected_paths)
+        hits: protectedHits(changed, policy.protected_paths),
+        baseSha
       };
     } catch (e) {
       console.error(`plumb receipt: git failed: ${String(e)}`);
@@ -6792,7 +6910,8 @@ Fill intent / validation_plan / execution_evidence / result_summary, then: plumb
         taskId,
         agentId,
         diffSha256: mech.diffSha256,
-        changedFiles: mech.changedFiles
+        changedFiles: mech.changedFiles,
+        baseSha: mech.baseSha
       });
       if (mech.hits.length > 0) {
         receipt2.self_modifying = true;
@@ -6849,22 +6968,30 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
     }
     let diffSha;
     let changed;
+    let baseSha;
     try {
-      diffSha = computeDiffSha256(gitDiffExcludingReceipt(baseRef, cwd));
-      changed = gitChangedFiles(baseRef, cwd).filter((f) => !isReceiptPath(f));
+      baseSha = gitMergeBase(baseRef, cwd) ?? void 0;
+      diffSha = computeDiffSha256(
+        baseSha ? gitDiffExcludingReceiptFrom(baseSha, cwd) : gitDiffExcludingReceipt(baseRef, cwd)
+      );
+      changed = (baseSha ? gitChangedFilesFrom(baseSha, cwd) : gitChangedFiles(baseRef, cwd)).filter(
+        (f) => !isReceiptPath(f)
+      );
     } catch (e) {
       console.error(`plumb stamp: git failed: ${String(e)}`);
       return 1;
     }
     const prevSha = receiptObj.diff_sha256;
+    if (baseSha) receiptObj.base_sha = baseSha;
     receiptObj.diff_sha256 = diffSha;
     receiptObj.changed_files = changed;
     writeFileSync5(receiptPath, `${JSON.stringify(receiptObj, null, 2)}
 `);
-    console.error(`stamped ${receiptPath} (base ${baseRef}):`);
+    console.error(`stamped ${receiptPath} (base ${baseRef}${baseSha ? `, pinned @ ${baseSha.slice(0, 12)}\u2026` : ""}):`);
     console.error(
       `  diff_sha256:   ${diffSha}${prevSha && prevSha !== diffSha ? `  (was ${String(prevSha)})` : ""}`
     );
+    if (baseSha) console.error(`  base_sha:      ${baseSha}`);
     console.error(`  changed_files (${changed.length}): ${changed.join(", ") || "(none)"}`);
     return 0;
   }
@@ -7015,7 +7142,9 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
       let cacheKeyValid = false;
       if (provider && policy.review_cache.enabled && !skipGit && receipt.diff_sha256) {
         try {
-          const actualSha = computeDiffSha256(gitDiffExcludingReceipt(baseRef, cwd));
+          const actualSha = computeDiffSha256(
+            receipt.base_sha ? gitDiffExcludingReceiptFrom(receipt.base_sha, cwd) : gitDiffExcludingReceipt(baseRef, cwd)
+          );
           cacheKeyValid = actualSha === receipt.diff_sha256;
           if (!cacheKeyValid) {
             console.error(

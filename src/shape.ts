@@ -76,6 +76,73 @@ export function computeDiffSha256(diff: string): string {
 }
 
 /**
+ * Resolve the merge-base commit of `baseRef` and HEAD — the exact commit the
+ * 3-dot `git diff <base>...HEAD` diffs against. Recording THIS at stamp time
+ * (as the receipt's `base_sha`) is what makes verification deterministic: a
+ * later gate re-derives nothing from a moved `origin/main`, it diffs against
+ * the pinned commit. Returns the 40-char sha, or null if git/the ref is
+ * unavailable.
+ */
+export function gitMergeBase(baseRef: string, cwd: string): string | null {
+  try {
+    return execFileSync("git", ["merge-base", baseRef, "HEAD"], {
+      cwd,
+      encoding: "utf8",
+    }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The pinned-base binding diff: `git diff <baseSha>..HEAD` (2-DOT, from the
+ * exact merge-base commit), excluding the receipt file(s). This is byte-for-byte
+ * identical to the 3-dot `git diff <base>...HEAD` — because 3-dot is DEFINED as
+ * "diff from the merge-base to HEAD" — but it names the base commit explicitly
+ * instead of re-deriving it, so the hash can't drift when the base branch
+ * advances between stamp time and gate time.
+ */
+export function gitDiffExcludingReceiptFrom(baseSha: string, cwd: string): string {
+  return execFileSync(
+    "git",
+    ["diff", `${baseSha}..HEAD`, ...RECEIPT_DIFF_SPEC],
+    { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  );
+}
+
+/** Changed-file list from the pinned base (2-dot), for the pinned path. */
+export function gitChangedFilesFrom(baseSha: string, cwd: string): string[] {
+  const out = execFileSync(
+    "git",
+    ["diff", "--name-only", `${baseSha}..HEAD`],
+    { cwd, encoding: "utf8" },
+  );
+  return out.split("\n").map((l) => l.trim()).filter(Boolean);
+}
+
+/**
+ * True when `ancestor` is a real ancestor of `ref` (i.e. reachable from it).
+ * The security backstop for pinning: the gate asserts the receipt's pinned
+ * `base_sha` is an ancestor of the live default branch, so a forged/bogus base
+ * (one that would hide changes by diffing against an unrelated commit) is
+ * rejected. `git merge-base --is-ancestor` exits 0 for ancestor, 1 for not; any
+ * other failure (bad object, git unavailable) → null "couldn't determine".
+ */
+export function isAncestor(ancestor: string, ref: string, cwd: string): boolean | null {
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", ancestor, ref], {
+      cwd,
+      encoding: "utf8",
+    });
+    return true;
+  } catch (e) {
+    const code = (e as { status?: number }).status;
+    if (code === 1) return false;
+    return null; // bad object / git error — caller decides how to treat it
+  }
+}
+
+/**
  * A validation-plan command satisfies a required check only at token
  * boundaries — `bundle exec rspec spec/foo_spec.rb` matches the check
  * "bundle exec rspec"; `echo "bundle exec rspec"` does not. Plain
@@ -329,13 +396,92 @@ export function shapeCheck(
   // it survives both the receipt's own commit and GitHub's synthetic
   // merge-ref checkout — neither of which a head SHA could.
   // ("diff_integrity" is protected — never downgradable.)
+  //
+  // PINNED BASE (the deterministic path): when the receipt carries `base_sha`
+  // — the exact merge-base commit stamped at authoring time — verification
+  // diffs against THAT commit (2-dot), NOT a base re-derived from a live
+  // origin/main. In a high-merge-velocity repo the live merge-base drifts
+  // between stamp time and gate time (a concurrent merge moves origin/main →
+  // a fresher merge-base → a different 3-dot hash → a spurious REWORK on a
+  // content-clean PR). Pinning the base removes that entire failure class:
+  // the hash depends only on the two commits (base_sha, HEAD), both fixed.
+  //
+  // SECURITY BACKSTOP: pinning can't be a hole. The gate asserts `base_sha` is
+  // a real ancestor of the live default branch — so a forged base (diffing
+  // against an unrelated commit to hide changes) is rejected; the receipt still
+  // attests the branch's true diff off a legitimate fork point.
+  //
+  // BACK-COMPAT: a receipt with NO `base_sha` (old-format / pre-rollout) falls
+  // back to the original `baseRef`-derived 3-dot behavior, so nothing breaks.
   if (!opts.skipGit) {
     const cwd = opts.cwd ?? process.cwd();
+    const pinnedBase = receipt.base_sha;
     try {
-      if (!opts.baseRef) {
+      if (!opts.baseRef && !pinnedBase) {
         warnings.push("no base ref provided — diff integrity (diff_sha256) not verified");
       }
-      if (opts.baseRef) {
+      if (pinnedBase) {
+        // --- Deterministic verification against the pinned merge-base. ---
+        // Ancestry backstop first: the pinned base MUST be reachable from the
+        // default branch (opts.baseRef, e.g. origin/main). A base that is not
+        // an ancestor is either forged or from an unrelated history → REJECT.
+        // If baseRef is unavailable we can't run the check — surface a warning
+        // rather than silently trusting the pin.
+        if (opts.baseRef) {
+          const anc = isAncestor(pinnedBase, opts.baseRef, cwd);
+          if (anc === false) {
+            findings.push({
+              check: "diff_integrity",
+              message:
+                `base_sha ${pinnedBase} is NOT an ancestor of ${opts.baseRef} — the pinned diff base ` +
+                `is forged or from an unrelated history. The receipt's diff can't be trusted. ` +
+                `Re-stamp on a branch forked from ${opts.baseRef}: plumb receipt --write`,
+            });
+          } else if (anc === null) {
+            warnings.push(
+              `could not verify base_sha ${pinnedBase} is an ancestor of ${opts.baseRef} ` +
+                `(unknown commit or git error) — treating the pinned base as unverified`,
+            );
+          }
+        } else {
+          warnings.push(
+            `no base ref provided — cannot verify base_sha ${pinnedBase} is an ancestor of the default branch`,
+          );
+        }
+
+        const actualHash = computeDiffSha256(gitDiffExcludingReceiptFrom(pinnedBase, cwd));
+        if (actualHash !== receipt.diff_sha256) {
+          findings.push({
+            check: "diff_integrity",
+            message:
+              `diff_sha256 mismatch: receipt=${receipt.diff_sha256} actual=${actualHash} ` +
+              `(computed against pinned base_sha ${pinnedBase}: git diff ${pinnedBase}..HEAD -- . ':(exclude).plumbline/receipts/*.json' … | sha256 — or just: plumb receipt --write)`,
+          });
+        }
+        const actual = gitChangedFilesFrom(pinnedBase, cwd).filter((f) => !isReceiptPath(f));
+        const declared = new Set(receipt.changed_files);
+        const undeclared = actual.filter((f) => !declared.has(f));
+        if (undeclared.length > 0) {
+          findings.push({
+            check: "undeclared_files",
+            message: `files changed but not declared in receipt: ${undeclared.join(", ")}`,
+          });
+        }
+        const phantom = receipt.changed_files.filter((f) => !actual.includes(f));
+        if (phantom.length > 0) {
+          warnings.push(`receipt declares files with no diff vs base_sha ${pinnedBase}: ${phantom.join(", ")}`);
+        }
+        for (const f of actual) {
+          const hit = matchesAny(f, policy.protected_paths);
+          if (hit && !receipt.self_modifying) {
+            findings.push({
+              check: "protected_paths",
+              message: `actual diff touches protected path ${f} (matches ${hit}) but self_modifying is false`,
+            });
+          }
+        }
+      } else if (opts.baseRef) {
+        // --- Back-compat: old-format receipt (no base_sha) → live 3-dot. ---
         const actualHash = computeDiffSha256(gitDiffExcludingReceipt(opts.baseRef, cwd));
         if (actualHash !== receipt.diff_sha256) {
           findings.push({

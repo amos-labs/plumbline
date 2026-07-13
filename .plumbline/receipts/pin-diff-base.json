@@ -1,0 +1,82 @@
+{
+  "_help": {
+    "_note": "Allowed values + requirements per field (this _help block is ignored by the gate — keep or delete). Run `plumb schema` for the full reference.",
+    "receipt_version": "one of: 1.0 — required — schema version",
+    "task_id": "required — ticket/issue/branch id (also the receipt filename)",
+    "agent_id": "required — which agent or human did the work",
+    "intent": "required — what + why, plain language — the semantic review reads this",
+    "self_modifying": "one of: true | false — required — MUST be true if changed_files touch policy.protected_paths; touching one with false is a hard fail; true routes to human review",
+    "policy_refs": "required — policy/mission docs you read",
+    "validation_plan": "required — each: { command, reason, required, id?, ci_covered? }",
+    "validation_plan[].required": "one of: true | false — required — is this check mandatory",
+    "validation_plan[].id": "optional — optional step id; evidence is matched to it via execution_evidence[].step (robust to a command wording diff)",
+    "validation_plan[].ci_covered": "one of: true | false — optional — step is corroborated by the ci-evidence gate (real CI run), not manual evidence — may be 'skipped'; also auto-recognized when command matches a policy ci_evidence_checks entry",
+    "execution_evidence": "required — each: { command, status, output_ref?, skip_reason?, step? }",
+    "execution_evidence[].status": "one of: passed | failed | skipped — required — required steps must be 'passed' (unless CI-covered); use skip_reason when 'skipped'",
+    "execution_evidence[].step": "optional — optional id of the validation_plan step this evidence is for (matches validation_plan[].id)",
+    "changed_files": "required — set by `plumb receipt --write` — don't hand-edit",
+    "base_sha": "optional — pinned merge-base the diff was computed against — makes gate verification deterministic; set by `plumb receipt --write` — never hand-edit",
+    "diff_sha256": "required — set by `plumb receipt --write` — never hand-edit (computed from base_sha)",
+    "result_summary": "required — what changed + how it was verified"
+  },
+  "receipt_version": "1.0",
+  "task_id": "pin-diff-base",
+  "agent_id": "claude-opus",
+  "intent": "Pin the diff base to eliminate the recurring diff_sha256 staleness REWORKs. The binding hash was sha256 of `git diff <base>...HEAD`, a 3-dot diff whose merge-base is re-derived from origin/main at BOTH stamp time and gate time. In a high-merge-velocity repo that merge-base drifts (an agent stamps against a stale local origin/main while the gate fetches a fresher one), producing a different hash and a spurious REWORK on content-clean PRs. This records the exact merge-base commit as a new optional receipt field `base_sha` and computes/verifies diff_sha256 as `git diff <base_sha>..HEAD` (2-dot from the pinned commit — byte-identical to the old 3-dot but deterministic). The gate also asserts base_sha is a real ancestor of the default branch so a forged base cannot hide changes. Fully back-compatible: receipts without base_sha fall back to the legacy origin/main 3-dot path.",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json"
+  ],
+  "validation_plan": [
+    {
+      "command": "npx tsc --noEmit",
+      "reason": "Type-checks the new base_sha field, the shape.ts helpers (gitMergeBase/isAncestor/gitDiffExcludingReceiptFrom), and the threaded MechanicalFields.baseSha — all must compile cleanly.",
+      "required": true
+    },
+    {
+      "command": "npm test",
+      "reason": "Runs the full suite including the new pin-diff-base.test.ts (pinned verification is deterministic after main advances; old-format receipt verifies via fallback; a non-ancestor base_sha is REJECTED; integrity + protected-path floor still enforced) and the new receipt-write base_sha refresh/staleness tests.",
+      "required": true
+    },
+    {
+      "command": "npm run bundle",
+      "reason": "Rebuilds the committed dist/index.js action artifact so it does not drift from src/ (the dist-check CI job enforces this).",
+      "required": true
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npx tsc --noEmit",
+      "status": "passed",
+      "output_ref": "TSC_EXIT=0 — no type errors"
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "tests 244, pass 244, fail 0 (Node 20)"
+    },
+    {
+      "command": "npm run bundle",
+      "status": "passed",
+      "output_ref": "dist/index.js 254.5kb — rebuilt; contains base_sha/gitMergeBase/isAncestor (27 refs)"
+    }
+  ],
+  "changed_files": [
+    "CHANGELOG.md",
+    "dist/index.js",
+    "package-lock.json",
+    "package.json",
+    "src/cli.ts",
+    "src/receipt-write.ts",
+    "src/scaffold.ts",
+    "src/shape.ts",
+    "src/test/pin-diff-base.test.ts",
+    "src/test/receipt-write.test.ts",
+    "src/types.ts",
+    "templates/AGENTS.md"
+  ],
+  "base_sha": "7f1d6252fd48a84aeb210e125e4e3327433ba940",
+  "diff_sha256": "fd5136b6de96604ed44c64370d84b0d40d003a7815e400101c1523c2062a93ee",
+  "result_summary": "Added optional `base_sha` to the receipt schema (types.ts); added gitMergeBase/gitDiffExcludingReceiptFrom/gitChangedFilesFrom/isAncestor helpers to shape.ts; shapeCheck now verifies against the pinned base (2-dot) with an ancestry backstop when base_sha is present, else falls back to the legacy 3-dot. `plumb receipt --write`, `stamp`, and `new` all record base_sha and compute the hash from it; refreshMechanical/checkMechanical pin and staleness-check it. Bumped to 0.4.0 (additive + back-compat minor), CHANGELOG + AGENTS.md updated, dist/index.js rebuilt. Verified: tsc clean, 244/244 tests pass including 9 new tests covering deterministic-after-advance, old-format fallback, non-ancestor rejection, content-mismatch integrity, the protected-path floor, and cache-key consistency. self_modifying:true because src/shape.ts and src/types.ts are protected paths — routed to human review by design. Design note on the ancestry backstop: when baseRef is present (ALWAYS in CI — the action passes --base origin/<base_ref>) the gate REJECTS a non-ancestor base_sha; when baseRef is absent (only a local run without a fetched default branch) it warns rather than rejects, because ancestry is unverifiable there and rejecting would break offline/local use. The security guarantee therefore holds in CI, which is the enforcement point. Added a cache-key consistency test per review advisory (244 tests)."
+}
