@@ -54,7 +54,7 @@
     {
       "command": "npm test",
       "status": "passed",
-      "output_ref": "tests 243, pass 243, fail 0 (Node 20)"
+      "output_ref": "tests 244, pass 244, fail 0 (Node 20)"
     },
     {
       "command": "npm run bundle",
@@ -77,6 +77,6 @@
     "templates/AGENTS.md"
   ],
   "base_sha": "7f1d6252fd48a84aeb210e125e4e3327433ba940",
-  "diff_sha256": "fa2e56ff2cfefe7dcbe07ee5da390bf76de6aefc08cad551eb96c925bc2f4302",
-  "result_summary": "Added optional `base_sha` to the receipt schema (types.ts); added gitMergeBase/gitDiffExcludingReceiptFrom/gitChangedFilesFrom/isAncestor helpers to shape.ts; shapeCheck now verifies against the pinned base (2-dot) with an ancestry backstop when base_sha is present, else falls back to the legacy 3-dot. `plumb receipt --write`, `stamp`, and `new` all record base_sha and compute the hash from it; refreshMechanical/checkMechanical pin and staleness-check it. Bumped to 0.4.0 (additive + back-compat minor), CHANGELOG + AGENTS.md updated, dist/index.js rebuilt. Verified: tsc clean, 243/243 tests pass including 8 new tests covering deterministic-after-advance, old-format fallback, non-ancestor rejection, content-mismatch integrity, and the protected-path floor. self_modifying:true because src/shape.ts and src/types.ts are protected paths — routed to human review by design."
+  "diff_sha256": "fd5136b6de96604ed44c64370d84b0d40d003a7815e400101c1523c2062a93ee",
+  "result_summary": "Added optional `base_sha` to the receipt schema (types.ts); added gitMergeBase/gitDiffExcludingReceiptFrom/gitChangedFilesFrom/isAncestor helpers to shape.ts; shapeCheck now verifies against the pinned base (2-dot) with an ancestry backstop when base_sha is present, else falls back to the legacy 3-dot. `plumb receipt --write`, `stamp`, and `new` all record base_sha and compute the hash from it; refreshMechanical/checkMechanical pin and staleness-check it. Bumped to 0.4.0 (additive + back-compat minor), CHANGELOG + AGENTS.md updated, dist/index.js rebuilt. Verified: tsc clean, 244/244 tests pass including 9 new tests covering deterministic-after-advance, old-format fallback, non-ancestor rejection, content-mismatch integrity, the protected-path floor, and cache-key consistency. self_modifying:true because src/shape.ts and src/types.ts are protected paths — routed to human review by design. Design note on the ancestry backstop: when baseRef is present (ALWAYS in CI — the action passes --base origin/<base_ref>) the gate REJECTS a non-ancestor base_sha; when baseRef is absent (only a local run without a fetched default branch) it warns rather than rejects, because ancestry is unverifiable there and rejecting would break offline/local use. The security guarantee therefore holds in CI, which is the enforcement point. Added a cache-key consistency test per review advisory (244 tests)."
 }
