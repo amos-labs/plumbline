@@ -209,6 +209,31 @@ test("pinned base still catches a real content mismatch (integrity preserved)", 
   }
 });
 
+test("pinned 2-dot and legacy 3-dot hashes agree — the cache-key recompute is consistent", () => {
+  // The review-cache path in cli.ts recomputes the binding hash to validate the
+  // cache key: `gitDiffExcludingReceiptFrom(base_sha)` when the receipt is
+  // pinned, else `gitDiffExcludingReceipt(baseRef)`. This pins that the two
+  // formulas produce the SAME hash (so a pinned receipt and a legacy receipt of
+  // the same diff share a cache key and neither is spuriously invalidated),
+  // independent of how far the base branch has advanced past the fork point.
+  const { dir, baseSha, pinnedHash } = setupRepo();
+  try {
+    // Advance main well past the fork point on an unrelated file.
+    git(dir, "checkout", "-q", "main");
+    writeFileSync(join(dir, "far.txt"), "advanced\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", "main advances");
+    git(dir, "checkout", "-q", "work");
+
+    const pinned = computeDiffSha256(gitDiffExcludingReceiptFrom(baseSha, dir));
+    const legacy = computeDiffSha256(gitDiffExcludingReceipt("main", dir));
+    assert.equal(pinned, legacy, "pinned 2-dot cache key must equal the legacy 3-dot cache key");
+    assert.equal(pinned, pinnedHash, "pinned hash is stable across base-branch advance");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("pinned base re-runs the protected-path floor against the actual diff", () => {
   const dir = mkdtempSync(join(tmpdir(), "plumbline-pin-prot-"));
   try {
