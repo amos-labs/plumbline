@@ -56,16 +56,32 @@ export const ReceiptSchema = z.object({
   validation_plan: z.array(ValidationStepSchema).min(1),
   execution_evidence: z.array(ExecutionEvidenceSchema).min(1),
   changed_files: z.array(z.string()).min(1),
+  base_sha: z
+    .string()
+    .regex(/^[0-9a-f]{7,40}$/, "base_sha must be a 7–40 char lowercase hex git commit sha")
+    .optional()
+    .describe(
+      "The exact merge-base commit the diff was computed against at stamp time " +
+        "(`git merge-base <default-branch> HEAD`). PINS the diff base so verification " +
+        "is deterministic: the gate diffs `git diff <base_sha>..HEAD` against THIS commit " +
+        "instead of re-deriving the merge-base from a live origin/main that concurrent " +
+        "merges may have moved (the recurring cause of spurious diff_sha256 REWORKs). The " +
+        "gate also asserts base_sha is a real ancestor of the default branch, so a forged " +
+        "base can't hide changes. Set by `plumb receipt --write`/`stamp`. OPTIONAL for " +
+        "back-compat: a receipt without it verifies via the legacy origin/main 3-dot path.",
+    ),
   diff_sha256: z
     .string()
     .regex(/^[0-9a-f]{64}$/, "diff_sha256 must be a 64-char lowercase hex SHA-256")
     .describe(
-      "sha256 of `git diff <base>...HEAD -- . ':(exclude).plumbline/receipt.json' " +
+      "sha256 of `git diff <base_sha>..HEAD -- . ':(exclude).plumbline/receipt.json' " +
         "':(exclude).plumbline/receipts/*.json' ':(exclude).proofgate/receipt.json' " +
         "':(exclude).proofgate/receipts/*.json'` — binds the receipt to the diff " +
-        "content. The receipt file(s) are excluded so it's computable BEFORE " +
-        "committing the receipt (a commit can never contain its own SHA), and so " +
-        "the per-PR receipt at .plumbline/receipts/<task_id>.json (or legacy .proofgate/) doesn't affect it.",
+        "content. Computed from the pinned `base_sha` (2-dot, deterministic; equivalent " +
+        "to the legacy `<base>...HEAD` 3-dot). The receipt file(s) are excluded so it's " +
+        "computable BEFORE committing the receipt (a commit can never contain its own SHA), " +
+        "and so the per-PR receipt at .plumbline/receipts/<task_id>.json (or legacy " +
+        ".proofgate/) doesn't affect it.",
     ),
   result_summary: z.string().min(40),
 });

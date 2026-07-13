@@ -51,7 +51,10 @@ pass — no red-CI round-trips. (Semantic review still runs server-side in CI.)
   `passed` | `failed` | `skipped`** — it is an enum, NOT free text (values like
   `deferred-to-ci` / `pending-human` / `required-check` are rejected). Required
   steps must be `passed`; when `skipped`, include a `skip_reason`.
-- `changed_files` / `diff_sha256` — set by `stamp`; don't edit by hand.
+- `changed_files` / `base_sha` / `diff_sha256` — set by `plumb receipt --write`;
+  don't edit by hand. `base_sha` pins the merge-base the diff was computed
+  against, so the gate verifies deterministically even when the base branch
+  advances after you stamp (no more spurious `diff_sha256` REWORKs).
 - `result_summary` — ≥40 chars: what changed + how it was verified.
 
 ### Receipt authoring: don't fight the gate on CI bookkeeping
@@ -106,13 +109,22 @@ failed | skipped (got "deferred-to-ci")`.
 command — sha256 of:
 
 ```
-git diff <base>...HEAD -- . ":(exclude).plumbline/receipt.json" ":(exclude).plumbline/receipts/*.json"
+git diff <base_sha>..HEAD -- . ":(exclude).plumbline/receipt.json" ":(exclude).plumbline/receipts/*.json"
 ```
 
-Four things that bite if you hand-roll the hash instead of using `stamp`:
-- **3-dot, not 2-dot** — `<base>...HEAD` diffs `merge-base(<base>,HEAD)..HEAD`.
-  Commits added to `<base>` *after* you branched are NOT included. `git diff
-  <base>..HEAD` (2-dot) yields a different hash.
+where `<base_sha>` is the **pinned merge-base** recorded in the receipt at stamp
+time (`git merge-base <default-branch> HEAD`). Pinning is the whole point: the
+gate verifies against THAT exact commit instead of re-deriving the base from a
+live `origin/main` that concurrent merges may have moved — which is what used to
+cause *spurious* `diff_sha256` REWORKs on content-clean PRs. `git diff
+<base_sha>..HEAD` (2-dot) is byte-for-byte identical to the old `<base>...HEAD`
+3-dot, just deterministic. (Old-format receipts with no `base_sha` still verify
+via the legacy 3-dot fallback.)
+
+Things that bite if you hand-roll the hash instead of using `plumb receipt --write`:
+- **Pin the base** — use the recorded `base_sha` (2-dot). Re-deriving the
+  merge-base from a moved `origin/main` yields a different hash → false REWORK.
+  This is exactly the failure `base_sha` removes.
 - **Committed HEAD, not the working tree** — NOT `--cached`, NOT staged, NOT the
   index. Commit first; the hash binds what you committed. (`plumb check`
   warns when you have uncommitted changes.)

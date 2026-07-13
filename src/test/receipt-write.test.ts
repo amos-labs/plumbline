@@ -76,6 +76,46 @@ test("refreshMechanical upgrades self_modifying on protected hits, never silentl
   assert.ok(keep.notes.some((n) => n.includes("voluntary human-review request")));
 });
 
+test("refreshMechanical pins base_sha and preserves an existing one until it changes", () => {
+  const base = { diff_sha256: "a".repeat(64), changed_files: ["src/app.ts"], self_modifying: false };
+  // First write: records base_sha.
+  const first = refreshMechanical({ ...base }, mech({ baseSha: "abc1234" }));
+  assert.equal(first.receipt.base_sha, "abc1234");
+  assert.ok(first.notes.some((n) => n.includes("base_sha")));
+  assert.equal(first.changed, true);
+
+  // Idempotent: same base_sha + same fields → no change.
+  const again = refreshMechanical({ ...first.receipt }, mech({ baseSha: "abc1234" }));
+  assert.equal(again.changed, false);
+
+  // A moved fork point → base_sha is re-pinned.
+  const moved = refreshMechanical({ ...first.receipt }, mech({ baseSha: "def5678" }));
+  assert.equal(moved.receipt.base_sha, "def5678");
+  assert.equal(moved.changed, true);
+
+  // git couldn't resolve a merge-base (baseSha undefined) → existing base_sha NOT blanked.
+  const noGit = refreshMechanical({ ...first.receipt }, mech());
+  assert.equal(noGit.receipt.base_sha, "abc1234");
+});
+
+test("checkMechanical flags a stale base_sha, ignores a missing one", () => {
+  const m = mech({ baseSha: "aaaa111" });
+  // Stale: receipt pins a different fork point than the current merge-base.
+  const stale = checkMechanical(
+    { diff_sha256: m.diffSha256, changed_files: m.changedFiles, self_modifying: false, base_sha: "bbbb222" },
+    m,
+  );
+  assert.equal(stale.fresh, false);
+  assert.ok(stale.problems.some((p) => p.includes("base_sha is stale")));
+
+  // Missing base_sha (old-format receipt) is NOT stale — verifies via fallback.
+  const oldFormat = checkMechanical(
+    { diff_sha256: m.diffSha256, changed_files: m.changedFiles, self_modifying: false },
+    m,
+  );
+  assert.equal(oldFormat.fresh, true);
+});
+
 test("checkMechanical reports staleness and missing self_modifying", () => {
   const m = mech({
     changedFiles: ["fastapi_app/auth/router.py"],

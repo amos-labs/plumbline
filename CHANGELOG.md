@@ -10,6 +10,37 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-13
+
+### Added
+- **`base_sha` receipt field — the diff base is now PINNED, killing the
+  recurring `diff_sha256` staleness REWORKs.** The binding hash is
+  `sha256(git diff <base>...HEAD)`, a 3-dot diff whose base is the *merge-base*
+  of the branch and `origin/main`. In a high-merge-velocity repo that merge-base
+  **drifts**: an agent stamps against a slightly stale local `origin/main` while
+  the gate fetches a fresher one → a different merge-base → a different hash →
+  a **spurious REWORK on a content-clean PR.** The fix: `plumb receipt --write`
+  (and `stamp` / `new`) now record `base_sha` = the exact merge-base commit and
+  compute `diff_sha256` as the **2-dot** `git diff <base_sha>..HEAD` (byte-for-byte
+  identical to the old 3-dot, but deterministic — it names the base commit
+  instead of re-deriving it). The gate verifies against that pinned commit and
+  does **not** re-derive the base from the live `origin/main`, so concurrent
+  merges / a stale local main / the synthetic GitHub merge-ref checkout can no
+  longer move the hash.
+
+### Security
+- **Pinned-base ancestry backstop.** The gate asserts `base_sha` is a real
+  ancestor of the default branch (`git merge-base --is-ancestor`). A forged or
+  unrelated-history base — which could otherwise hide changes by diffing against
+  the wrong commit — is **rejected**. The receipt still attests the branch's true
+  diff off a legitimate fork point.
+
+### Compatibility
+- **Fully back-compatible.** A receipt *without* `base_sha` (old-format receipts,
+  consumers still on `@v0.3.0`) verifies via the original `origin/main`-derived
+  3-dot path — nothing breaks during rollout. `base_sha` is optional in the
+  schema. Consumer repos can re-pin to `@v0.4.0` at their own pace.
+
 ## [0.3.0] - 2026-07-10
 
 ### ⚠️ BREAKING
