@@ -449,16 +449,45 @@ export function shapeCheck(
           );
         }
 
-        const actualHash = computeDiffSha256(gitDiffExcludingReceiptFrom(pinnedBase, cwd));
-        if (actualHash !== receipt.diff_sha256) {
-          findings.push({
-            check: "diff_integrity",
-            message:
-              `diff_sha256 mismatch: receipt=${receipt.diff_sha256} actual=${actualHash} ` +
-              `(computed against pinned base_sha ${pinnedBase}: git diff ${pinnedBase}..HEAD -- . ':(exclude).plumbline/receipts/*.json' … | sha256 — or just: plumb receipt --write)`,
-          });
+        // Diff integrity: accept the PINNED base OR a freshly REDERIVED
+        // merge-base. Pinning alone still forced a re-stamp after a clean
+        // REBASE: replaying the PR's commits onto an advanced origin/main moves
+        // HEAD and strands base_sha mid-history, so `git diff base_sha..HEAD`
+        // then spans the intervening main commits and the hash drifts — even
+        // though the PR's OWN changes are byte-identical (issue: v0.4.0 REWORK
+        // tax). The rederived base is `git merge-base <baseRef> HEAD`: by
+        // definition a real common ancestor (cannot be forged), and
+        // `<mergeBase>..HEAD` is EXACTLY the PR's contribution — main's commits
+        // sit on the ancestor side and are never hidden. A real content change
+        // still changes the hash under BOTH bases, so this tolerates main
+        // moving (and clean rebases onto it) without ever tolerating changed
+        // content. `receipt --write` keeps stamping the pinned base_sha for
+        // provenance; only verification accepts the rederived fallback.
+        const pinnedHash = computeDiffSha256(gitDiffExcludingReceiptFrom(pinnedBase, cwd));
+        let matchedBase = pinnedBase;
+        if (pinnedHash !== receipt.diff_sha256) {
+          const rederived = opts.baseRef ? gitMergeBase(opts.baseRef, cwd) : null;
+          const rederivedHash =
+            rederived && rederived !== pinnedBase
+              ? computeDiffSha256(gitDiffExcludingReceiptFrom(rederived, cwd))
+              : null;
+          if (rederived && rederivedHash === receipt.diff_sha256) {
+            // Content is unchanged; base_sha was merely stranded by a rebase.
+            matchedBase = rederived;
+            warnings.push(
+              `diff matched rederived merge-base ${rederived.slice(0, 12)} ` +
+                `(pinned base_sha ${pinnedBase.slice(0, 12)} was stranded by a rebase; PR content unchanged)`,
+            );
+          } else {
+            findings.push({
+              check: "diff_integrity",
+              message:
+                `diff_sha256 mismatch: receipt=${receipt.diff_sha256} actual=${pinnedHash} ` +
+                `(computed against pinned base_sha ${pinnedBase}: git diff ${pinnedBase}..HEAD -- . ':(exclude).plumbline/receipts/*.json' … | sha256 — or just: plumb receipt --write)`,
+            });
+          }
         }
-        const actual = gitChangedFilesFrom(pinnedBase, cwd).filter((f) => !isReceiptPath(f));
+        const actual = gitChangedFilesFrom(matchedBase, cwd).filter((f) => !isReceiptPath(f));
         const declared = new Set(receipt.changed_files);
         const undeclared = actual.filter((f) => !declared.has(f));
         if (undeclared.length > 0) {
@@ -469,7 +498,7 @@ export function shapeCheck(
         }
         const phantom = receipt.changed_files.filter((f) => !actual.includes(f));
         if (phantom.length > 0) {
-          warnings.push(`receipt declares files with no diff vs base_sha ${pinnedBase}: ${phantom.join(", ")}`);
+          warnings.push(`receipt declares files with no diff vs base ${matchedBase.slice(0, 12)}: ${phantom.join(", ")}`);
         }
         for (const f of actual) {
           const hit = matchesAny(f, policy.protected_paths);
