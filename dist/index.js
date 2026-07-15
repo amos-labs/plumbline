@@ -4585,14 +4585,24 @@ function shapeCheck(rawReceipt, policy, opts = {}) {
             `no base ref provided \u2014 cannot verify base_sha ${pinnedBase} is an ancestor of the default branch`
           );
         }
-        const actualHash = computeDiffSha256(gitDiffExcludingReceiptFrom(pinnedBase, cwd));
-        if (actualHash !== receipt.diff_sha256) {
-          findings.push({
-            check: "diff_integrity",
-            message: `diff_sha256 mismatch: receipt=${receipt.diff_sha256} actual=${actualHash} (computed against pinned base_sha ${pinnedBase}: git diff ${pinnedBase}..HEAD -- . ':(exclude).plumbline/receipts/*.json' \u2026 | sha256 \u2014 or just: plumb receipt --write)`
-          });
+        const pinnedHash = computeDiffSha256(gitDiffExcludingReceiptFrom(pinnedBase, cwd));
+        let matchedBase = pinnedBase;
+        if (pinnedHash !== receipt.diff_sha256) {
+          const rederived = opts.baseRef ? gitMergeBase(opts.baseRef, cwd) : null;
+          const rederivedHash = rederived && rederived !== pinnedBase ? computeDiffSha256(gitDiffExcludingReceiptFrom(rederived, cwd)) : null;
+          if (rederived && rederivedHash === receipt.diff_sha256) {
+            matchedBase = rederived;
+            warnings.push(
+              `diff matched rederived merge-base ${rederived.slice(0, 12)} (pinned base_sha ${pinnedBase.slice(0, 12)} was stranded by a rebase; PR content unchanged)`
+            );
+          } else {
+            findings.push({
+              check: "diff_integrity",
+              message: `diff_sha256 mismatch: receipt=${receipt.diff_sha256} actual=${pinnedHash} (computed against pinned base_sha ${pinnedBase}: git diff ${pinnedBase}..HEAD -- . ':(exclude).plumbline/receipts/*.json' \u2026 | sha256 \u2014 or just: plumb receipt --write)`
+            });
+          }
         }
-        const actual = gitChangedFilesFrom(pinnedBase, cwd).filter((f) => !isReceiptPath(f));
+        const actual = gitChangedFilesFrom(matchedBase, cwd).filter((f) => !isReceiptPath(f));
         const declared = new Set(receipt.changed_files);
         const undeclared = actual.filter((f) => !declared.has(f));
         if (undeclared.length > 0) {
@@ -4603,7 +4613,7 @@ function shapeCheck(rawReceipt, policy, opts = {}) {
         }
         const phantom = receipt.changed_files.filter((f) => !actual.includes(f));
         if (phantom.length > 0) {
-          warnings.push(`receipt declares files with no diff vs base_sha ${pinnedBase}: ${phantom.join(", ")}`);
+          warnings.push(`receipt declares files with no diff vs base ${matchedBase.slice(0, 12)}: ${phantom.join(", ")}`);
         }
         for (const f of actual) {
           const hit = matchesAny(f, policy.protected_paths);

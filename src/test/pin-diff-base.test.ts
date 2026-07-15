@@ -234,6 +234,67 @@ test("pinned 2-dot and legacy 3-dot hashes agree — the cache-key recompute is 
   }
 });
 
+test("clean rebase strands base_sha — rederived merge-base still verifies (no re-stamp)", () => {
+  // The residual v0.4.0 REWORK: a clean rebase replays the PR's commits onto an
+  // advanced main, moving HEAD so the pinned base_sha is stranded mid-history —
+  // `git diff base_sha..HEAD` now spans main's commits and the hash drifts,
+  // even though the PR's OWN change is byte-identical. v0.4.1 accepts the
+  // rederived merge-base for exactly this case.
+  const { dir, baseSha, pinnedHash } = setupRepo();
+  try {
+    const receipt = receiptFor({ diffSha256: pinnedHash, baseSha, changedFiles: ["app.txt"] });
+
+    // main advances on an UNRELATED file…
+    git(dir, "checkout", "-q", "main");
+    writeFileSync(join(dir, "unrelated.txt"), "landed on main\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", "B1 on main");
+    // …and work is cleanly REBASED onto it (no change to app.txt).
+    git(dir, "checkout", "-q", "work");
+    git(dir, "rebase", "-q", "main");
+
+    // Sanity: the pinned 2-dot hash has now drifted (base_sha is stranded).
+    const stranded = computeDiffSha256(gitDiffExcludingReceiptFrom(baseSha, dir));
+    assert.notEqual(stranded, pinnedHash, "pinned 2-dot hash should drift after the rebase");
+
+    // The gate accepts the rederived merge-base and PASSES with no re-stamp.
+    const { result } = shapeCheck(receipt, policy, { baseRef: "main", cwd: dir });
+    assert.deepEqual(result.errors, [], "rederived merge-base must verify a cleanly-rebased branch");
+    assert.equal(result.pass, true);
+    assert.ok(
+      result.warnings.some((w) => w.includes("rederived merge-base")),
+      `expected a rederived-base note, got: ${result.warnings.join(" | ")}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("after a rebase, a REAL content change still fails under both bases (integrity preserved)", () => {
+  const { dir, baseSha, pinnedHash } = setupRepo();
+  try {
+    const receipt = receiptFor({ diffSha256: pinnedHash, baseSha, changedFiles: ["app.txt"] });
+
+    git(dir, "checkout", "-q", "main");
+    writeFileSync(join(dir, "unrelated.txt"), "landed on main\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", "B1 on main");
+    git(dir, "checkout", "-q", "work");
+    git(dir, "rebase", "-q", "main");
+
+    // Now ACTUALLY change the PR's content on top of the rebase.
+    writeFileSync(join(dir, "app.txt"), "v2-tampered\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", "unattested content change");
+
+    const { result } = shapeCheck(receipt, policy, { baseRef: "main", cwd: dir });
+    assert.equal(result.pass, false, "changed content must NOT verify under pinned OR rederived base");
+    assert.ok(result.errors.some((e) => e.includes("diff_sha256 mismatch")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("pinned base re-runs the protected-path floor against the actual diff", () => {
   const dir = mkdtempSync(join(tmpdir(), "plumbline-pin-prot-"));
   try {

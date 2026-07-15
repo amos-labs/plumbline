@@ -1,0 +1,64 @@
+{
+  "receipt_version": "1.0",
+  "task_id": "rederived-diff-base",
+  "agent_id": "claude-fable-5",
+  "intent": "v0.4.1 — kill the residual diff_sha256 REWORK tax. v0.4.0 pinned base_sha and verified with a 2-dot `git diff base_sha..HEAD`, which fixed the 'main advanced, branch not rebased' case. But a clean REBASE (replaying the PR's commits onto an advanced origin/main) moves HEAD and strands base_sha mid-history: `git diff base_sha..HEAD` then spans main's intervening commits and the hash drifts, forcing a re-stamp even though the PR's OWN changes are byte-identical (this cost ~6 rework cycles in one downstream day). Fix (verify side only): if the pinned-base hash doesn't match, also try a FRESHLY REDERIVED merge-base — `git merge-base <baseRef> HEAD` — and accept the receipt if that diff matches. The rederived base is by definition a real common ancestor (cannot be forged) and `<mergeBase>..HEAD` is exactly the PR's contribution (main's commits sit on the ancestor side, never hidden), so a real content change still changes the hash under BOTH bases. Security property is unchanged: tolerate main moving and clean rebases onto it, never tolerate changed content. `receipt --write` still stamps the pinned base_sha for provenance; only verification gains the fallback. The changed-file / protected-path checks now run against whichever base matched, so they reflect the PR's true diff. Also bumps version 0.4.0 -> 0.4.1 and rebuilds the committed action bundle.",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json",
+    ".plumbline/AGENTS.md"
+  ],
+  "validation_plan": [
+    {
+      "id": "test",
+      "command": "npm test",
+      "reason": "Full node:test suite (246 tests) stays green, including two NEW pin-diff-base cases: a cleanly-rebased branch verifies via the rederived merge-base (no re-stamp), and a real content change after a rebase still fails under both bases.",
+      "required": true,
+      "ci_covered": true
+    },
+    {
+      "id": "tsc",
+      "command": "npx tsc --noEmit",
+      "reason": "Type-checks — the verify block gained the rederived-base branch with no type regressions.",
+      "required": true,
+      "ci_covered": true
+    },
+    {
+      "id": "dist",
+      "command": "npm run bundle && git diff --exit-code dist/index.js",
+      "reason": "The committed esbuild action bundle is rebuilt from the changed src so the dist-check CI job passes and the Action runs the new logic.",
+      "required": true,
+      "ci_covered": true
+    }
+  ],
+  "execution_evidence": [
+    {
+      "step": "test",
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "246 pass / 0 fail locally, incl. 'clean rebase strands base_sha — rederived merge-base still verifies (no re-stamp)' and 'after a rebase, a REAL content change still fails under both bases'."
+    },
+    {
+      "step": "tsc",
+      "command": "npx tsc --noEmit",
+      "status": "passed",
+      "output_ref": "Clean; also npm run build succeeded."
+    },
+    {
+      "step": "dist",
+      "command": "npm run bundle && git diff dist/index.js",
+      "status": "passed",
+      "output_ref": "dist/index.js rebuilt (255.1kb; +18/-8) carrying the rederived-base logic."
+    }
+  ],
+  "result_summary": "src/shape.ts (protected → self_modifying): the pinned-base verify path now accepts EITHER the pinned base_sha OR a freshly rederived `git merge-base <baseRef> HEAD`. On a pinned-hash miss it computes the rederived-base diff and, if that matches the receipt, passes with a warning ('diff matched rederived merge-base <sha12> … PR content unchanged'); changed-file + protected-path checks run against the matched base. This removes the clean-rebase re-stamp tax without weakening integrity — the rederived base is an unforgeable real ancestor and content changes still fail under both bases. Added 2 pin-diff-base tests; bumped 0.4.0 -> 0.4.1; rebuilt dist/index.js. Verified by npm test (246/0), tsc, and the dist bundle rebuild.",
+  "diff_sha256": "9980ccb4c7c2e7b1af6501662bfa6cdbac881d6769a2b6eddef2f9ea9a78d922",
+  "base_sha": "a480d91f2249a97b3a91b8b3b8b0a8bcd5ebb149",
+  "changed_files": [
+    "dist/index.js",
+    "package.json",
+    "src/shape.ts",
+    "src/test/pin-diff-base.test.ts"
+  ]
+}
