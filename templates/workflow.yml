@@ -8,7 +8,13 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  checks: read
+  # `checks: read` — poll-wait reads other check-runs' conclusions.
+  # `checks: write` — the gate publishes a DISTINCT per-verdict check-run
+  # (Plumbline: PASS / REWORK — blocked / REVIEW — awaiting human approval) so
+  # REWORK and REVIEW are unmistakable in the Checks list (plumbline#54). If you
+  # cannot grant checks:write, the gate still gates via the job status + PR
+  # comment; only the extra legible check-run is skipped (logged, non-fatal).
+  checks: write
 
 jobs:
   gate:

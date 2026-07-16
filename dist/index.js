@@ -5182,31 +5182,63 @@ function parseReviewJson(text) {
   return null;
 }
 
+// src/verdict.ts
+var TABLE = {
+  approve: {
+    verdict: "approve",
+    checkName: "Plumbline: PASS",
+    conclusion: "success",
+    label: "\u2705 PASS",
+    commentTitle: "\u2705 Plumbline: PASS \u2014 merging automatically",
+    commentBanner: "**\u2705 Passed shape + semantic review. Merging automatically \u2014 no action needed.**",
+    annotationLevel: "notice",
+    mergeable: true
+  },
+  rework: {
+    verdict: "rework",
+    checkName: "Plumbline: REWORK \u2014 blocked, do not merge",
+    conclusion: "failure",
+    label: "\u{1F501} REWORK",
+    commentTitle: "\u{1F501} Plumbline: REWORK \u2014 BLOCKED, do NOT merge",
+    commentBanner: "**\u{1F501} REWORK \u2014 do NOT merge. The agent must fix the \u{1F916} items below and re-push.** This is the agent's turn, not a human sign-off \u2014 merging now ships un-reworked code.",
+    annotationLevel: "error",
+    mergeable: false
+  },
+  review: {
+    verdict: "review",
+    checkName: "Plumbline: REVIEW \u2014 awaiting human approval",
+    // action_required (not failure): the UI renders it as "needs a human to act"
+    // rather than "broken", which is exactly the REVIEW semantic — and makes it
+    // visually distinct from a REWORK failure at a glance.
+    conclusion: "action_required",
+    label: "\u26A0\uFE0F REVIEW",
+    commentTitle: "\u26A0\uFE0F Plumbline: REVIEW \u2014 awaiting explicit human approval",
+    commentBanner: "**\u26A0\uFE0F REVIEW \u2014 Human approval required. This is the human's turn: no agent rework needed, but this is NOT a rubber stamp.** A maintainer must read the findings and, if sound, approve/override-merge. Merging must be a deliberate act \u2014 do not confuse this with a REWORK (agent-fix) failure.",
+    annotationLevel: "warning",
+    mergeable: false
+  }
+};
+function verdictPresentation(verdict) {
+  return TABLE[verdict];
+}
+
 // src/github.ts
 function renderComment(result) {
-  const icon = result.final === "approve" ? "\u2705" : result.final === "rework" ? "\u{1F501}" : "\u26A0\uFE0F";
+  const pres = verdictPresentation(result.final);
   const lines = [];
-  lines.push(`## ${icon} plumbline: ${result.final.toUpperCase()}`);
+  lines.push(`## ${pres.commentTitle}`);
   lines.push("");
   const cap = result.review?.failure_capsule;
   const agentActions = cap?.agent_actions ?? [];
   const humanActions = cap?.human_actions ?? [];
   const advisory = cap?.advisory ?? [];
   const didNotConverge = cap?.did_not_converge === true;
-  if (result.final === "approve") {
-    lines.push("> **\u2705 Passed \u2014 merging automatically. No action needed.**");
-  } else if (result.final === "rework") {
-    lines.push(
-      "> **\u{1F501} Rework needed \u2014 the agent fixes the \u{1F916} items below and re-pushes. No human action required.**"
-    );
-  } else if (didNotConverge) {
+  if (result.final === "review" && didNotConverge) {
     lines.push(
       "> **\u{1F9D1}\u200D\u2696\uFE0F Gate did not converge \u2014 human decides.** After 2 rework rounds the gate stops iterating the agent. A maintainer reviews the remaining \u{1F9D1} items and override-merges if sound: `gh pr merge <PR> --squash --admin`."
     );
   } else {
-    lines.push(
-      "> **\u26A0\uFE0F Human approval required \u2014 no agent rework needed, but this is NOT a rubber stamp.** A maintainer decides the \u{1F9D1} items below (protected surface, a real trade-off, or ambiguous intent). **Read the review findings (risk + validation notes) before override-merging:** `gh pr merge <PR> --squash --admin`."
-    );
+    lines.push(`> ${pres.commentBanner}`);
   }
   lines.push("");
   if (result.final !== "approve" && result.review) {
@@ -5271,21 +5303,22 @@ function renderComment(result) {
   return lines.join("\n");
 }
 function renderCiSummary(result) {
+  const pres = verdictPresentation(result.final);
   if (result.final === "approve") {
     return {
-      level: "notice",
-      title: "plumbline: APPROVE",
+      level: pres.annotationLevel,
+      title: pres.checkName,
       message: "Receipt passed shape + semantic review. Merging automatically \u2014 no action needed."
     };
   }
   const cap = result.review?.failure_capsule;
   const parts = [];
   if (result.final === "rework") {
-    parts.push("Rework needed \u2014 the agent fixes the items in the PR comment and re-pushes.");
+    parts.push("REWORK \u2014 do NOT merge. The agent fixes the items in the PR comment and re-pushes.");
   } else if (cap?.did_not_converge) {
-    parts.push("Gate did not converge after 2 rework rounds \u2014 a human decides the remaining items.");
+    parts.push("REVIEW \u2014 gate did not converge after 2 rework rounds; a human decides the remaining items.");
   } else {
-    parts.push("Human approval required (protected/billing surface) \u2014 NOT a rubber stamp.");
+    parts.push("REVIEW \u2014 human approval required (protected/billing surface). NOT a rubber stamp; NOT a broken build.");
   }
   if (cap?.failing_check) parts.push(`Focus: ${cap.failing_check}.`);
   if (result.review) {
@@ -5294,8 +5327,8 @@ function renderCiSummary(result) {
     parts.push(`Read the ${findings} in the PR comment before merging.`);
   }
   return {
-    level: result.final === "rework" ? "error" : "warning",
-    title: `plumbline: ${result.final.toUpperCase()}`,
+    level: pres.annotationLevel,
+    title: pres.checkName,
     message: parts.join(" ")
   };
 }
@@ -5369,7 +5402,7 @@ function appendAttemptHistory(newBody, existingBody, now = /* @__PURE__ */ new D
   const existingCurrent = (idx >= 0 ? existingBody.slice(0, idx) : existingBody).trim();
   const historyPart = idx >= 0 ? existingBody.slice(idx) : "";
   const priorBlocks = historyPart.split(ATTEMPT_DELIM).slice(1).map((b, i, arr) => (i === arr.length - 1 ? b.replace(/\s*<\/details>\s*$/, "") : b).trim()).filter(Boolean);
-  const verdict = existingCurrent.match(/^##\s*\S+\s*plumbline:\s*(\w+)/m)?.[1] ?? "PRIOR";
+  const verdict = existingCurrent.match(/^##.*?plumbline:\s*(\w+)/im)?.[1]?.toUpperCase() ?? "PRIOR";
   const when = `${now.toISOString().slice(0, 16).replace("T", " ")} UTC`;
   const archived = `<details><summary>${verdict} \u2014 superseded ${when}</summary>
 
@@ -5420,6 +5453,35 @@ async function fetchExistingGateComment(repo, prNumber, token) {
     )?.body;
   } catch {
     return void 0;
+  }
+}
+async function publishCheckRun(repo, headSha, name, conclusion, title, summary, token) {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/check-runs`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: "application/vnd.github+json",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        name,
+        head_sha: headSha,
+        status: "completed",
+        conclusion,
+        // GitHub caps the check-run output summary; the full detail lives in the
+        // PR comment. Keep this short and pointed.
+        output: { title, summary: summary.slice(0, 6e4) }
+      })
+    });
+    if (!res.ok) {
+      console.error(`plumbline: could not publish verdict check-run (${res.status} ${await res.text().catch(() => "")})`);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error(`plumbline: could not publish verdict check-run: ${e.message}`);
+    return false;
   }
 }
 async function postPrComment(repo, prNumber, body, token) {
@@ -6952,6 +7014,22 @@ Fill intent / validation_plan / execution_evidence / result_summary, then: plumb
     console.error(`
 Now fill the judgment fields (the tool never writes these):`);
     for (const j of JUDGMENT_CHECKLIST) console.error(`  \xB7 ${j}`);
+    try {
+      const raw = readFileSync6(destAbs, "utf8");
+      const { result: shape2 } = shapeCheck(raw, policy, { baseRef, cwd, skipGit: false });
+      const evidenceGaps = shape2.errors.filter((e) => e.startsWith("no execution evidence for required step"));
+      if (evidenceGaps.length > 0) {
+        console.error(
+          `
+\u26A0\uFE0F  This receipt would FAIL the gate (shape) as written \u2014 the SAME check the CI gate runs:`
+        );
+        for (const g of evidenceGaps) console.error(`   shape \u274C ${g}`);
+        console.error(
+          `   Add an execution_evidence entry (command + status) for each required step above (or mark the step ci_covered:true if a CI check corroborates it). Run 'plumb check' to confirm before pushing.`
+        );
+      }
+    } catch {
+    }
     console.error(`
 Then: git add ${dest} && commit && push  (pre-check: plumb check)`);
     return 0;
@@ -7267,6 +7345,32 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
     } else {
       console.error("plumb: no PR context detected \u2014 printing comment:\n");
       console.log(renderComment(gate));
+    }
+    if (ci.provider === "github") {
+      const repo = process.env.GITHUB_REPOSITORY;
+      const token = process.env.GITHUB_TOKEN;
+      if (repo && token && ci.prNumber !== void 0) {
+        const pres = verdictPresentation(gate.final);
+        try {
+          const headSha = await getPrHeadSha(repo, ci.prNumber, token);
+          const ok = await publishCheckRun(
+            repo,
+            headSha,
+            pres.checkName,
+            pres.conclusion,
+            pres.commentTitle,
+            renderCiSummary(gate).message,
+            token
+          );
+          if (ok) {
+            console.error(
+              `published verdict check-run "${pres.checkName}" (conclusion: ${pres.conclusion})`
+            );
+          }
+        } catch (e) {
+          console.error(`plumbline: could not publish verdict check-run: ${e.message}`);
+        }
+      }
     }
   } else if (cmd === "check") {
     console.log(renderComment(gate));

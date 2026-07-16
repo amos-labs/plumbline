@@ -130,5 +130,6 @@ test("renderCiSummary: rework is an error annotation; approve is a notice", () =
   };
   const a = renderCiSummary(approve);
   assert.equal(a.level, "notice");
-  assert.ok(a.title.includes("APPROVE"));
+  // #54: the PASS state is titled "Plumbline: PASS" (distinct, verdict-legible).
+  assert.ok(a.title.includes("PASS"));
 });

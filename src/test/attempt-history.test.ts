@@ -18,8 +18,8 @@ test("attempt history: first rerun archives the prior comment under a details bl
   const second = renderComment(gate("approve"));
   const merged = appendAttemptHistory(second, first, NOW);
 
-  // Current result on top, history below.
-  assert.ok(merged.startsWith("## ✅ plumbline: APPROVE"));
+  // Current result on top, history below. (#54: PASS title, verdict-distinct.)
+  assert.ok(merged.startsWith("## ✅ Plumbline: PASS"));
   assert.ok(merged.includes("Attempt history (1)"));
   assert.ok(merged.includes("REWORK — superseded 2026-07-04 12:00 UTC"));
   // The prior attempt's content is preserved inside the history.

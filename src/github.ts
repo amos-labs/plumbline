@@ -1,42 +1,32 @@
 import type { GateResult } from "./types.js";
+import { verdictPresentation, type CheckConclusion } from "./verdict.js";
 
 /** Render the gate result as a PR comment (GitHub-flavored markdown). */
 export function renderComment(result: GateResult): string {
-  const icon =
-    result.final === "approve" ? "✅" : result.final === "rework" ? "🔁" : "⚠️";
+  // Title + action banner both come from the single verdict-presentation table
+  // (#54), so REWORK and REVIEW can never collapse into one identical red
+  // "failure" comment again — the H2 itself screams which state it is and who
+  // must act. A human glancing at the comment head knows instantly whether the
+  // agent must fix (REWORK) or they must approve (REVIEW).
+  const pres = verdictPresentation(result.final);
   const lines: string[] = [];
-  lines.push(`## ${icon} plumbline: ${result.final.toUpperCase()}`);
+  lines.push(`## ${pres.commentTitle}`);
   lines.push("");
 
-  // Action banner — make WHO must act unambiguous. `rework` and `review`
-  // both produce a red required-check, which previously looked identical and
-  // left maintainers unsure whether the agent needed to fix something or they
-  // just needed to approve. Spell it out.
   const cap = result.review?.failure_capsule;
   const agentActions = cap?.agent_actions ?? [];
   const humanActions = cap?.human_actions ?? [];
   const advisory = cap?.advisory ?? [];
   const didNotConverge = cap?.did_not_converge === true;
 
-  if (result.final === "approve") {
-    lines.push("> **✅ Passed — merging automatically. No action needed.**");
-  } else if (result.final === "rework") {
-    // Turn-based (#41): rework is exclusively the agent's turn — the comment
-    // carries only 🤖 items (plus any advisory notes, which never block).
-    lines.push(
-      "> **🔁 Rework needed — the agent fixes the 🤖 items below and re-pushes. No human action required.**",
-    );
-  } else if (didNotConverge) {
+  if (result.final === "review" && didNotConverge) {
     // Convergence cap fired (#41, Change 3): the loop is over, a human decides.
+    // Still a REVIEW (human's turn), but with a distinct "did not converge" note.
     lines.push(
       "> **🧑‍⚖️ Gate did not converge — human decides.** After 2 rework rounds the gate stops iterating the agent. A maintainer reviews the remaining 🧑 items and override-merges if sound: `gh pr merge <PR> --squash --admin`.",
     );
   } else {
-    // Turn-based (#41): review is exclusively the human's turn — by
-    // construction there are ZERO 🤖 items here.
-    lines.push(
-      "> **⚠️ Human approval required — no agent rework needed, but this is NOT a rubber stamp.** A maintainer decides the 🧑 items below (protected surface, a real trade-off, or ambiguous intent). **Read the review findings (risk + validation notes) before override-merging:** `gh pr merge <PR> --squash --admin`.",
-    );
+    lines.push(`> ${pres.commentBanner}`);
   }
   lines.push("");
 
@@ -129,14 +119,17 @@ export interface CiAnnotation {
 /**
  * A compact one-liner for the GitHub Actions Checks UI (annotation), so the
  * verdict AND the fact that there's substantive feedback are visible without
- * opening the PR comment. rework→error (agent must fix), review→warning
- * (human judgment, distinct from "broken"), approve→notice.
+ * opening the PR comment. The level + title come from the verdict-presentation
+ * table (#54): rework→error (agent must fix), review→warning (human judgment,
+ * distinct from "broken"), approve→notice — the SAME source the check-run and
+ * PR comment use, so the three surfaces can never disagree about the state.
  */
 export function renderCiSummary(result: GateResult): CiAnnotation {
+  const pres = verdictPresentation(result.final);
   if (result.final === "approve") {
     return {
-      level: "notice",
-      title: "plumbline: APPROVE",
+      level: pres.annotationLevel,
+      title: pres.checkName,
       message: "Receipt passed shape + semantic review. Merging automatically — no action needed.",
     };
   }
@@ -145,11 +138,11 @@ export function renderCiSummary(result: GateResult): CiAnnotation {
   const parts: string[] = [];
 
   if (result.final === "rework") {
-    parts.push("Rework needed — the agent fixes the items in the PR comment and re-pushes.");
+    parts.push("REWORK — do NOT merge. The agent fixes the items in the PR comment and re-pushes.");
   } else if (cap?.did_not_converge) {
-    parts.push("Gate did not converge after 2 rework rounds — a human decides the remaining items.");
+    parts.push("REVIEW — gate did not converge after 2 rework rounds; a human decides the remaining items.");
   } else {
-    parts.push("Human approval required (protected/billing surface) — NOT a rubber stamp.");
+    parts.push("REVIEW — human approval required (protected/billing surface). NOT a rubber stamp; NOT a broken build.");
   }
   if (cap?.failing_check) parts.push(`Focus: ${cap.failing_check}.`);
 
@@ -160,8 +153,8 @@ export function renderCiSummary(result: GateResult): CiAnnotation {
   }
 
   return {
-    level: result.final === "rework" ? "error" : "warning",
-    title: `plumbline: ${result.final.toUpperCase()}`,
+    level: pres.annotationLevel,
+    title: pres.checkName,
     message: parts.join(" "),
   };
 }
@@ -328,7 +321,10 @@ export function appendAttemptHistory(
     .map((b, i, arr) => (i === arr.length - 1 ? b.replace(/\s*<\/details>\s*$/, "") : b).trim())
     .filter(Boolean);
 
-  const verdict = existingCurrent.match(/^##\s*\S+\s*plumbline:\s*(\w+)/m)?.[1] ?? "PRIOR";
+  // Recover the prior verdict from its H2 title for the archived-attempt label.
+  // Case-insensitive + tolerant of the "Plumbline: VERDICT — …" title shape
+  // (#54 made the titles verdict-distinct, e.g. "✅ Plumbline: PASS — …").
+  const verdict = existingCurrent.match(/^##.*?plumbline:\s*(\w+)/im)?.[1]?.toUpperCase() ?? "PRIOR";
   const when = `${now.toISOString().slice(0, 16).replace("T", " ")} UTC`;
   const archived = `<details><summary>${verdict} — superseded ${when}</summary>\n\n${truncateBalanced(existingCurrent, ATTEMPT_MAX_CHARS)}\n\n</details>`;
 
@@ -414,6 +410,68 @@ export async function fetchExistingGateComment(
     )?.body;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Publish the gate verdict as a distinct GitHub CHECK-RUN on the PR head commit
+ * (#54). This is the enforceable half of "unmistakable states":
+ *
+ *   - REWORK → a check-run named "Plumbline: REWORK — blocked, do not merge"
+ *     with conclusion `failure`.
+ *   - REVIEW → a check-run named "Plumbline: REVIEW — awaiting human approval"
+ *     with conclusion `action_required` (the UI reads this as "needs a human",
+ *     visibly distinct from a red failure).
+ *   - PASS   → "Plumbline: PASS" with conclusion `success`.
+ *
+ * Because the NAME and CONCLUSION differ per verdict, a maintainer scanning the
+ * Checks list can never confuse a REWORK for a REVIEW (or for a broken build).
+ * Requires a token with `checks: write` and the checks API (available to the
+ * default GITHUB_TOKEN in Actions). Best-effort: a failure to publish the
+ * check-run is logged, never fatal — the workflow-job status + PR comment still
+ * carry the verdict.
+ *
+ * NOTE: the workflow JOB's own required check still gates on the CLI exit code
+ * (approve=0, rework/review=1) — this ADDS a legible, per-verdict check-run on
+ * top; it does not replace the job status.
+ */
+export async function publishCheckRun(
+  repo: string, // "owner/name"
+  headSha: string,
+  name: string,
+  conclusion: CheckConclusion,
+  title: string,
+  summary: string,
+  token: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/check-runs`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: "application/vnd.github+json",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        name,
+        head_sha: headSha,
+        status: "completed",
+        conclusion,
+        // GitHub caps the check-run output summary; the full detail lives in the
+        // PR comment. Keep this short and pointed.
+        output: { title, summary: summary.slice(0, 60000) },
+      }),
+    });
+    if (!res.ok) {
+      // 403 here is the common "token lacks checks:write" case — surface it
+      // clearly so a consumer can add the permission, but never fail the gate.
+      console.error(`plumbline: could not publish verdict check-run (${res.status} ${await res.text().catch(() => "")})`);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error(`plumbline: could not publish verdict check-run: ${(e as Error).message}`);
+    return false;
   }
 }
 
