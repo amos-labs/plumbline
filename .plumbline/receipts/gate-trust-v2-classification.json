@@ -63,6 +63,7 @@
     }
   ],
   "changed_files": [
+    ".github/workflows/ci.yml",
     ".plumbline/AGENTS.md",
     "README.md",
     "dist/index.js",
@@ -73,9 +74,10 @@
     "src/test/render-turn-based.test.ts",
     "src/test/verdict-classification.test.ts",
     "src/types.ts",
-    "templates/AGENTS.md"
+    "templates/AGENTS.md",
+    "templates/workflow.yml"
   ],
   "base_sha": "d64d49a5946ad81f15c0a8fc7a4292af0cea5612",
-  "diff_sha256": "c3aee3489d999b5bb6ab67eeb27ef1389d133fa8b714142b009647fe69013902",
+  "diff_sha256": "6646f9dc647d173664efc909b4932908df56a19919c751df052d72c20f62dab0",
   "result_summary": "#56: added ReviewFinding.materiality + FailureCapsule.follow_ups (types.ts); rewrote the reviewer prompt with a 3-way rubric and bumped PROMPT_VERSION to v3 (review.ts); partitionFindings now splits advisory into optional follow-ups vs dropped noise; selectVerdict already routes agent-fixable to REWORK over the protected floor (added tests proving the sequencing). New github.ts createFollowUpIssue/fileFollowUps auto-file deduped follow-up issues, wired into the `run` reporting path. #49: added uncommittedReceipts() + an allowUntracked fallback in resolveReceiptPath (local-only; CI diff-based), plus an import.meta entrypoint guard so cli.ts is importable by tests. #48: README Status -> v0.4.x with the current gate model; both AGENTS.md TL;DRs/closings rewritten around `receipt --write`. Verified: full suite 270/270 pass, clean tsc build, fresh bundle, and this receipt's shape PASS locally (dogfood #53/#55). self_modifying:true (touches .plumbline/AGENTS.md, src/github.ts, src/types.ts). Version tag deliberately NOT moved — release is a separate step."
 }
