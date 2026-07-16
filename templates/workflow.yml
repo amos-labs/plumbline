@@ -15,6 +15,10 @@ permissions:
   # cannot grant checks:write, the gate still gates via the job status + PR
   # comment; only the extra legible check-run is skipped (logged, non-fatal).
   checks: write
+  # `issues: write` — the gate auto-files optional-but-good review findings as
+  # tracked follow-up issues so a good suggestion isn't skipped (plumbline#56).
+  # Deduped; best-effort — without this the finding still shows in the PR comment.
+  issues: write
 
 jobs:
   gate:
