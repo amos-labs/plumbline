@@ -109,6 +109,27 @@ npx github:amos-labs/plumbline check --review    # full parity — also runs the
 > runs. Use `plumb check --review` to run that review locally and get the full verdict
 > before pushing.
 
+> **Phased gate (fail-cheap-first).** By default the CI gate is one run
+> (`--phase full`): shape + ci-evidence + semantic review on every push. On a
+> repo with a slow (~30-min) test suite that means an agent fixing a REWORK pays
+> the whole suite again — the slowness that makes people route around the gate.
+> The gate can instead run in **stages**, so the agent's iterate loop spins
+> against the cheap ~2-min phase and the suite fires ONCE, only after the code is
+> known-solid:
+>
+> - **`plumb run --phase quality`** (phase 1) — shape + semantic review only.
+>   **ci-evidence is skipped** (tests haven't run). A REWORK fails fast so the
+>   workflow's `needs:` gate blocks phase 2; a clean phase 1 passes so it
+>   proceeds. A phase-1 result reads explicitly as "tests were SKIPPED" — never
+>   "tests passed".
+> - **`plumb run --phase verify`** (phase 2) — the ci-evidence gate + the
+>   terminal PASS / REWORK / REVIEW verdict, after the suite has run.
+>
+> Wire it as `quality → tests (needs: [quality]) → gate (needs: [tests])`. Copy
+> [`templates/workflow-staged.yml`](templates/workflow-staged.yml) to get the
+> three-job pipeline. `--phase full` stays the default — non-staged consumers
+> need no change.
+
 After more commits or a rebase, just run `receipt --write` again — it refreshes the
 mechanical fields and preserves everything you wrote. `receipt --check` (exit 1 when
 stale) is small enough for a pre-push hook. One receipt file per PR at
@@ -354,6 +375,9 @@ plumb check --review   # full parity: shape + semantic review locally (needs a k
 plumb shape            # deterministic checks only — fast, no API key needed
 plumb review           # shape + semantic review, prints JSON verdict
 plumb run              # CI mode: shape + review + posts/updates the PR comment
+plumb run --phase quality  # phased gate, phase 1: shape + semantic ONLY (ci-evidence skipped — tests not yet run)
+plumb run --phase verify   # phased gate, phase 2: ci-evidence + terminal verdict (assumes phase 1 passed)
+                       #   (default --phase full = all-in-one; back-compat for non-staged consumers)
 plumb archive <slug>   # close the loop: apply the change's spec deltas to openspec/specs/ (the living
                        #   source of truth), move it to openspec/changes/archive/<date>-<slug>/;
                        #   refuses unless the receipt passes the gate (--force overrides, loudly)

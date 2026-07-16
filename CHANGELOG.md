@@ -10,6 +10,45 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-16
+
+Phased gate (fail-cheap-first). The monolithic gate ran the full (often ~30-min)
+test suite AND the semantic review on every push, so an agent fixing a REWORK
+paid the whole suite again — the slowness that makes people route around the
+gate. v0.6.0 splits the CI gate into cheap-then-expensive stages so the agent's
+iterate loop spins against the ~2-min shape+semantic phase, and the test suite
+fires ONCE, only after the code is known-solid.
+
+### Added
+- **`plumb run --phase quality|verify|full` (#58).** The CI gate can now run in
+  stages:
+  - `quality` (phase 1) — shape + semantic review only. **ci-evidence is
+    SKIPPED** (tests haven't run yet). A REWORK fails the job (non-zero exit) so
+    the workflow's `needs:` chain blocks phase 2; a clean phase-1 exits 0 so
+    phase 2 proceeds. The verdict/reason wording states LOUDLY that tests were
+    SKIPPED (not "passed") — a clean phase 1 is not a terminal PASS.
+  - `verify` (phase 2) — the ci-evidence gate (tests present + passing, read
+    from the real CI check-run) + the terminal PASS / REWORK / REVIEW verdict.
+    Assumes phase 1 already passed.
+  - `full` (**default**) — today's all-in-one gate, unchanged.
+- **Staged workflow example** at `templates/workflow-staged.yml` — the
+  `quality → tests (needs: [quality]) → gate (needs: [tests])` three-job
+  structure, with `checks: write` + `issues: write` on the gate job.
+- **`phase` input on the composite Action** (`action.yml`), threaded to
+  `plumb run --phase`. Defaults to `full`.
+
+### Changed
+- The gate receipt/reasons now record **which phase produced the verdict**
+  (phase 1 = shape/semantic; phase 2 = ci-evidence), so a phase-1 result is
+  never mistaken for a terminal one.
+
+### Compatibility
+- **Fully back-compatible.** `--phase full` is the default and is byte-for-byte
+  today's behavior; the shape / semantic / ci-evidence gate LOGIC is unchanged
+  (only *when* each runs, plus the phase flag and verdict wording). Consumers
+  still on the single-run `templates/workflow.yml` (Cuspr / nuvola /
+  amos-platform) keep working with no change. No receipt-schema change.
+
 ## [0.5.0] - 2026-07-16
 
 Gate-trust: make the three verdicts unmistakable end-to-end, tighten REWORK vs
