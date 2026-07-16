@@ -30,6 +30,7 @@ import {
   extractPriorCapsule,
   publishCheckRun,
   getPrHeadSha,
+  fileFollowUps,
 } from "./github.js";
 import { verdictPresentation } from "./verdict.js";
 import { renderPreflight } from "./preflight.js";
@@ -154,12 +155,37 @@ function defaultReceipt(dir: string): string {
  * or git isn't available, so existing repos keep working unchanged. An
  * explicit non-default --receipt always wins.
  */
+/**
+ * Uncommitted per-PR receipts (#49): untracked or unstaged files under
+ * `.plumbline/receipts/` (or legacy `.proofgate/`), read from
+ * `git status --porcelain`. Lets the LOCAL pre-flight discover a receipt the
+ * agent just wrote but hasn't `git add`ed yet — the exact first-run trap.
+ * Returns [] on any git error (caller falls back to the diff-based path).
+ */
+export function uncommittedReceipts(cwd: string): string[] {
+  try {
+    const out = execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], {
+      cwd,
+      encoding: "utf8",
+    });
+    return out
+      .split("\n")
+      // porcelain format: 2 status chars + space + path (+ optional "orig -> new").
+      .map((l) => l.slice(3).trim())
+      .map((p) => (p.includes(" -> ") ? p.split(" -> ")[1] : p))
+      .filter((f) => /^\.(?:plumbline|proofgate)\/receipts\/[^/]+\.json$/.test(f));
+  } catch {
+    return [];
+  }
+}
+
 function resolveReceiptPath(
   explicit: string,
   baseRef: string | undefined,
   cwd: string,
   skipGit: boolean,
   fallback: string,
+  allowUntracked = false,
 ): string {
   if (explicit !== fallback) return explicit;
   if (skipGit || !baseRef) return fallback;
@@ -175,6 +201,23 @@ function resolveReceiptPath(
       .filter((f) => /^\.(?:plumbline|proofgate)\/receipts\/[^/]+\.json$/.test(f));
   } catch {
     return fallback;
+  }
+  // First-run ergonomics (#49): the diff sees only COMMITTED changes, so a
+  // freshly-written but not-yet-committed receipt under receipts/ is invisible
+  // and discovery falls back to the (missing) single-file path → "no receipt
+  // found". Locally, also consider UNTRACKED / unstaged receipts via
+  // `git status --porcelain` so `plumb check` works BEFORE `git add`. CI stays
+  // strictly diff-based (allowUntracked=false) — a receipt must be committed to
+  // gate a PR — so this changes only the local pre-flight, never the gate.
+  if (changed.length === 0 && allowUntracked) {
+    const untracked = uncommittedReceipts(cwd);
+    if (untracked.length === 1) return untracked[0];
+    if (untracked.length > 1) {
+      throw new Error(
+        `plumb: ${untracked.length} uncommitted receipts under receipts/ ` +
+          `(${untracked.join(", ")}) — pass --receipt to select which one to check.`,
+      );
+    }
   }
   if (changed.length === 1) return changed[0];
   if (changed.length > 1) {
@@ -251,6 +294,10 @@ async function main(): Promise<number> {
           cwd,
           skipGit,
           DEFAULT_RECEIPT,
+          // #49: allow untracked-receipt discovery only for LOCAL pre-flight
+          // commands (not the CI `run` gate, which stays diff-based). CI is
+          // detected by ci.provider; `run` is excluded belt-and-suspenders.
+          ci.provider === "none" && cmd !== "run",
         );
 
   if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check", "receipt", "propose", "archive", "setup-protection", "migration-guard"].includes(cmd)) {
@@ -1078,6 +1125,33 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
     if (ci.prNumber !== undefined && prOverride) {
       ci.prNumber = Number(prOverride);
     }
+
+    // Optional-but-good findings → tracked follow-up issues (#56). File them
+    // BEFORE posting the comment so the reasons line can report what was filed.
+    // Best-effort + deduped: never blocks the gate, never spams re-run dupes.
+    const followUps = gate.review?.failure_capsule?.follow_ups ?? [];
+    if (ci.provider === "github" && followUps.length > 0) {
+      const repo = process.env.GITHUB_REPOSITORY;
+      const token = process.env.GITHUB_TOKEN;
+      if (repo && token && ci.prNumber !== undefined) {
+        try {
+          const created = await fileFollowUps(repo, ci.prNumber, followUps, token);
+          if (created.length > 0) {
+            gate.reasons.push(
+              `Filed ${created.length} optional follow-up issue(s) for good-but-out-of-scope findings: ${created.map((n) => `#${n}`).join(", ")}.`,
+            );
+            console.error(`filed ${created.length} follow-up issue(s): ${created.map((n) => `#${n}`).join(", ")}`);
+          } else {
+            gate.reasons.push(
+              `${followUps.length} optional follow-up finding(s) already tracked (no new issues filed).`,
+            );
+          }
+        } catch (e) {
+          console.error(`plumbline: could not file follow-up issues: ${(e as Error).message}`);
+        }
+      }
+    }
+
     const posted = await reportToCi(
       ci,
       renderComment(gate),
@@ -1141,10 +1215,17 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
   return gate.final === "approve" ? 0 : 1;
 }
 
-main().then(
-  (code) => process.exit(code),
-  (err) => {
-    console.error(`plumb: ${err?.message ?? err}`);
-    process.exit(1);
-  },
-);
+// Run as a CLI only when invoked directly (not when imported by a test that
+// wants a pure export like uncommittedReceipts). `import.meta.url` matches the
+// process entry path exactly when this file is the executed script.
+const invokedDirectly =
+  process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
+if (invokedDirectly) {
+  main().then(
+    (code) => process.exit(code),
+    (err) => {
+      console.error(`plumb: ${err?.message ?? err}`);
+      process.exit(1);
+    },
+  );
+}

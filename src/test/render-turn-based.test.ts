@@ -60,7 +60,24 @@ test("renderComment: a rework carries only 🤖 items — zero 🧑", () => {
   assert.doesNotMatch(md, /🧑 Human must decide/);
 });
 
-test("renderComment: advisory notes render in their own non-blocking section", () => {
+test("renderComment: optional follow-ups render in their own non-blocking section (#56)", () => {
+  const md = renderComment(
+    gate("rework", {
+      failing_check: "fc",
+      suspected_cause: "sc",
+      next_action_requested: "na",
+      agent_actions: ["fix the bug"],
+      human_actions: [],
+      follow_ups: ["consider renaming foo"],
+      changed_files_implicated: [],
+      severity: "fixable",
+    }),
+  );
+  assert.match(md, /💡 Optional follow-ups — non-blocking \(auto-filed as tracked issues\)/);
+  assert.match(md, /consider renaming foo/);
+});
+
+test("renderComment: legacy `advisory` field still renders (back-compat)", () => {
   const md = renderComment(
     gate("rework", {
       failing_check: "fc",
@@ -73,7 +90,6 @@ test("renderComment: advisory notes render in their own non-blocking section", (
       severity: "fixable",
     }),
   );
-  assert.match(md, /💡 Advisory — non-blocking/);
   assert.match(md, /consider renaming foo/);
 });
 

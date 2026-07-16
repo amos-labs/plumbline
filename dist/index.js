@@ -4866,7 +4866,7 @@ function resolveModel(policy) {
 
 // src/review.ts
 var MAX_DIFF_CHARS = 18e4;
-var PROMPT_VERSION = "v2";
+var PROMPT_VERSION = "v3";
 function buildReviewPrompt(mission, receipt, diff, humanReviewLevel = "balanced", context) {
   const levelGuidance = {
     low: `The maintainer wants MINIMAL human review. Classify a finding's actor as "human" ONLY when it genuinely cannot be resolved without human judgment (protected-surface/billing override, a real invariant trade-off, irreducibly ambiguous intent). Everything an agent could reasonably do is actor "agent".`,
@@ -4898,14 +4898,25 @@ Judge the work on exactly these dimensions:
 3. RISK \u2014 Hidden scope creep, security exposure, data-integrity risk, debt dumped on protected surfaces, changes unrelated to the stated intent.
 4. SELF-MODIFYING HONESTY \u2014 If the diff touches anything the mission marks protected, the receipt must say self_modifying: true. Flag any mismatch.
 
-Report every issue as a FINDING, classified on two independent axes:
+Report every issue as a FINDING, classified on THREE independent axes. Getting materiality right is what keeps good suggestions from being lost AND keeps trivia from blocking forever \u2014 classify crisply.
+
+AXIS 1 \u2014 class (does it gate the merge?):
 - class: "blocking" \u2014 a DEFECT: a failed or missing validation, a bug, a security regression, a receipt that does not match the diff, an untested critical path. Only blocking findings gate the merge.
-- class: "advisory" \u2014 a "consider\u2026", a style nit, a refactor suggestion, a nice-to-have. Advisory findings are recorded and shown to the author but NEVER block the merge. Do NOT inflate an advisory into a blocking finding.
+- class: "advisory" \u2014 NOT a defect: a "consider\u2026", a suggestion, a refactor idea, a style note. Advisory findings NEVER block the merge. Do NOT inflate an advisory into a blocking finding.
+
+AXIS 2 \u2014 actor (who can resolve it?):
 - actor: "agent" \u2014 an agent can resolve it right now (code/security/tests/docs).
 - actor: "human" \u2014 it needs human judgment: a protected-surface/billing override, a real invariant trade-off, or irreducibly ambiguous intent.
+
+AXIS 3 \u2014 materiality (this is the crisp 3-way bucket \u2014 apply it to EVERY finding):
+- materiality: "material" \u2014 a real problem worth acting on. EVERY blocking finding is "material" by definition. An agent-fixable material finding must be class "blocking" + actor "agent" so it routes to REWORK and gets FIXED NOW, not deferred.
+- materiality: "optional" \u2014 genuinely GOOD but legitimately out of scope for this PR (a worthwhile follow-up, a nice future refactor, a real-but-minor improvement that needn't gate this change). These are class "advisory". The gate AUTO-FILES a tracked follow-up issue for each \u2014 so it is captured, never skipped, and never blocks.
+- materiality: "noise" \u2014 a stylistic non-issue, a nitpick, or a matter of taste with no real value. These are class "advisory" and are DROPPED \u2014 do not file, do not block. Use this for anything you'd be embarrassed to open a ticket about.
+
+CRITICAL routing rule (do not conflate materiality with class): if a suggestion is agent-fixable AND materially improves the change, it is a MATERIAL, BLOCKING, AGENT finding (\u21D2 REWORK \u2014 fix it now). Do NOT downgrade a good, in-scope, agent-fixable fix to an "optional" advisory to avoid blocking \u2014 that is exactly the failure this rubric exists to prevent. "optional" is ONLY for genuinely-out-of-scope-but-good ideas.
 ${levelGuidance}
 
-Do NOT choose the final verdict yourself \u2014 the gate derives it mechanically from your findings (any blocking+agent finding \u21D2 the agent's turn; blocking+human with no blocking+agent \u21D2 the human's turn; none \u21D2 pass). Report the "verdict" field as your best guess for context only; it will be recomputed.
+Do NOT choose the final verdict yourself \u2014 the gate derives it mechanically from your findings. Sequential and exclusive: ANY blocking+agent finding \u21D2 REWORK (the agent's turn \u2014 even on a protected/self_modifying surface); a PR CANNOT reach human-REVIEW while any agent-fixable finding remains. Only once there are zero blocking+agent findings does a blocking+human finding (or a protected surface) \u21D2 REVIEW (the human's turn); none \u21D2 pass. Report the "verdict" field as your best guess for context only; it will be recomputed.
 
 Respond with ONLY a JSON object, no markdown fence, with this exact shape:
 {
@@ -4919,7 +4930,7 @@ Respond with ONLY a JSON object, no markdown fence, with this exact shape:
     "suspected_cause": "<why, at least one sentence>",
     "next_action_requested": "<the single most useful next step>",
     "findings": [
-      { "description": "<concrete, actionable>", "class": "blocking" | "advisory", "actor": "agent" | "human"${context?.priorCapsule ? ', "regression": true' : ""} }
+      { "description": "<concrete, actionable>", "class": "blocking" | "advisory", "actor": "agent" | "human", "materiality": "material" | "optional" | "noise"${context?.priorCapsule ? ', "regression": true' : ""} }
     ],
     "changed_files_implicated": ["<paths>"],
     "severity": "fixable" | "fatal" | "review"
@@ -4927,8 +4938,9 @@ Respond with ONLY a JSON object, no markdown fence, with this exact shape:
 }
 
 Rules:
-- List EVERY issue as a finding. If there are no findings at all, the work passes \u2014 omit failure_capsule entirely.
+- List EVERY issue as a finding, EXCEPT pure noise you would drop anyway (you may omit it, or tag it materiality "noise"). If there are no findings at all, the work passes \u2014 omit failure_capsule entirely.
 - A single finding is either blocking or advisory \u2014 never both. When unsure whether something is a true defect, prefer advisory; do not manufacture blocking findings to look thorough.
+- Tag materiality on EVERY finding. blocking \u21D2 "material". advisory \u21D2 "optional" (worth a follow-up ticket) or "noise" (drop).
 - next_action_requested should name the single most useful next step for whoever's turn it is.
 - Omit failure_capsule only when there are zero findings (a clean pass).${context?.priorCapsule ? "\n- This is a RE-REVIEW: obey the <delta_review_contract> above \u2014 verify the prior blocking items, review ONLY changed hunks, and set regression:true on any NEW defect the fix commits introduced." : ""}`;
 }
@@ -4957,20 +4969,26 @@ ${context.round >= CONVERGENCE_CAP_ROUND ? `4. CONVERGENCE CAP: this PR has been
 </delta_review_contract>
 `;
 }
+function findingMateriality(f) {
+  if (f.class === "blocking") return "material";
+  if (f.materiality === "noise") return "noise";
+  if (f.materiality === "material") return "material";
+  return "optional";
+}
 function partitionFindings(findings) {
   const agentActions = [];
   const humanActions = [];
-  const advisory = [];
+  const followUps = [];
   for (const f of findings) {
     if (f.class === "advisory") {
-      advisory.push(f.description);
+      if (findingMateriality(f) !== "noise") followUps.push(f.description);
     } else if (f.actor === "human") {
       humanActions.push(f.description);
     } else {
       agentActions.push(f.description);
     }
   }
-  return { agentActions, humanActions, advisory };
+  return { agentActions, humanActions, followUps, advisory: followUps };
 }
 function applyConvergenceCap(findings, round) {
   if (round < CONVERGENCE_CAP_ROUND) return { findings, capped: false };
@@ -5088,7 +5106,7 @@ async function semanticReview(mission, receipt, diff, policy, provider, context)
   const rawFindings = normalizeFindings(parsed.failure_capsule);
   const round = context?.round ?? 1;
   const { findings, capped } = applyConvergenceCap(rawFindings, round);
-  const { agentActions, humanActions, advisory } = partitionFindings(findings);
+  const { agentActions, humanActions, followUps } = partitionFindings(findings);
   const protectedFloor2 = receipt.self_modifying === true;
   let verdict = selectVerdict(findings, { protectedFloor: protectedFloor2 });
   if (verdict === "approve" && parsed.confidence < policy.min_review_confidence) {
@@ -5112,7 +5130,10 @@ async function semanticReview(mission, receipt, diff, policy, provider, context)
       findings,
       agent_actions: agentActions,
       human_actions: humanActions,
-      advisory,
+      // #56: optional-good advisories are surfaced AND filed as follow-ups;
+      // noise is dropped in partitionFindings and never reaches either field.
+      advisory: followUps,
+      follow_ups: followUps,
       did_not_converge: capped || void 0
     };
     if (capped) {
@@ -5136,6 +5157,10 @@ function normalizeFindings(capsule) {
       description: f.description,
       class: f.class === "advisory" ? "advisory" : "blocking",
       actor: f.actor === "human" ? "human" : "agent",
+      // Materiality (#56): honor an explicit tag; leave undefined otherwise so
+      // findingMateriality() applies the conservative default (blocking⇒material,
+      // advisory⇒optional). An unrecognized value is treated as untagged.
+      materiality: f.materiality === "material" || f.materiality === "optional" || f.materiality === "noise" ? f.materiality : void 0,
       regression: f.regression === true ? true : void 0
     }));
   }
@@ -5181,6 +5206,9 @@ function parseReviewJson(text) {
   }
   return null;
 }
+
+// src/github.ts
+import { createHash as createHash2 } from "node:crypto";
 
 // src/verdict.ts
 var TABLE = {
@@ -5231,7 +5259,7 @@ function renderComment(result) {
   const cap = result.review?.failure_capsule;
   const agentActions = cap?.agent_actions ?? [];
   const humanActions = cap?.human_actions ?? [];
-  const advisory = cap?.advisory ?? [];
+  const followUps = cap?.follow_ups ?? cap?.advisory ?? [];
   const didNotConverge = cap?.did_not_converge === true;
   if (result.final === "review" && didNotConverge) {
     lines.push(
@@ -5280,10 +5308,10 @@ function renderComment(result) {
         lines.push("");
         lines.push(`**Next action:** ${r.failure_capsule.next_action_requested}`);
       }
-      if (advisory.length > 0) {
+      if (followUps.length > 0) {
         lines.push("");
-        lines.push("#### \u{1F4A1} Advisory \u2014 non-blocking (does not gate the merge)");
-        for (const a of advisory) lines.push(`- ${a}`);
+        lines.push("#### \u{1F4A1} Optional follow-ups \u2014 non-blocking (auto-filed as tracked issues)");
+        for (const a of followUps) lines.push(`- ${a}`);
       }
       lines.push("");
       lines.push("<details><summary>Full capsule (JSON)</summary>");
@@ -5483,6 +5511,67 @@ async function publishCheckRun(repo, headSha, name, conclusion, title, summary, 
     console.error(`plumbline: could not publish verdict check-run: ${e.message}`);
     return false;
   }
+}
+var FOLLOWUP_LABEL = "plumbline-followup";
+var FOLLOWUP_MARKER = "<!-- plumbline:followup:";
+function followUpFingerprint(prNumber, description) {
+  const h = createHash2("sha256").update(`${prNumber}
+${description.trim()}`, "utf8").digest("hex");
+  return h.slice(0, 16);
+}
+async function followUpExists(repo, fingerprint, token) {
+  try {
+    const q = encodeURIComponent(`repo:${repo} is:issue is:open in:body ${FOLLOWUP_MARKER}${fingerprint}`);
+    const res = await fetch(`https://api.github.com/search/issues?q=${q}`, { headers: GH_HEADERS(token) });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return (data.total_count ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+async function createFollowUpIssue(repo, prNumber, description, token) {
+  const fingerprint = followUpFingerprint(prNumber, description);
+  if (await followUpExists(repo, fingerprint, token)) return null;
+  const title = `[plumbline follow-up] ${description.slice(0, 120)}${description.length > 120 ? "\u2026" : ""}`;
+  const body = `${FOLLOWUP_MARKER}${fingerprint} -->
+
+Filed by the Plumbline gate from PR #${prNumber} as an **optional-but-good** review finding (not blocking that PR, but worth doing so it isn't lost):
+
+> ${description}
+
+_Auto-filed so the suggestion is tracked instead of skipped. Close if not worth pursuing._`;
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/issues`, {
+      method: "POST",
+      headers: { ...GH_HEADERS(token), "content-type": "application/json" },
+      body: JSON.stringify({ title, body, labels: [FOLLOWUP_LABEL] })
+    });
+    if (!res.ok) {
+      if (res.status === 422) {
+        const retry = await fetch(`https://api.github.com/repos/${repo}/issues`, {
+          method: "POST",
+          headers: { ...GH_HEADERS(token), "content-type": "application/json" },
+          body: JSON.stringify({ title, body })
+        });
+        if (retry.ok) return (await retry.json()).number ?? null;
+      }
+      console.error(`plumbline: could not file follow-up issue (${res.status})`);
+      return null;
+    }
+    return (await res.json()).number ?? null;
+  } catch (e) {
+    console.error(`plumbline: could not file follow-up issue: ${e.message}`);
+    return null;
+  }
+}
+async function fileFollowUps(repo, prNumber, descriptions, token) {
+  const created = [];
+  for (const d of descriptions) {
+    const n = await createFollowUpIssue(repo, prNumber, d, token);
+    if (n !== null) created.push(n);
+  }
+  return created;
 }
 async function postPrComment(repo, prNumber, body, token) {
   const api = `https://api.github.com/repos/${repo}/issues/${prNumber}/comments`;
@@ -6608,7 +6697,18 @@ function preflightWarnings(cwd, baseRef) {
 function defaultReceipt(dir) {
   return `${dir}/receipt.json`;
 }
-function resolveReceiptPath(explicit, baseRef, cwd, skipGit, fallback) {
+function uncommittedReceipts(cwd) {
+  try {
+    const out = execFileSync5("git", ["status", "--porcelain", "--untracked-files=all"], {
+      cwd,
+      encoding: "utf8"
+    });
+    return out.split("\n").map((l) => l.slice(3).trim()).map((p) => p.includes(" -> ") ? p.split(" -> ")[1] : p).filter((f) => /^\.(?:plumbline|proofgate)\/receipts\/[^/]+\.json$/.test(f));
+  } catch {
+    return [];
+  }
+}
+function resolveReceiptPath(explicit, baseRef, cwd, skipGit, fallback, allowUntracked = false) {
   if (explicit !== fallback) return explicit;
   if (skipGit || !baseRef) return fallback;
   let changed = [];
@@ -6620,6 +6720,15 @@ function resolveReceiptPath(explicit, baseRef, cwd, skipGit, fallback) {
     ).split("\n").map((l) => l.trim()).filter((f) => /^\.(?:plumbline|proofgate)\/receipts\/[^/]+\.json$/.test(f));
   } catch {
     return fallback;
+  }
+  if (changed.length === 0 && allowUntracked) {
+    const untracked = uncommittedReceipts(cwd);
+    if (untracked.length === 1) return untracked[0];
+    if (untracked.length > 1) {
+      throw new Error(
+        `plumb: ${untracked.length} uncommitted receipts under receipts/ (${untracked.join(", ")}) \u2014 pass --receipt to select which one to check.`
+      );
+    }
   }
   if (changed.length === 1) return changed[0];
   if (changed.length > 1) {
@@ -6671,7 +6780,11 @@ async function main() {
     skipGit ? void 0 : baseRef,
     cwd,
     skipGit,
-    DEFAULT_RECEIPT
+    DEFAULT_RECEIPT,
+    // #49: allow untracked-receipt discovery only for LOCAL pre-flight
+    // commands (not the CI `run` gate, which stays diff-based). CI is
+    // detected by ci.provider; `run` is excluded belt-and-suspenders.
+    ci.provider === "none" && cmd !== "run"
   );
   if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check", "receipt", "propose", "archive", "setup-protection", "migration-guard"].includes(cmd)) {
     console.log(`plumbline \u2014 the plumb line for AI agent work (Amos 7:7-8): proof-carrying gate
@@ -7331,6 +7444,28 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
     if (ci.prNumber !== void 0 && prOverride) {
       ci.prNumber = Number(prOverride);
     }
+    const followUps = gate.review?.failure_capsule?.follow_ups ?? [];
+    if (ci.provider === "github" && followUps.length > 0) {
+      const repo = process.env.GITHUB_REPOSITORY;
+      const token = process.env.GITHUB_TOKEN;
+      if (repo && token && ci.prNumber !== void 0) {
+        try {
+          const created = await fileFollowUps(repo, ci.prNumber, followUps, token);
+          if (created.length > 0) {
+            gate.reasons.push(
+              `Filed ${created.length} optional follow-up issue(s) for good-but-out-of-scope findings: ${created.map((n) => `#${n}`).join(", ")}.`
+            );
+            console.error(`filed ${created.length} follow-up issue(s): ${created.map((n) => `#${n}`).join(", ")}`);
+          } else {
+            gate.reasons.push(
+              `${followUps.length} optional follow-up finding(s) already tracked (no new issues filed).`
+            );
+          }
+        } catch (e) {
+          console.error(`plumbline: could not file follow-up issues: ${e.message}`);
+        }
+      }
+    }
     const posted = await reportToCi(
       ci,
       renderComment(gate),
@@ -7382,10 +7517,16 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
   }
   return gate.final === "approve" ? 0 : 1;
 }
-main().then(
-  (code) => process.exit(code),
-  (err) => {
-    console.error(`plumb: ${err?.message ?? err}`);
-    process.exit(1);
-  }
-);
+var invokedDirectly = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
+if (invokedDirectly) {
+  main().then(
+    (code) => process.exit(code),
+    (err) => {
+      console.error(`plumb: ${err?.message ?? err}`);
+      process.exit(1);
+    }
+  );
+}
+export {
+  uncommittedReceipts
+};

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { GateResult } from "./types.js";
 import { verdictPresentation, type CheckConclusion } from "./verdict.js";
 
@@ -16,7 +17,10 @@ export function renderComment(result: GateResult): string {
   const cap = result.review?.failure_capsule;
   const agentActions = cap?.agent_actions ?? [];
   const humanActions = cap?.human_actions ?? [];
-  const advisory = cap?.advisory ?? [];
+  // #56: optional-but-good findings — surfaced here AND auto-filed as tracked
+  // follow-up issues. `follow_ups` is the post-#56 field; fall back to the
+  // legacy `advisory` field for capsules produced before the rename.
+  const followUps = cap?.follow_ups ?? cap?.advisory ?? [];
   const didNotConverge = cap?.did_not_converge === true;
 
   if (result.final === "review" && didNotConverge) {
@@ -80,13 +84,13 @@ export function renderComment(result: GateResult): string {
         lines.push(`**Next action:** ${r.failure_capsule.next_action_requested}`);
       }
 
-      // Advisory notes (#41, Change 2): recorded and shown, NEVER verdict-
-      // affecting. Kept in a distinct section so they can never read as
-      // required work.
-      if (advisory.length > 0) {
+      // Optional-but-good findings (#56): non-blocking, and NOT lost — the gate
+      // auto-files a tracked follow-up issue for each. Shown here so the author
+      // sees them; they never read as required work for THIS PR.
+      if (followUps.length > 0) {
         lines.push("");
-        lines.push("#### 💡 Advisory — non-blocking (does not gate the merge)");
-        for (const a of advisory) lines.push(`- ${a}`);
+        lines.push("#### 💡 Optional follow-ups — non-blocking (auto-filed as tracked issues)");
+        for (const a of followUps) lines.push(`- ${a}`);
       }
 
       lines.push("");
@@ -473,6 +477,107 @@ export async function publishCheckRun(
     console.error(`plumbline: could not publish verdict check-run: ${(e as Error).message}`);
     return false;
   }
+}
+
+// ── Optional-but-good findings → tracked follow-up issues (#56) ────────────
+//
+// The key #56 move: a genuinely-good-but-out-of-scope suggestion must not
+// evaporate as a skipped advisory. Instead the gate FILES it as a follow-up
+// issue so a human/agent can pick it up. Idempotent: each finding gets a stable
+// fingerprint embedded in the issue body; before filing, we search for an open
+// issue carrying that fingerprint and skip if one exists — so re-running the
+// gate on the same PR never spams duplicates.
+
+const FOLLOWUP_LABEL = "plumbline-followup";
+const FOLLOWUP_MARKER = "<!-- plumbline:followup:";
+
+/** A short stable fingerprint for a finding — the dedup key. */
+export function followUpFingerprint(prNumber: number, description: string): string {
+  const h = createHash("sha256").update(`${prNumber}\n${description.trim()}`, "utf8").digest("hex");
+  return h.slice(0, 16);
+}
+
+/** Search open issues for an existing follow-up carrying this fingerprint. */
+async function followUpExists(repo: string, fingerprint: string, token: string): Promise<boolean> {
+  try {
+    // Full-text search over open issues in the repo for the marker+fingerprint.
+    const q = encodeURIComponent(`repo:${repo} is:issue is:open in:body ${FOLLOWUP_MARKER}${fingerprint}`);
+    const res = await fetch(`https://api.github.com/search/issues?q=${q}`, { headers: GH_HEADERS(token) });
+    if (!res.ok) return false; // search unavailable → don't block filing (worst case: a dup, still tracked)
+    const data = (await res.json()) as { total_count?: number };
+    return (data.total_count ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * File a single optional-but-good finding as a follow-up issue (#56), unless one
+ * already exists for it. Returns the created issue number, or null if it was
+ * deduped or filing failed. Best-effort: never throws — a follow-up that can't
+ * be filed is logged, and the finding still appears in the PR comment, so it is
+ * not silently lost even on failure.
+ */
+export async function createFollowUpIssue(
+  repo: string, // "owner/name"
+  prNumber: number,
+  description: string,
+  token: string,
+): Promise<number | null> {
+  const fingerprint = followUpFingerprint(prNumber, description);
+  if (await followUpExists(repo, fingerprint, token)) return null;
+
+  const title = `[plumbline follow-up] ${description.slice(0, 120)}${description.length > 120 ? "…" : ""}`;
+  const body =
+    `${FOLLOWUP_MARKER}${fingerprint} -->\n\n` +
+    `Filed by the Plumbline gate from PR #${prNumber} as an **optional-but-good** review finding ` +
+    `(not blocking that PR, but worth doing so it isn't lost):\n\n` +
+    `> ${description}\n\n` +
+    `_Auto-filed so the suggestion is tracked instead of skipped. Close if not worth pursuing._`;
+
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/issues`, {
+      method: "POST",
+      headers: { ...GH_HEADERS(token), "content-type": "application/json" },
+      body: JSON.stringify({ title, body, labels: [FOLLOWUP_LABEL] }),
+    });
+    if (!res.ok) {
+      // A missing label is a common 422; retry once without labels so the
+      // suggestion is still captured even if the repo lacks the label.
+      if (res.status === 422) {
+        const retry = await fetch(`https://api.github.com/repos/${repo}/issues`, {
+          method: "POST",
+          headers: { ...GH_HEADERS(token), "content-type": "application/json" },
+          body: JSON.stringify({ title, body }),
+        });
+        if (retry.ok) return ((await retry.json()) as { number?: number }).number ?? null;
+      }
+      console.error(`plumbline: could not file follow-up issue (${res.status})`);
+      return null;
+    }
+    return ((await res.json()) as { number?: number }).number ?? null;
+  } catch (e) {
+    console.error(`plumbline: could not file follow-up issue: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+/**
+ * File every optional-but-good follow-up for a PR (#56), deduped. Returns the
+ * numbers of issues actually created (excludes deduped/failed). Best-effort.
+ */
+export async function fileFollowUps(
+  repo: string,
+  prNumber: number,
+  descriptions: string[],
+  token: string,
+): Promise<number[]> {
+  const created: number[] = [];
+  for (const d of descriptions) {
+    const n = await createFollowUpIssue(repo, prNumber, d, token);
+    if (n !== null) created.push(n);
+  }
+  return created;
 }
 
 /** Post (or update) the gate comment on a PR. Requires GITHUB_TOKEN. */
