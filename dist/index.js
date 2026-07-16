@@ -6773,6 +6773,12 @@ async function main() {
   const policyPath = resolveDualPath(cwd, arg("policy", `${dir}/policy.json`));
   const baseRef = arg("base", ci.baseRef ?? detectBaseRef(cwd));
   const skipGit = flag("no-git");
+  const phase = arg("phase", "full");
+  if (!["full", "quality", "verify"].includes(phase)) {
+    console.error(`plumb: unknown --phase "${phase}" (known: full | quality | verify)`);
+    return 2;
+  }
+  const runCiEvidence = phase !== "quality";
   const receiptArg = arg("receipt", "auto");
   const receiptIsDefault = receiptArg === "auto" || receiptArg === ".plumbline/receipt.json" || receiptArg === ".proofgate/receipt.json";
   const receiptPath = cmd === "init" || cmd === "new" || cmd === "schema" || cmd === "propose" || cmd === "archive" || cmd === "setup-protection" || cmd === "migration-guard" ? DEFAULT_RECEIPT : resolveReceiptPath(
@@ -6814,7 +6820,11 @@ usage:
   plumb check   [--receipt path] [--policy path] [--base ref] [--review]   (local pre-flight: shape + diff_sha256 only; --review also runs the semantic review for the full verdict)
   plumb shape   [--receipt path] [--policy path] [--base ref] [--no-git]
   plumb review  [--receipt path] [--policy path] [--base ref] [--mission path]
-  plumb run     [--receipt path] [--policy path] [--base ref]   (shape + review + PR comment in CI)
+  plumb run     [--receipt path] [--policy path] [--base ref] [--phase quality|verify|full]
+                (CI gate: shape + review + PR comment. --phase splits it fail-cheap-first:
+                 quality = shape + semantic only (ci-evidence SKIPPED \u2014 tests not yet run; REWORK fails fast);
+                 verify  = ci-evidence + terminal verdict (assumes phase 1 passed);
+                 full    = all-in-one (default; back-compat for non-staged consumers).)
   plumb archive <slug> [--force] [--date YYYY-MM-DD]   (apply the change's spec deltas to the living
                 openspec/specs/, move the change to openspec/changes/archive/<date>-<slug>/;
                 refuses unless the change's receipt passes the gate \u2014 --force overrides with a warning)
@@ -7246,7 +7256,14 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
   };
   if (cmd === "shape") return shape.pass ? 0 : 1;
   const ciEvidenceSeverity = resolveSeverity("ci_evidence", policy);
-  if (cmd === "run" && policy.ci_evidence_checks.length > 0 && ciEvidenceSeverity === "off") {
+  if (cmd === "run" && !runCiEvidence && policy.ci_evidence_checks.length > 0) {
+    console.error(
+      `ci-evidence: SKIPPED in --phase quality \u2014 tests run in phase 2 (verify). This phase judges shape + semantic only.`
+    );
+    gate.reasons.push(
+      "\u23ED\uFE0F ci-evidence NOT checked in this phase (quality) \u2014 tests were SKIPPED and are verified in phase 2 (verify)."
+    );
+  } else if (cmd === "run" && policy.ci_evidence_checks.length > 0 && ciEvidenceSeverity === "off") {
     console.error(`ci-evidence: severity "off" in policy \u2014 verification skipped`);
     gate.reasons.push("CI evidence check is off in policy \u2014 not verified.");
   } else if (cmd === "run" && policy.ci_evidence_checks.length > 0) {
@@ -7437,6 +7454,27 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
       console.error(`  coverage: ${review.validation_coverage_notes}`);
       console.error(`  mission:  ${review.mission_alignment_notes}`);
       console.error(`  risk:     ${review.risk_notes}`);
+    }
+  }
+  if (cmd === "run" && phase !== "full") {
+    if (phase === "quality") {
+      if (gate.final === "approve") {
+        gate.reasons.push(
+          "\u2705 Phase 1 (quality) PASSED \u2014 shape + semantic review are clean. This is NOT a terminal PASS: tests were NOT run in this phase. Phase 2 (verify) runs the full test suite + ci-evidence and emits the terminal verdict."
+        );
+      } else if (gate.final === "rework") {
+        gate.reasons.push(
+          "\u{1F501} Phase 1 (quality) REWORK \u2014 fast checks (shape/semantic) failed and the test suite was SKIPPED (not yet run). These are agent-fixable: fix the \u{1F916} items and re-push; the cheap phase re-runs in ~2 min. Do NOT read this as 'tests passed' \u2014 tests only run in phase 2 (verify)."
+        );
+      } else {
+        gate.reasons.push(
+          "\u26A0\uFE0F Phase 1 (quality) REVIEW \u2014 a human decision is needed before tests are worth running. Tests were SKIPPED in this phase."
+        );
+      }
+    } else if (phase === "verify") {
+      gate.reasons.push(
+        "Phase 2 (verify): terminal verdict \u2014 ci-evidence (tests present + passing) verified against the real CI run. Phase 1 (quality: shape + semantic) is assumed already green."
+      );
     }
   }
   if (cmd === "run") {

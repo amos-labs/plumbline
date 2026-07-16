@@ -21,6 +21,10 @@ inputs:
     description: "Path to the gate policy (auto-resolves .plumbline/ or legacy .proofgate/)"
     required: false
     default: ".plumbline/policy.json"
+  phase:
+    description: "Phased gate stage: full (default, all-in-one), quality (phase 1: shape + semantic, ci-evidence skipped — tests not yet run), or verify (phase 2: ci-evidence + terminal verdict). See templates/workflow-staged.yml."
+    required: false
+    default: "full"
 
 runs:
   using: "composite"
@@ -49,4 +53,5 @@ runs:
         node "${{ github.action_path }}/dist/index.js" run \
           --receipt "${{ inputs.receipt }}" \
           --policy "${{ inputs.policy }}" \
+          --phase "${{ inputs.phase }}" \
           --base "origin/${{ github.base_ref }}"

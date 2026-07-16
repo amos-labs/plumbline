@@ -1,0 +1,79 @@
+{
+  "_help": {
+    "_note": "Allowed values + requirements per field (this _help block is ignored by the gate — keep or delete). Run `plumb schema` for the full reference.",
+    "receipt_version": "one of: 1.0 — required — schema version",
+    "task_id": "required — ticket/issue/branch id (also the receipt filename)",
+    "agent_id": "required — which agent or human did the work",
+    "intent": "required — what + why, plain language — the semantic review reads this",
+    "self_modifying": "one of: true | false — required — MUST be true if changed_files touch policy.protected_paths; touching one with false is a hard fail; true routes to human review",
+    "policy_refs": "required — policy/mission docs you read",
+    "validation_plan": "required — each: { command, reason, required, id?, ci_covered? }",
+    "validation_plan[].required": "one of: true | false — required — is this check mandatory",
+    "validation_plan[].id": "optional — optional step id; evidence is matched to it via execution_evidence[].step (robust to a command wording diff)",
+    "validation_plan[].ci_covered": "one of: true | false — optional — step is corroborated by the ci-evidence gate (real CI run), not manual evidence — may be 'skipped'; also auto-recognized when command matches a policy ci_evidence_checks entry",
+    "execution_evidence": "required — each: { command, status, output_ref?, skip_reason?, step? }",
+    "execution_evidence[].status": "one of: passed | failed | skipped — required — required steps must be 'passed' (unless CI-covered); use skip_reason when 'skipped'",
+    "execution_evidence[].step": "optional — optional id of the validation_plan step this evidence is for (matches validation_plan[].id)",
+    "changed_files": "required — set by `plumb receipt --write` — don't hand-edit",
+    "base_sha": "optional — pinned merge-base the diff was computed against — makes gate verification deterministic; set by `plumb receipt --write` — never hand-edit",
+    "diff_sha256": "required — set by `plumb receipt --write` — never hand-edit (computed from base_sha)",
+    "result_summary": "required — what changed + how it was verified"
+  },
+  "receipt_version": "1.0",
+  "task_id": "feat-phased-gate-v0.6.0",
+  "agent_id": "claude-opus-4-8",
+  "intent": "Add a phased (fail-cheap-first) CI gate: `plumb run` gains a `--phase quality|verify|full` flag (#58, v0.6.0). `quality` runs shape + semantic review only and SKIPS ci-evidence (tests haven't run yet), so an agent's iterate loop spins against the ~2-min cheap phase; a REWORK fails fast so the workflow `needs:` chain blocks the expensive test phase, while a clean phase-1 exits 0. `verify` runs the ci-evidence gate + the terminal PASS/REWORK/REVIEW verdict, assuming phase 1 passed. `full` (default) is today's unchanged all-in-one gate, so non-staged consumers are untouched (back-compat). The shape/semantic/ci-evidence gate LOGIC is unchanged — only WHEN each runs, exit codes, and phase-provenance verdict wording (a phase-1 result reads as 'tests SKIPPED', never 'tests passed').",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json"
+  ],
+  "validation_plan": [
+    {
+      "command": "npm test",
+      "reason": "Full test suite (274 tests) incl. 4 new cli-phase.test.ts cases proving quality skips ci-evidence, verify/full run it, and an unknown --phase exits 2. Bound to the `test` ci-evidence check.",
+      "required": true,
+      "ci_covered": true
+    },
+    {
+      "command": "npm run build",
+      "reason": "tsc must compile the new --phase branching + action.yml passthrough with no type errors.",
+      "required": true
+    },
+    {
+      "command": "npm run bundle",
+      "reason": "The Action runs dist/index.js; rebuild the bundle so it doesn't drift from src/ (dist-check CI job).",
+      "required": true
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "# tests 274 # pass 274 # fail 0 (incl. 4 new: quality skips ci-evidence; verify/full attempt it; bogus phase exit 2)"
+    },
+    {
+      "command": "npm run build",
+      "status": "passed",
+      "output_ref": "tsc — clean, no errors (build exit 0)"
+    },
+    {
+      "command": "npm run bundle",
+      "status": "passed",
+      "output_ref": "esbuild → dist/index.js 268.7kb, Done in 38ms"
+    }
+  ],
+  "changed_files": [
+    "CHANGELOG.md",
+    "README.md",
+    "action.yml",
+    "dist/index.js",
+    "package.json",
+    "src/cli.ts",
+    "src/test/cli-phase.test.ts",
+    "templates/workflow-staged.yml"
+  ],
+  "base_sha": "6ab16775853fafa6dae550a0f0b5f4beba06d8c6",
+  "diff_sha256": "98cddadfd98988d7e958aa1f5d9917540e24f9ab788dd59f3a66e590cc60d27f",
+  "result_summary": "Shipped the v0.6.0 phased gate: `plumb run --phase quality|verify|full` (default full = unchanged), gated on a single `runCiEvidence = phase !== 'quality'` hinge so quality (phase 1) skips ci-evidence and verify/full run it. Added phase-provenance reasons that make a phase-1 result read as 'tests SKIPPED, agent-fixable', an unknown-phase exit-2 guard, a `phase` input on action.yml threaded to the CLI, templates/workflow-staged.yml (quality → tests needs:[quality] → gate needs:[tests] with checks/issues:write), README + CHANGELOG docs, and version bump to 0.6.0. Verified: npm run build (tsc clean), npm test (274/274 incl. 4 new cli-phase cases), npm run bundle (dist/index.js rebuilt so the Action bundle matches src/). self_modifying:true — action.yml is a protected path, so this routes to human review."
+}

@@ -275,6 +275,23 @@ async function main(): Promise<number> {
   const policyPath = resolveDualPath(cwd, arg("policy", `${dir}/policy.json`)!);
   const baseRef = arg("base", ci.baseRef ?? detectBaseRef(cwd))!;
   const skipGit = flag("no-git");
+  // Phased gate (#58, v0.6.0): fail-cheap-first. `--phase` splits the CI `run`
+  // gate into cheap-then-expensive stages so the agent's iterate loop spins
+  // against the ~2-min shape+semantic phase, not the ~30-min test phase.
+  //   full    (default) — today's all-in-one: shape + ci-evidence + semantic.
+  //   quality (phase 1) — shape + semantic ONLY; ci-evidence is SKIPPED (tests
+  //                       haven't run). REWORK => fail fast so `needs:` blocks
+  //                       phase 2; else a clean "quality passed" (exit 0).
+  //   verify  (phase 2) — ci-evidence gate + terminal verdict; assumes phase 1
+  //                       passed. Same dimensions as `full`.
+  // Default `full` keeps back-compat for non-staged consumers (Cuspr/nuvola).
+  const phase = arg("phase", "full")!;
+  if (!["full", "quality", "verify"].includes(phase)) {
+    console.error(`plumb: unknown --phase "${phase}" (known: full | quality | verify)`);
+    return 2;
+  }
+  // ci-evidence runs in every phase EXCEPT quality (phase 1 runs before tests).
+  const runCiEvidence = phase !== "quality";
   // init/new don't operate on an existing receipt — skip resolution (and its
   // git call, which would print a spurious diff error in a fresh repo).
   // "auto" (and either dir's legacy default path — what pinned actions pass)
@@ -328,7 +345,11 @@ usage:
   plumb check   [--receipt path] [--policy path] [--base ref] [--review]   (local pre-flight: shape + diff_sha256 only; --review also runs the semantic review for the full verdict)
   plumb shape   [--receipt path] [--policy path] [--base ref] [--no-git]
   plumb review  [--receipt path] [--policy path] [--base ref] [--mission path]
-  plumb run     [--receipt path] [--policy path] [--base ref]   (shape + review + PR comment in CI)
+  plumb run     [--receipt path] [--policy path] [--base ref] [--phase quality|verify|full]
+                (CI gate: shape + review + PR comment. --phase splits it fail-cheap-first:
+                 quality = shape + semantic only (ci-evidence SKIPPED — tests not yet run; REWORK fails fast);
+                 verify  = ci-evidence + terminal verdict (assumes phase 1 passed);
+                 full    = all-in-one (default; back-compat for non-staged consumers).)
   plumb archive <slug> [--force] [--date YYYY-MM-DD]   (apply the change's spec deltas to the living
                 openspec/specs/, move the change to openspec/changes/archive/<date>-<slug>/;
                 refuses unless the change's receipt passes the gate — --force overrides with a warning)
@@ -853,7 +874,18 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
   // the actual check-run conclusions for the PR head and require success. The
   // agent need not self-report status for these; CI is the source of truth.
   const ciEvidenceSeverity = resolveSeverity("ci_evidence", policy);
-  if (cmd === "run" && policy.ci_evidence_checks.length > 0 && ciEvidenceSeverity === "off") {
+  if (cmd === "run" && !runCiEvidence && policy.ci_evidence_checks.length > 0) {
+    // Phase 1 (quality): tests haven't run yet, so DON'T require ci-evidence.
+    // Deferred to phase 2 (verify). Recorded so the verdict can't be mistaken
+    // for "tests passed".
+    console.error(
+      `ci-evidence: SKIPPED in --phase quality — tests run in phase 2 (verify). ` +
+        `This phase judges shape + semantic only.`,
+    );
+    gate.reasons.push(
+      "⏭️ ci-evidence NOT checked in this phase (quality) — tests were SKIPPED and are verified in phase 2 (verify).",
+    );
+  } else if (cmd === "run" && policy.ci_evidence_checks.length > 0 && ciEvidenceSeverity === "off") {
     console.error(`ci-evidence: severity "off" in policy — verification skipped`);
     gate.reasons.push("CI evidence check is off in policy — not verified.");
   } else if (cmd === "run" && policy.ci_evidence_checks.length > 0) {
@@ -1115,6 +1147,40 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
       console.error(`  coverage: ${review!.validation_coverage_notes}`);
       console.error(`  mission:  ${review!.mission_alignment_notes}`);
       console.error(`  risk:     ${review!.risk_notes}`);
+    }
+  }
+
+  // --- Phased-gate verdict framing (#58) ---
+  // Make WHICH phase produced the verdict unmistakable in the receipt/comment,
+  // and — critically — make a phase-1 REWORK read as "fast checks failed, tests
+  // were SKIPPED, agent-fixable" so nobody mistakes a clean phase-1 for
+  // "tests passed". The verdict SURFACES (REWORK/REVIEW/PASS) are unchanged
+  // (v0.5.0 #56); this only annotates the phase provenance.
+  if (cmd === "run" && phase !== "full") {
+    if (phase === "quality") {
+      if (gate.final === "approve") {
+        gate.reasons.push(
+          "✅ Phase 1 (quality) PASSED — shape + semantic review are clean. " +
+            "This is NOT a terminal PASS: tests were NOT run in this phase. " +
+            "Phase 2 (verify) runs the full test suite + ci-evidence and emits the terminal verdict.",
+        );
+      } else if (gate.final === "rework") {
+        gate.reasons.push(
+          "🔁 Phase 1 (quality) REWORK — fast checks (shape/semantic) failed and the test suite was " +
+            "SKIPPED (not yet run). These are agent-fixable: fix the 🤖 items and re-push; the cheap " +
+            "phase re-runs in ~2 min. Do NOT read this as 'tests passed' — tests only run in phase 2 (verify).",
+        );
+      } else {
+        gate.reasons.push(
+          "⚠️ Phase 1 (quality) REVIEW — a human decision is needed before tests are worth running. " +
+            "Tests were SKIPPED in this phase.",
+        );
+      }
+    } else if (phase === "verify") {
+      gate.reasons.push(
+        "Phase 2 (verify): terminal verdict — ci-evidence (tests present + passing) verified against the " +
+          "real CI run. Phase 1 (quality: shape + semantic) is assumed already green.",
+      );
     }
   }
 

@@ -1,0 +1,90 @@
+# Copy to .github/workflows/plumbline.yml for the PHASED (fail-cheap-first) gate.
+#
+# Why staged: the monolithic gate runs the full (often ~30-min) test suite AND
+# the semantic review on every push — so when the agent fixes a REWORK finding
+# it pays the whole 30 min again. A gate slow enough to route around isn't a
+# gate. The phased pipeline runs the CHEAP checks first (fmt/clippy/shape +
+# semantic, ~2 min) and only pays for the expensive test suite once the code is
+# known-solid. The agent's iterate loop spins against phase 1, not phase 2.
+#
+#   quality (phase 1, ~2 min)  →  tests (phase 2, ~30 min)  →  gate (phase 3, instant)
+#          shape + semantic          full suite + record         ci-evidence + terminal
+#          REWORK => fail fast        evidence                    PASS / REWORK / REVIEW
+#
+# Non-staged consumers can keep using templates/workflow.yml (the all-in-one
+# `--phase full` gate) — it is unchanged and remains the default.
+name: plumbline
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+  issues: write
+
+jobs:
+  # ── PHASE 1 — Solid? (cheap, agent iterates here) ────────────────────────
+  # fmt + clippy + shape + semantic review. NO test suite. A REWORK here fails
+  # the job, so the `needs:` chain blocks phase 2 — the agent fixes and re-pushes
+  # against this ~2-min phase instead of the ~30-min one.
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      # --- example fast mechanical checks (adapt to your stack) ---
+      # - run: cargo fmt --all -- --check
+      # - run: cargo clippy --all-targets -- -D warnings
+      #   env:
+      #     SQLX_OFFLINE: "true"
+      - name: Plumbline — phase 1 (quality)
+        uses: amos-labs/plumbline@v0   # or a local path / pinned SHA
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          phase: quality
+
+  # ── PHASE 2 — Verified? (expensive; ONLY if phase 1 is green) ────────────
+  # This `needs: [quality]` is the whole point: the ~30-min suite runs once,
+  # after the code is known-solid. The job name must match a policy
+  # `ci_evidence_checks` entry so phase 3 can corroborate its real conclusion.
+  tests:
+    name: test
+    needs: [quality]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      # --- run your full suite here; its check-run conclusion is the evidence ---
+      # - run: cargo test --all-targets
+
+  # ── PHASE 3 — Approved? (terminal verdict, instant) ──────────────────────
+  # ci-evidence gate (tests present + passing, read from phase 2's REAL
+  # check-run) + the terminal PASS / REWORK / REVIEW verdict. checks:write and
+  # issues:write are needed for the per-verdict check-run and follow-up issues.
+  gate:
+    needs: [tests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Plumbline — phase 2 (verify / terminal)
+        uses: amos-labs/plumbline@v0   # or a local path / pinned SHA
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          phase: verify
