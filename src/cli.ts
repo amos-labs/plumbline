@@ -31,6 +31,7 @@ import {
   publishCheckRun,
   getPrHeadSha,
   fileFollowUps,
+  InfraError,
 } from "./github.js";
 import { verdictPresentation } from "./verdict.js";
 import { renderPreflight } from "./preflight.js";
@@ -869,6 +870,11 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
 
   if (cmd === "shape") return shape.pass ? 0 : 1;
 
+  // v0.6.1: set when a GitHub API call the gate NEEDS fails transiently and
+  // survives every retry — the gate could not evaluate. Promotes the terminal
+  // outcome to INDETERMINATE (infra_error), distinct from REWORK/REVIEW/PASS.
+  let infraError: InfraError | undefined;
+
   // --- CI evidence integrity (run mode): corroborate against the real CI run (#6) ---
   // Don't trust the receipt's self-reported execution_evidence for these — read
   // the actual check-run conclusions for the PR head and require success. The
@@ -916,7 +922,19 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
           );
         }
       } catch (e) {
-        fail(`ci-evidence: could not verify CI checks: ${String(e)}`);
+        if (e instanceof InfraError) {
+          // v0.6.1: the GitHub API call failed transiently (5xx/429/timeout)
+          // and survived every retry — we COULD NOT EVALUATE. This is the exact
+          // 2026-07-16 incident: a 503 must NOT become a REWORK ("agent's turn
+          // to fix code"). Route to the distinct INDETERMINATE outcome and stop
+          // — no code verdict is possible on this run.
+          console.error(`ci-evidence: INDETERMINATE — could not evaluate: ${e.message}`);
+          infraError = e;
+        } else {
+          // A REAL error (auth/permission/malformed response) still routes to
+          // the normal severity handling (REWORK at "error" severity).
+          fail(`ci-evidence: could not verify CI checks: ${String(e)}`);
+        }
       }
     } else {
       console.error("ci-evidence: configured but no GitHub PR context/token — skipped");
@@ -925,7 +943,16 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
   }
 
   // --- Semantic review ---
-  if (!shape.pass || !receipt) {
+  if (infraError) {
+    // A GitHub call the gate needs failed transiently and survived every retry.
+    // We could NOT evaluate — do not run (or report) a semantic review, and do
+    // NOT emit a code verdict. Promote to INDETERMINATE (infra_error).
+    gate.final = "indeterminate";
+    gate.reasons.push(
+      `⚠️ Gate could not evaluate — GitHub infrastructure error (${infraError.message}). ` +
+        "This is NOT a code verdict (neither a REWORK nor an approval). Re-run the gate when GitHub recovers.",
+    );
+  } else if (!shape.pass || !receipt) {
     gate.final = "rework";
     gate.reasons.push("semantic review skipped: shape gate failed — fix shape errors first");
   } else {
@@ -1156,7 +1183,7 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
   // were SKIPPED, agent-fixable" so nobody mistakes a clean phase-1 for
   // "tests passed". The verdict SURFACES (REWORK/REVIEW/PASS) are unchanged
   // (v0.5.0 #56); this only annotates the phase provenance.
-  if (cmd === "run" && phase !== "full") {
+  if (cmd === "run" && phase !== "full" && gate.final !== "indeterminate") {
     if (phase === "quality") {
       if (gate.final === "approve") {
         gate.reasons.push(

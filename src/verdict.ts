@@ -1,4 +1,4 @@
-import type { Verdict } from "./types.js";
+import type { GateOutcome } from "./types.js";
 
 /**
  * Single source of truth for how a gate verdict is PRESENTED across every
@@ -36,8 +36,8 @@ import type { Verdict } from "./types.js";
 export type CheckConclusion = "success" | "failure" | "action_required";
 
 export interface VerdictPresentation {
-  /** The verdict this presentation is for. */
-  verdict: Verdict;
+  /** The outcome this presentation is for. */
+  verdict: GateOutcome;
   /** Distinct GitHub check-run name — the Checks list names the exact state. */
   checkName: string;
   /** Distinct GitHub check-run conclusion. */
@@ -63,7 +63,7 @@ export interface VerdictPresentation {
  *   rework    Plumbline: REWORK — blocked          failure            NO (agent)
  *   review    Plumbline: REVIEW — needs approval   action_required    NO (human)
  */
-const TABLE: Record<Verdict, VerdictPresentation> = {
+const TABLE: Record<GateOutcome, VerdictPresentation> = {
   approve: {
     verdict: "approve",
     checkName: "Plumbline: PASS",
@@ -102,9 +102,32 @@ const TABLE: Record<Verdict, VerdictPresentation> = {
     annotationLevel: "warning",
     mergeable: false,
   },
+  // INDETERMINATE (infra_error, v0.6.1): the gate could NOT evaluate because a
+  // GitHub infrastructure call failed transiently (503/timeout/etc.) and
+  // survived every retry. This is NEITHER a rework NOR an approval — there is
+  // no code verdict at all. It BLOCKS auto-merge (exit non-zero: we could not
+  // verify), but the wording must never read as "agent's turn to fix code"
+  // (REWORK) or as green PASS. It is trivially re-runnable: a fresh gate run
+  // once GitHub recovers produces a real verdict. Uses `action_required` so the
+  // UI reads it as "a human needs to act" (re-run) rather than a red "broken"
+  // failure — and the distinct 🔌 icon + wording keeps it unmistakable.
+  indeterminate: {
+    verdict: "indeterminate",
+    checkName: "Plumbline: INDETERMINATE — could not evaluate (GitHub infra error)",
+    conclusion: "action_required",
+    label: "🔌 INDETERMINATE",
+    commentTitle: "🔌 Plumbline: INDETERMINATE — could not evaluate (GitHub infrastructure error)",
+    commentBanner:
+      "**⚠️ Gate could not evaluate — GitHub infrastructure error (e.g. 503/timeout), NOT a code verdict.** " +
+      "This is **neither a REWORK nor an approval**: the gate never assessed the code — a GitHub API call " +
+      "failed transiently and survived all retries. Do NOT change the code in response to this, and do NOT " +
+      "merge on it. **Re-run the gate when GitHub recovers** and it will produce a real verdict.",
+    annotationLevel: "warning",
+    mergeable: false,
+  },
 };
 
-/** Resolve the presentation for a verdict. The one lookup every surface uses. */
-export function verdictPresentation(verdict: Verdict): VerdictPresentation {
+/** Resolve the presentation for a gate outcome. The one lookup every surface uses. */
+export function verdictPresentation(verdict: GateOutcome): VerdictPresentation {
   return TABLE[verdict];
 }

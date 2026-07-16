@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { verdictPresentation } from "../verdict.js";
 import { renderComment, renderCiSummary } from "../github.js";
-import type { GateResult } from "../types.js";
+import type { GateResult, Verdict } from "../types.js";
 
 // #54: PASS / REWORK / REVIEW must be UNMISTAKABLY distinct end-to-end. These
 // tests pin the verdict → (check-run name, conclusion, comment title,
@@ -48,7 +48,7 @@ test("verdictPresentation: comment titles scream the verdict + are distinct", ()
 
 // ── the mapping is actually WIRED into the rendered surfaces ────────────────
 
-function gate(final: GateResult["final"]): GateResult {
+function gate(final: Verdict): GateResult {
   return {
     shape: { pass: final !== "rework", errors: [], warnings: [] },
     review:
@@ -99,4 +99,49 @@ test("renderCiSummary: annotation level + title track the verdict distinctly", (
   assert.match(renderCiSummary(gate("review")).title, /REVIEW/);
   // rework and review annotations must not be interchangeable.
   assert.notEqual(renderCiSummary(gate("rework")).level, renderCiSummary(gate("review")).level);
+});
+
+// ── v0.6.1: INDETERMINATE (infra_error) is a DISTINCT terminal outcome ───────
+
+/** An INDETERMINATE gate carries no review — the gate never evaluated. */
+function indeterminateGate(): GateResult {
+  return {
+    shape: { pass: true, errors: [], warnings: [] },
+    final: "indeterminate",
+    reasons: [
+      "⚠️ Gate could not evaluate — GitHub infrastructure error (get check-runs for abc: HTTP 503 after 4 attempts). " +
+        "This is NOT a code verdict (neither a REWORK nor an approval). Re-run the gate when GitHub recovers.",
+    ],
+  };
+}
+
+test("verdictPresentation: INDETERMINATE is distinct from approve/rework/review", () => {
+  const p = verdictPresentation("indeterminate");
+  const others = (["approve", "rework", "review"] as const).map((v) => verdictPresentation(v));
+  // Distinct name, icon, and NOT ordinarily mergeable (blocks auto-merge).
+  assert.ok(others.every((o) => o.checkName !== p.checkName), "check name must be distinct");
+  assert.ok(others.every((o) => o.commentTitle !== p.commentTitle), "comment title must be distinct");
+  assert.equal(p.mergeable, false, "INDETERMINATE must block auto-merge");
+  assert.match(p.checkName, /INDETERMINATE/);
+});
+
+test("renderComment: INDETERMINATE reads as infra error — not REWORK, not PASS", () => {
+  const md = renderComment(indeterminateGate());
+  assert.ok(md.startsWith(`## ${verdictPresentation("indeterminate").commentTitle}`));
+  // Must clearly state infra error + neither-rework-nor-approval + re-runnable.
+  assert.match(md, /infrastructure error/i);
+  assert.match(md, /neither a REWORK nor an approval/i);
+  assert.match(md, /[Rr]e-run the gate/);
+  // Must NOT read as an agent-fix REWORK, and must NOT read as a green PASS.
+  assert.doesNotMatch(md, /agent's turn/i);
+  assert.doesNotMatch(md, /Merging automatically/i);
+  // No shape/semantic verdict lines leak in (the gate never evaluated).
+  assert.doesNotMatch(md, /Shape gate:/);
+});
+
+test("renderCiSummary: INDETERMINATE is a warning that names the infra error", () => {
+  const s = renderCiSummary(indeterminateGate());
+  assert.equal(s.level, "warning");
+  assert.match(s.title, /INDETERMINATE/);
+  assert.match(s.message, /NOT a code verdict/i);
 });

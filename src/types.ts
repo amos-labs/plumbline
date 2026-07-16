@@ -334,6 +334,21 @@ export interface FailureCapsule {
 
 export type Verdict = "approve" | "rework" | "review";
 
+/**
+ * The terminal state a gate RUN reports. It is a superset of the semantic
+ * `Verdict`:
+ *   • approve / rework / review — real CODE verdicts from shape + semantic review.
+ *   • indeterminate            — the gate COULD NOT EVALUATE because a GitHub
+ *     infrastructure call failed transiently (5xx/429/timeout) and survived every
+ *     retry (v0.6.1). This is NOT a code verdict: not a REWORK (the agent has
+ *     nothing to fix) and not a PASS. It blocks auto-merge (we could not verify)
+ *     and is trivially re-runnable once GitHub recovers.
+ *
+ * `Verdict` stays the three code states so semantic-review code can never
+ * accidentally emit `indeterminate`; only the run flow promotes `final` to it.
+ */
+export type GateOutcome = Verdict | "indeterminate";
+
 export interface ShapeResult {
   pass: boolean;
   errors: string[];
@@ -366,7 +381,8 @@ export interface ReviewResult {
 export interface GateResult {
   shape: ShapeResult;
   review?: ReviewResult;
-  final: Verdict;
+  /** The terminal state. May be `indeterminate` (infra_error) — see GateOutcome. */
+  final: GateOutcome;
   reasons: string[];
 }
 

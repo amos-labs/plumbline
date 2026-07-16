@@ -10,7 +10,7 @@ import { execFileSync as execFileSync5 } from "node:child_process";
 import { readFileSync as readFileSync6, writeFileSync as writeFileSync5, existsSync as existsSync7, mkdirSync as mkdirSync5 } from "node:fs";
 import { join as join7, dirname as dirname4 } from "node:path";
 
-// node_modules/zod/v3/external.js
+// ../../node_modules/zod/v3/external.js
 var external_exports = {};
 __export(external_exports, {
   BRAND: () => BRAND,
@@ -122,7 +122,7 @@ __export(external_exports, {
   void: () => voidType
 });
 
-// node_modules/zod/v3/helpers/util.js
+// ../../node_modules/zod/v3/helpers/util.js
 var util;
 (function(util2) {
   util2.assertEqual = (_) => {
@@ -256,7 +256,7 @@ var getParsedType = (data) => {
   }
 };
 
-// node_modules/zod/v3/ZodError.js
+// ../../node_modules/zod/v3/ZodError.js
 var ZodIssueCode = util.arrayToEnum([
   "invalid_type",
   "invalid_literal",
@@ -374,7 +374,7 @@ ZodError.create = (issues) => {
   return error;
 };
 
-// node_modules/zod/v3/locales/en.js
+// ../../node_modules/zod/v3/locales/en.js
 var errorMap = (issue, _ctx) => {
   let message;
   switch (issue.code) {
@@ -477,7 +477,7 @@ var errorMap = (issue, _ctx) => {
 };
 var en_default = errorMap;
 
-// node_modules/zod/v3/errors.js
+// ../../node_modules/zod/v3/errors.js
 var overrideErrorMap = en_default;
 function setErrorMap(map) {
   overrideErrorMap = map;
@@ -486,7 +486,7 @@ function getErrorMap() {
   return overrideErrorMap;
 }
 
-// node_modules/zod/v3/helpers/parseUtil.js
+// ../../node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
   const { data, path, errorMaps, issueData } = params;
   const fullPath = [...path, ...issueData.path || []];
@@ -596,14 +596,14 @@ var isDirty = (x) => x.status === "dirty";
 var isValid = (x) => x.status === "valid";
 var isAsync = (x) => typeof Promise !== "undefined" && x instanceof Promise;
 
-// node_modules/zod/v3/helpers/errorUtil.js
+// ../../node_modules/zod/v3/helpers/errorUtil.js
 var errorUtil;
 (function(errorUtil2) {
   errorUtil2.errToObj = (message) => typeof message === "string" ? { message } : message || {};
   errorUtil2.toString = (message) => typeof message === "string" ? message : message?.message;
 })(errorUtil || (errorUtil = {}));
 
-// node_modules/zod/v3/types.js
+// ../../node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
   constructor(parent, value, path, key) {
     this._cachedPath = [];
@@ -5244,6 +5244,25 @@ var TABLE = {
     commentBanner: "**\u26A0\uFE0F REVIEW \u2014 Human approval required. This is the human's turn: no agent rework needed, but this is NOT a rubber stamp.** A maintainer must read the findings and, if sound, approve/override-merge. Merging must be a deliberate act \u2014 do not confuse this with a REWORK (agent-fix) failure.",
     annotationLevel: "warning",
     mergeable: false
+  },
+  // INDETERMINATE (infra_error, v0.6.1): the gate could NOT evaluate because a
+  // GitHub infrastructure call failed transiently (503/timeout/etc.) and
+  // survived every retry. This is NEITHER a rework NOR an approval — there is
+  // no code verdict at all. It BLOCKS auto-merge (exit non-zero: we could not
+  // verify), but the wording must never read as "agent's turn to fix code"
+  // (REWORK) or as green PASS. It is trivially re-runnable: a fresh gate run
+  // once GitHub recovers produces a real verdict. Uses `action_required` so the
+  // UI reads it as "a human needs to act" (re-run) rather than a red "broken"
+  // failure — and the distinct 🔌 icon + wording keeps it unmistakable.
+  indeterminate: {
+    verdict: "indeterminate",
+    checkName: "Plumbline: INDETERMINATE \u2014 could not evaluate (GitHub infra error)",
+    conclusion: "action_required",
+    label: "\u{1F50C} INDETERMINATE",
+    commentTitle: "\u{1F50C} Plumbline: INDETERMINATE \u2014 could not evaluate (GitHub infrastructure error)",
+    commentBanner: "**\u26A0\uFE0F Gate could not evaluate \u2014 GitHub infrastructure error (e.g. 503/timeout), NOT a code verdict.** This is **neither a REWORK nor an approval**: the gate never assessed the code \u2014 a GitHub API call failed transiently and survived all retries. Do NOT change the code in response to this, and do NOT merge on it. **Re-run the gate when GitHub recovers** and it will produce a real verdict.",
+    annotationLevel: "warning",
+    mergeable: false
   }
 };
 function verdictPresentation(verdict) {
@@ -5261,6 +5280,16 @@ function renderComment(result) {
   const humanActions = cap?.human_actions ?? [];
   const followUps = cap?.follow_ups ?? cap?.advisory ?? [];
   const didNotConverge = cap?.did_not_converge === true;
+  if (result.final === "indeterminate") {
+    lines.push(`> ${pres.commentBanner}`);
+    lines.push("");
+    if (result.reasons.length > 0) {
+      for (const reason of result.reasons) lines.push(`> ${reason}`);
+      lines.push("");
+    }
+    lines.push("<sub>plumbline \xB7 proof-carrying gate for agent work</sub>");
+    return lines.join("\n");
+  }
   if (result.final === "review" && didNotConverge) {
     lines.push(
       "> **\u{1F9D1}\u200D\u2696\uFE0F Gate did not converge \u2014 human decides.** After 2 rework rounds the gate stops iterating the agent. A maintainer reviews the remaining \u{1F9D1} items and override-merges if sound: `gh pr merge <PR> --squash --admin`."
@@ -5339,6 +5368,13 @@ function renderCiSummary(result) {
       message: "Receipt passed shape + semantic review. Merging automatically \u2014 no action needed."
     };
   }
+  if (result.final === "indeterminate") {
+    return {
+      level: pres.annotationLevel,
+      title: pres.checkName,
+      message: "Could not evaluate \u2014 a GitHub infrastructure call failed transiently (e.g. 503/timeout) and survived all retries. This is NOT a code verdict (neither REWORK nor PASS). Re-run the gate when GitHub recovers." + (result.reasons.length ? ` ${result.reasons[0]}` : "")
+    };
+  }
   const cap = result.review?.failure_capsule;
   const parts = [];
   if (result.final === "rework") {
@@ -5364,19 +5400,85 @@ var GH_HEADERS = (token) => ({
   authorization: `Bearer ${token}`,
   accept: "application/vnd.github+json"
 });
+var RETRY_ATTEMPTS = 4;
+var RETRY_BASE_MS = 500;
+var RETRY_MAX_MS = 8e3;
+function isTransientStatus(status) {
+  return status === 429 || status >= 500 && status <= 599;
+}
+function isTransientNetworkError(err) {
+  const e = err;
+  const code = e?.code ?? e?.cause?.code ?? "";
+  if (["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EPIPE", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"].includes(code)) {
+    return true;
+  }
+  const msg = `${e?.name ?? ""} ${e?.message ?? ""}`.toLowerCase();
+  return /socket hang up|network|fetch failed|timeout|timed out|terminated|econnreset|etimedout/.test(msg);
+}
+var InfraError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "InfraError";
+  }
+};
+var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function githubFetch(url, init, what, opts = {}) {
+  const attempts = opts.attempts ?? RETRY_ATTEMPTS;
+  const doFetch = opts.fetchImpl ?? fetch;
+  const doSleep = opts.sleepImpl ?? sleep;
+  let lastDetail = "";
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    let res = null;
+    try {
+      res = await doFetch(url, init);
+    } catch (err) {
+      if (isTransientNetworkError(err) && attempt < attempts) {
+        lastDetail = `network error: ${err.message}`;
+        await doSleep(backoffMs(attempt));
+        continue;
+      }
+      if (isTransientNetworkError(err)) {
+        throw new InfraError(`${what}: ${err.message} (after ${attempt} attempt${attempt === 1 ? "" : "s"})`);
+      }
+      throw err;
+    }
+    if (isTransientStatus(res.status) && attempt < attempts) {
+      lastDetail = `HTTP ${res.status}`;
+      await res.text().catch(() => "");
+      await doSleep(backoffMs(attempt));
+      continue;
+    }
+    if (isTransientStatus(res.status)) {
+      const body = await res.text().catch(() => "");
+      throw new InfraError(
+        `${what}: HTTP ${res.status} after ${attempt} attempts${body ? ` \u2014 ${body.slice(0, 200)}` : ""}`
+      );
+    }
+    void lastDetail;
+    return res;
+  }
+  throw new InfraError(`${what}: exhausted ${attempts} attempts (${lastDetail})`);
+}
+function backoffMs(attempt) {
+  const base = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** (attempt - 1));
+  return Math.floor(base / 2 + Math.random() * (base / 2));
+}
 async function getPrHeadSha(repo, prNumber, token) {
-  const res = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNumber}`, {
-    headers: GH_HEADERS(token)
-  });
+  const res = await githubFetch(
+    `https://api.github.com/repos/${repo}/pulls/${prNumber}`,
+    { headers: GH_HEADERS(token) },
+    `get PR #${prNumber}`
+  );
   if (!res.ok) throw new Error(`get PR #${prNumber}: ${res.status} ${await res.text()}`);
   const pr = await res.json();
   if (!pr.head?.sha) throw new Error(`PR #${prNumber} has no head.sha`);
   return pr.head.sha;
 }
 async function getCheckRunsForSha(repo, sha, token) {
-  const res = await fetch(
+  const res = await githubFetch(
     `https://api.github.com/repos/${repo}/commits/${sha}/check-runs?per_page=100`,
-    { headers: GH_HEADERS(token) }
+    { headers: GH_HEADERS(token) },
+    `get check-runs for ${sha}`
   );
   if (!res.ok) throw new Error(`get check-runs for ${sha}: ${res.status} ${await res.text()}`);
   const data = await res.json();
@@ -7255,6 +7357,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
     reasons: []
   };
   if (cmd === "shape") return shape.pass ? 0 : 1;
+  let infraError;
   const ciEvidenceSeverity = resolveSeverity("ci_evidence", policy);
   if (cmd === "run" && !runCiEvidence && policy.ci_evidence_checks.length > 0) {
     console.error(
@@ -7293,14 +7396,24 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
           );
         }
       } catch (e) {
-        fail(`ci-evidence: could not verify CI checks: ${String(e)}`);
+        if (e instanceof InfraError) {
+          console.error(`ci-evidence: INDETERMINATE \u2014 could not evaluate: ${e.message}`);
+          infraError = e;
+        } else {
+          fail(`ci-evidence: could not verify CI checks: ${String(e)}`);
+        }
       }
     } else {
       console.error("ci-evidence: configured but no GitHub PR context/token \u2014 skipped");
       gate.reasons.push("CI evidence configured but no GitHub PR context \u2014 not verified.");
     }
   }
-  if (!shape.pass || !receipt) {
+  if (infraError) {
+    gate.final = "indeterminate";
+    gate.reasons.push(
+      `\u26A0\uFE0F Gate could not evaluate \u2014 GitHub infrastructure error (${infraError.message}). This is NOT a code verdict (neither a REWORK nor an approval). Re-run the gate when GitHub recovers.`
+    );
+  } else if (!shape.pass || !receipt) {
     gate.final = "rework";
     gate.reasons.push("semantic review skipped: shape gate failed \u2014 fix shape errors first");
   } else {
@@ -7456,7 +7569,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
       console.error(`  risk:     ${review.risk_notes}`);
     }
   }
-  if (cmd === "run" && phase !== "full") {
+  if (cmd === "run" && phase !== "full" && gate.final !== "indeterminate") {
     if (phase === "quality") {
       if (gate.final === "approve") {
         gate.reasons.push(
