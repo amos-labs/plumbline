@@ -1,0 +1,81 @@
+{
+  "_help": {
+    "_note": "Allowed values + requirements per field (this _help block is ignored by the gate — keep or delete). Run `plumb schema` for the full reference.",
+    "receipt_version": "one of: 1.0 — required — schema version",
+    "task_id": "required — ticket/issue/branch id (also the receipt filename)",
+    "agent_id": "required — which agent or human did the work",
+    "intent": "required — what + why, plain language — the semantic review reads this",
+    "self_modifying": "one of: true | false — required — MUST be true if changed_files touch policy.protected_paths; touching one with false is a hard fail; true routes to human review",
+    "policy_refs": "required — policy/mission docs you read",
+    "validation_plan": "required — each: { command, reason, required, id?, ci_covered? }",
+    "validation_plan[].required": "one of: true | false — required — is this check mandatory",
+    "validation_plan[].id": "optional — optional step id; evidence is matched to it via execution_evidence[].step (robust to a command wording diff)",
+    "validation_plan[].ci_covered": "one of: true | false — optional — step is corroborated by the ci-evidence gate (real CI run), not manual evidence — may be 'skipped'; also auto-recognized when command matches a policy ci_evidence_checks entry",
+    "execution_evidence": "required — each: { command, status, output_ref?, skip_reason?, step? }",
+    "execution_evidence[].status": "one of: passed | failed | skipped — required — required steps must be 'passed' (unless CI-covered); use skip_reason when 'skipped'",
+    "execution_evidence[].step": "optional — optional id of the validation_plan step this evidence is for (matches validation_plan[].id)",
+    "changed_files": "required — set by `plumb receipt --write` — don't hand-edit",
+    "base_sha": "optional — pinned merge-base the diff was computed against — makes gate verification deterministic; set by `plumb receipt --write` — never hand-edit",
+    "diff_sha256": "required — set by `plumb receipt --write` — never hand-edit (computed from base_sha)",
+    "result_summary": "required — what changed + how it was verified"
+  },
+  "receipt_version": "1.0",
+  "task_id": "gate-trust-v2-classification",
+  "agent_id": "agent",
+  "intent": "Gate-trust v2, folding three tickets for one coordinated release. #56: add a materiality axis (material/optional/noise) + a crisp 3-way reviewer rubric so verdict routing is deterministic — any material, agent-fixable finding routes to REWORK even on a protected surface; REVIEW is human-only with no agent-fixable items left; optional-but-good findings are auto-filed as deduped follow-up issues instead of skipped; noise is dropped. #49: `plumb check` auto-discovery now finds an untracked receipt (git status --porcelain) so it works before `git add`, LOCAL only (CI stays diff-based). #48: refresh README Status to v0.4.x and rewrite both AGENTS.md TL;DRs/closings around the one idempotent `receipt --write` step.",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/AGENTS.md"
+  ],
+  "validation_plan": [
+    {
+      "command": "npm test",
+      "reason": "Runs the full node:test suite, including new verdict-classification.test.ts (#56 routing/materiality/follow-up fingerprint) and check-untracked-receipt.test.ts (#49 discovery), proving the classification routing and first-run ergonomics.",
+      "required": true
+    },
+    {
+      "command": "npm run build",
+      "reason": "tsc typechecks the new materiality field on ReviewFinding, the follow_ups capsule field, and the github.ts follow-up-issue API wiring.",
+      "required": true
+    },
+    {
+      "command": "npm run bundle",
+      "reason": "Rebuilds the committed dist/index.js action artifact so the CI gate runs the same logic as source (kept in sync by the dist-check job).",
+      "required": true
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "tests 270, pass 270, fail 0"
+    },
+    {
+      "command": "npm run build",
+      "status": "passed",
+      "output_ref": "tsc clean, no type errors"
+    },
+    {
+      "command": "npm run bundle",
+      "status": "passed",
+      "output_ref": "dist/index.js rebuilt; cli.js + bundle both execute after the entrypoint guard"
+    }
+  ],
+  "changed_files": [
+    ".plumbline/AGENTS.md",
+    "README.md",
+    "dist/index.js",
+    "src/cli.ts",
+    "src/github.ts",
+    "src/review.ts",
+    "src/test/check-untracked-receipt.test.ts",
+    "src/test/render-turn-based.test.ts",
+    "src/test/verdict-classification.test.ts",
+    "src/types.ts",
+    "templates/AGENTS.md"
+  ],
+  "base_sha": "d64d49a5946ad81f15c0a8fc7a4292af0cea5612",
+  "diff_sha256": "c3aee3489d999b5bb6ab67eeb27ef1389d133fa8b714142b009647fe69013902",
+  "result_summary": "#56: added ReviewFinding.materiality + FailureCapsule.follow_ups (types.ts); rewrote the reviewer prompt with a 3-way rubric and bumped PROMPT_VERSION to v3 (review.ts); partitionFindings now splits advisory into optional follow-ups vs dropped noise; selectVerdict already routes agent-fixable to REWORK over the protected floor (added tests proving the sequencing). New github.ts createFollowUpIssue/fileFollowUps auto-file deduped follow-up issues, wired into the `run` reporting path. #49: added uncommittedReceipts() + an allowUntracked fallback in resolveReceiptPath (local-only; CI diff-based), plus an import.meta entrypoint guard so cli.ts is importable by tests. #48: README Status -> v0.4.x with the current gate model; both AGENTS.md TL;DRs/closings rewritten around `receipt --write`. Verified: full suite 270/270 pass, clean tsc build, fresh bundle, and this receipt's shape PASS locally (dogfood #53/#55). self_modifying:true (touches .plumbline/AGENTS.md, src/github.ts, src/types.ts). Version tag deliberately NOT moved — release is a separate step."
+}
