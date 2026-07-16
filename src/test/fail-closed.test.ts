@@ -139,9 +139,9 @@ test("plumb run: review REQUIRED + no provider → BLOCK (fail closed), not a sh
     // Non-zero exit → the required check goes red. This is the whole point.
     assert.notEqual(r.status, 0, `must fail closed; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
     assert.match(r.stderr, /FAILING CLOSED/);
-    // Shape passed, but the verdict is NOT approve.
-    assert.match(r.stdout, /plumbline: REVIEW/);
-    assert.doesNotMatch(r.stdout, /plumbline: APPROVE/);
+    // Shape passed, but the verdict is NOT pass. (#54: distinct REVIEW title.)
+    assert.match(r.stdout, /Plumbline: REVIEW/);
+    assert.doesNotMatch(r.stdout, /Plumbline: PASS/);
     assert.match(r.stdout, /semantic review unavailable — failing closed/i);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -157,7 +157,7 @@ test("plumb run: review OPTED OUT + no provider → shape-only PASS, but LOUD it
       env: NO_KEYS,
     });
     assert.equal(r.status, 0, `opt-out should pass on shape; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
-    assert.match(r.stdout, /plumbline: APPROVE/);
+    assert.match(r.stdout, /Plumbline: PASS/);
     // But it must SHOUT that the semantic review did not run.
     assert.match(r.stdout, /SEMANTIC REVIEW DID NOT RUN/);
     assert.match(r.stderr, /review did NOT run/i);
@@ -257,7 +257,7 @@ test("plumb run: shape FAILS + opted out (require_semantic_review:false) → sti
     });
     // Opt-out must NOT rescue a broken shape: the gate stays red.
     assert.notEqual(r.status, 0, `shape failure must block even when review is opted out; stdout:\n${r.stdout}`);
-    assert.doesNotMatch(r.stdout, /plumbline: APPROVE/);
+    assert.doesNotMatch(r.stdout, /Plumbline: PASS/);
     assert.match(r.stdout, /Shape gate:\*\* FAIL|shape.*FAIL/i);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -273,7 +273,7 @@ test("plumb run: shape FAILS + required → BLOCK (exit != 0), review not reache
       env: NO_KEYS,
     });
     assert.notEqual(r.status, 0, `shape failure must block; stdout:\n${r.stdout}`);
-    assert.doesNotMatch(r.stdout, /plumbline: APPROVE/);
+    assert.doesNotMatch(r.stdout, /Plumbline: PASS/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

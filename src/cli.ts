@@ -28,7 +28,10 @@ import {
   fetchExistingGateComment,
   countRounds,
   extractPriorCapsule,
+  publishCheckRun,
+  getPrHeadSha,
 } from "./github.js";
+import { verdictPresentation } from "./verdict.js";
 import { renderPreflight } from "./preflight.js";
 import { detectCi, reportToCi } from "./ci.js";
 import { pickReceipt, type ReceiptCandidate } from "./receipt-select.js";
@@ -638,6 +641,31 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
     }
     console.error(`\nNow fill the judgment fields (the tool never writes these):`);
     for (const j of JUDGMENT_CHECKLIST) console.error(`  · ${j}`);
+
+    // Write-time shape discipline (#53, point 2): run the SAME shapeCheck the
+    // gate runs and, if it FAILS on evidence-coverage, name the exact required
+    // steps still lacking execution_evidence right here — so the author fixes it
+    // now, not after a 25-min CI round-trip. This is the same unified shape
+    // logic used by `plumb check` and the CI `run` gate; it cannot drift. We
+    // warn (never auto-fill judgment) — filling execution_evidence for the
+    // author would defeat proof-carrying work.
+    try {
+      const raw = readFileSync(destAbs, "utf8");
+      const { result: shape } = shapeCheck(raw, policy, { baseRef, cwd, skipGit: false });
+      const evidenceGaps = shape.errors.filter((e) => e.startsWith("no execution evidence for required step"));
+      if (evidenceGaps.length > 0) {
+        console.error(
+          `\n⚠️  This receipt would FAIL the gate (shape) as written — the SAME check the CI gate runs:`,
+        );
+        for (const g of evidenceGaps) console.error(`   shape ❌ ${g}`);
+        console.error(
+          `   Add an execution_evidence entry (command + status) for each required step above ` +
+            `(or mark the step ci_covered:true if a CI check corroborates it). Run 'plumb check' to confirm before pushing.`,
+        );
+      }
+    } catch {
+      /* best-effort — never fail `receipt --write` on the advisory shape probe */
+    }
     console.error(`\nThen: git add ${dest} && commit && push  (pre-check: plumb check)`);
     return 0;
   }
@@ -1064,6 +1092,38 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
     } else {
       console.error("plumb: no PR context detected — printing comment:\n");
       console.log(renderComment(gate));
+    }
+
+    // Publish the DISTINCT per-verdict check-run (#54). This is what makes
+    // REWORK vs REVIEW unmistakable in the GitHub Checks list: a per-verdict
+    // NAME + CONCLUSION (rework→failure, review→action_required, approve→
+    // success), so the two non-pass states never read as the same red X.
+    // Best-effort and GitHub-only: needs the head SHA + a checks:write token.
+    if (ci.provider === "github") {
+      const repo = process.env.GITHUB_REPOSITORY;
+      const token = process.env.GITHUB_TOKEN;
+      if (repo && token && ci.prNumber !== undefined) {
+        const pres = verdictPresentation(gate.final);
+        try {
+          const headSha = await getPrHeadSha(repo, ci.prNumber, token);
+          const ok = await publishCheckRun(
+            repo,
+            headSha,
+            pres.checkName,
+            pres.conclusion,
+            pres.commentTitle,
+            renderCiSummary(gate).message,
+            token,
+          );
+          if (ok) {
+            console.error(
+              `published verdict check-run "${pres.checkName}" (conclusion: ${pres.conclusion})`,
+            );
+          }
+        } catch (e) {
+          console.error(`plumbline: could not publish verdict check-run: ${(e as Error).message}`);
+        }
+      }
     }
   } else if (cmd === "check") {
     // `check --review`: full local parity (shape + semantic) — print the REAL
