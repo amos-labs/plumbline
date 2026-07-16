@@ -10,6 +10,54 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-16
+
+Gate-trust: make the three verdicts unmistakable end-to-end, tighten REWORK vs
+REVIEW routing, and stop losing good-but-optional findings. Folds #55 (local
+shape parity #53 + unambiguous REWORK vs REVIEW #54) and #57 (verdict
+classification #56 + `check` first-run ergonomics #49 + doc refresh #48).
+
+### Added
+- **Distinct per-verdict surfaces (#54).** A single verdict-presentation table
+  (`src/verdict.ts`) is now the sole source of how every surface renders a
+  verdict, so REWORK and REVIEW can never again collapse into one identical red
+  "failure" check. The CI gate publishes a **per-verdict check-run** with a
+  distinct NAME and CONCLUSION:
+  - `Plumbline: PASS` — `success`
+  - `Plumbline: REWORK — blocked, do not merge` — `failure` (agent's turn)
+  - `Plumbline: REVIEW — awaiting human approval` — `action_required` (human's
+    turn; renders distinctly from a plain failure in the PR UI)
+
+  The PR-comment title and the Checks-tab annotation are derived from the same
+  table. Motivated by amos-platform#211, where a REWORK was merged by accident
+  because it looked identical to a REVIEW.
+- **Materiality axis + 3-way classification (#56).** Findings gain a
+  `material / optional / noise` axis on top of `class` + `actor`. Routing is now
+  deterministic and sequential: any **material, agent-fixable** finding ⇒
+  **REWORK** (even on a protected / `self_modifying` surface); **REVIEW** is
+  emitted only when no agent-fixable items remain (a pure human decision list);
+  **noise** is dropped.
+- **Optional-but-good findings become tracked follow-up issues (#56).**
+  Optional findings are no longer silently skipped as advisory notes — the gate
+  **files a deduped follow-up GitHub issue** for each (deduplicated by a stable
+  per-finding fingerprint via issue search). Best-effort: filing never throws,
+  so a repo without `issues: write` degrades gracefully rather than failing the
+  gate. Requires `issues: write` (and `checks: write` for the per-verdict
+  check-run) on the gate job.
+- **`plumb check` finds an untracked receipt (#49).** Local pre-flight
+  auto-discovery now consults `git status --porcelain`, so `plumb check` works
+  before `git add`. LOCAL only — CI stays diff-based.
+
+### Changed
+- **Doc refresh (#48).** README Status updated to the v0.4.x/v0.5 shape; both
+  AGENTS.md TL;DRs rewritten around the single idempotent `receipt --write` step.
+
+### Compatibility
+- **Back-compatible for consumers.** The new check-runs and follow-up-issue
+  filing require `checks: write` / `issues: write` on the gate job; without them
+  the gate degrades gracefully (no per-verdict check-run / no follow-up issues)
+  rather than failing. No receipt-schema or gate exit-code change.
+
 ## [0.4.0] - 2026-07-13
 
 ### Added
@@ -281,7 +329,11 @@ floating `v0` tag: proof-carrying gate for AI agent work — structured receipt,
 deterministic shape check, an LLM semantic review against the repository's mission,
 and a failure-capsule rework loop. Single-repo, GitHub Actions + Anthropic API.
 
-[Unreleased]: https://github.com/amos-labs/plumbline/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/amos-labs/plumbline/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/amos-labs/plumbline/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/amos-labs/plumbline/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/amos-labs/plumbline/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/amos-labs/plumbline/compare/v0.2.3...v0.3.0
 [0.2.3]: https://github.com/amos-labs/plumbline/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/amos-labs/plumbline/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/amos-labs/plumbline/compare/v0.2.0...v0.2.1
