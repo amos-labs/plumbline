@@ -9,7 +9,11 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  checks: read
+  # read: poll-wait reads other check-runs. write: publish the distinct
+  # per-verdict check-run (#54/#55).
+  checks: write
+  # Auto-file optional-but-good review findings as tracked follow-up issues (#56).
+  issues: write
 
 jobs:
   test:

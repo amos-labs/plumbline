@@ -259,6 +259,19 @@ export interface ReviewFinding {
   /** agent = an agent can do it now; human = needs human judgment. */
   actor: "agent" | "human";
   /**
+   * Materiality (#56) — the third routing axis, so a good-but-not-now
+   * suggestion is neither skipped nor allowed to block forever:
+   *   • "material" — a real defect/gap. On a blocking finding this is implicit;
+   *     the model should mark advisory findings that are genuinely worth doing
+   *     but out of scope as "optional", not "material".
+   *   • "optional" — optional-but-good: NOT blocking, but must NOT vanish — the
+   *     gate AUTO-FILES a follow-up issue so it's tracked and pickable later.
+   *   • "noise"    — stylistic non-issue / nitpick with no real value → dropped.
+   * Absent ⇒ treated as "material" for blocking findings and "optional" for
+   * advisory findings (conservative: an untagged advisory is captured, not lost).
+   */
+  materiality?: "material" | "optional" | "noise";
+  /**
    * True when this finding is a REGRESSION introduced by the fix commits under
    * re-review (Change 3). On/after the convergence cap, only regressions may
    * block; everything else escalates to human review.
@@ -293,9 +306,21 @@ export interface FailureCapsule {
   human_actions?: string[];
   /**
    * Advisory notes — "consider…", style, nice-to-haves. Recorded and rendered
-   * in their own section; NEVER verdict-affecting (#41).
+   * in their own section; NEVER verdict-affecting (#41). Post-#56 this holds
+   * ONLY the optional-but-good items (same set as `follow_ups`); pure noise is
+   * dropped and never lands here.
    */
   advisory?: string[];
+  /**
+   * Optional-but-good findings (#56): non-blocking, but too valuable to lose.
+   * The gate AUTO-FILES a follow-up issue for each of these (or appends to a
+   * designated backlog) so a good suggestion becomes a tracked ticket instead
+   * of evaporating as a skipped advisory. Derived from advisory findings with
+   * materiality "optional" (noise-materiality advisories are dropped, not
+   * filed). Same descriptions as `advisory` — kept as a distinct field so the
+   * reporting layer knows exactly what to file.
+   */
+  follow_ups?: string[];
   changed_files_implicated: string[];
   relevant_excerpt?: string;
   severity: "fixable" | "fatal" | "review";

@@ -10,28 +10,40 @@ which steps need the human.
 ## TL;DR for the agent
 
 ```bash
-plumb new          # scaffold .plumbline/receipts/<branch>.json (prefilled + diff-stamped)
-# …edit the receipt: intent, validation_plan, execution_evidence, result_summary…
-plumb receipt --write        # refresh diff_sha256 + changed_files from the real diff (after edits/rebase)
-plumb check        # local pre-flight: shape + diff_sha256 — MUST pass before you push
+plumb receipt --write        # ONE idempotent step: scaffolds .plumbline/receipts/<branch>.json
+                             # if absent, else refreshes diff_sha256 + changed_files from the
+                             # real diff. Run it again after any edit or rebase.
+# …edit the receipt's judgment fields: intent, validation_plan, execution_evidence, result_summary…
+plumb receipt --write        # re-run to re-stamp the mechanical fields after your edits
+plumb check                  # local pre-flight: shape + diff_sha256 — MUST pass before you push
 git add .plumbline && git commit && git push
 ```
 
-Run `plumb check` until it prints **PASS**. It runs the *same* shape + diff
-checks the CI gate runs, so a green pre-flight means the gate's shape stage will
-pass — no red-CI round-trips. (Semantic review still runs server-side in CI.)
+`plumb receipt --write` is the one step you need — it scaffolds a receipt on
+first run and only ever touches the mechanical fields (diff hash, file list,
+self_modifying) on later runs, never your judgment fields. Run `plumb check`
+until it prints **PASS**: it runs the *same* shape + diff checks the CI gate
+runs (one shared implementation — no local/CI drift), so a green pre-flight
+means the gate's shape stage will pass, no red-CI round-trips. `plumb check`
+finds your receipt even before you `git add` it. (Semantic review still runs
+server-side in CI.)
 
 ## Agent steps (no human needed)
 
-1. **`plumb new`** — creates `.plumbline/receipts/<task_id>.json` (one file
-   per PR, keyed off your branch, so concurrent PRs never collide). It prefills
-   placeholders and stamps the current `diff_sha256` + `changed_files`.
+1. **`plumb receipt --write`** — the one idempotent authoring step. On first run
+   it scaffolds `.plumbline/receipts/<task_id>.json` (one file per PR, keyed off
+   your branch, so concurrent PRs never collide) with placeholders and the
+   current `diff_sha256` + `changed_files`. On every later run it refreshes ONLY
+   those mechanical fields (+ `self_modifying`), never your judgment fields.
+   (The low-level `plumb new` / `plumb stamp` still exist but `receipt --write`
+   supersedes them — you don't need them.)
 2. **Fill the receipt** (see field guide below). Be truthful — the semantic
    review compares `intent`/`result_summary` against the actual diff.
-3. **`plumb receipt --write`** after any further edits or a rebase — regenerates
+3. **`plumb receipt --write`** again after your edits or a rebase — regenerates
    `diff_sha256` + `changed_files` so they match HEAD (the most common failure
    is a stale hash; never hand-edit these).
-4. **`plumb check`** — fix anything it flags, repeat until PASS, then push.
+4. **`plumb check`** — fix anything it flags, repeat until PASS, then push. It
+   discovers your receipt even before `git add` (#49).
 
 ### Receipt field guide
 - `task_id` — ticket/issue/branch id (also the receipt filename).
@@ -174,5 +186,5 @@ These need repo-admin rights an agent doesn't have. Ask the user to do them once
 3. **First run:** open any PR; the `plumbline` check runs and becomes selectable
    in step 1.
 
-That's it — once those are set, the loop is fully agent-driven: `new` → fill →
-`stamp` → `check` → push.
+That's it — once those are set, the loop is fully agent-driven:
+`receipt --write` → fill the judgment fields → `receipt --write` → `check` → push.

@@ -19,7 +19,7 @@ const MAX_DIFF_CHARS = 180_000;
  * change never serves a stale cached verdict. v2: turn-based verdict, findings
  * classified blocking/advisory + agent/human, convergent (delta) re-review (#41).
  */
-export const PROMPT_VERSION = "v2";
+export const PROMPT_VERSION = "v3";
 
 /**
  * Semantic review — the Oracle half of the gate. One LLM call that judges
@@ -71,14 +71,25 @@ Judge the work on exactly these dimensions:
 3. RISK — Hidden scope creep, security exposure, data-integrity risk, debt dumped on protected surfaces, changes unrelated to the stated intent.
 4. SELF-MODIFYING HONESTY — If the diff touches anything the mission marks protected, the receipt must say self_modifying: true. Flag any mismatch.
 
-Report every issue as a FINDING, classified on two independent axes:
+Report every issue as a FINDING, classified on THREE independent axes. Getting materiality right is what keeps good suggestions from being lost AND keeps trivia from blocking forever — classify crisply.
+
+AXIS 1 — class (does it gate the merge?):
 - class: "blocking" — a DEFECT: a failed or missing validation, a bug, a security regression, a receipt that does not match the diff, an untested critical path. Only blocking findings gate the merge.
-- class: "advisory" — a "consider…", a style nit, a refactor suggestion, a nice-to-have. Advisory findings are recorded and shown to the author but NEVER block the merge. Do NOT inflate an advisory into a blocking finding.
+- class: "advisory" — NOT a defect: a "consider…", a suggestion, a refactor idea, a style note. Advisory findings NEVER block the merge. Do NOT inflate an advisory into a blocking finding.
+
+AXIS 2 — actor (who can resolve it?):
 - actor: "agent" — an agent can resolve it right now (code/security/tests/docs).
 - actor: "human" — it needs human judgment: a protected-surface/billing override, a real invariant trade-off, or irreducibly ambiguous intent.
+
+AXIS 3 — materiality (this is the crisp 3-way bucket — apply it to EVERY finding):
+- materiality: "material" — a real problem worth acting on. EVERY blocking finding is "material" by definition. An agent-fixable material finding must be class "blocking" + actor "agent" so it routes to REWORK and gets FIXED NOW, not deferred.
+- materiality: "optional" — genuinely GOOD but legitimately out of scope for this PR (a worthwhile follow-up, a nice future refactor, a real-but-minor improvement that needn't gate this change). These are class "advisory". The gate AUTO-FILES a tracked follow-up issue for each — so it is captured, never skipped, and never blocks.
+- materiality: "noise" — a stylistic non-issue, a nitpick, or a matter of taste with no real value. These are class "advisory" and are DROPPED — do not file, do not block. Use this for anything you'd be embarrassed to open a ticket about.
+
+CRITICAL routing rule (do not conflate materiality with class): if a suggestion is agent-fixable AND materially improves the change, it is a MATERIAL, BLOCKING, AGENT finding (⇒ REWORK — fix it now). Do NOT downgrade a good, in-scope, agent-fixable fix to an "optional" advisory to avoid blocking — that is exactly the failure this rubric exists to prevent. "optional" is ONLY for genuinely-out-of-scope-but-good ideas.
 ${levelGuidance}
 
-Do NOT choose the final verdict yourself — the gate derives it mechanically from your findings (any blocking+agent finding ⇒ the agent's turn; blocking+human with no blocking+agent ⇒ the human's turn; none ⇒ pass). Report the "verdict" field as your best guess for context only; it will be recomputed.
+Do NOT choose the final verdict yourself — the gate derives it mechanically from your findings. Sequential and exclusive: ANY blocking+agent finding ⇒ REWORK (the agent's turn — even on a protected/self_modifying surface); a PR CANNOT reach human-REVIEW while any agent-fixable finding remains. Only once there are zero blocking+agent findings does a blocking+human finding (or a protected surface) ⇒ REVIEW (the human's turn); none ⇒ pass. Report the "verdict" field as your best guess for context only; it will be recomputed.
 
 Respond with ONLY a JSON object, no markdown fence, with this exact shape:
 {
@@ -92,7 +103,7 @@ Respond with ONLY a JSON object, no markdown fence, with this exact shape:
     "suspected_cause": "<why, at least one sentence>",
     "next_action_requested": "<the single most useful next step>",
     "findings": [
-      { "description": "<concrete, actionable>", "class": "blocking" | "advisory", "actor": "agent" | "human"${context?.priorCapsule ? ', "regression": true' : ""} }
+      { "description": "<concrete, actionable>", "class": "blocking" | "advisory", "actor": "agent" | "human", "materiality": "material" | "optional" | "noise"${context?.priorCapsule ? ', "regression": true' : ""} }
     ],
     "changed_files_implicated": ["<paths>"],
     "severity": "fixable" | "fatal" | "review"
@@ -100,8 +111,9 @@ Respond with ONLY a JSON object, no markdown fence, with this exact shape:
 }
 
 Rules:
-- List EVERY issue as a finding. If there are no findings at all, the work passes — omit failure_capsule entirely.
+- List EVERY issue as a finding, EXCEPT pure noise you would drop anyway (you may omit it, or tag it materiality "noise"). If there are no findings at all, the work passes — omit failure_capsule entirely.
 - A single finding is either blocking or advisory — never both. When unsure whether something is a true defect, prefer advisory; do not manufacture blocking findings to look thorough.
+- Tag materiality on EVERY finding. blocking ⇒ "material". advisory ⇒ "optional" (worth a follow-up ticket) or "noise" (drop).
 - next_action_requested should name the single most useful next step for whoever's turn it is.
 - Omit failure_capsule only when there are zero findings (a clean pass).${context?.priorCapsule ? "\n- This is a RE-REVIEW: obey the <delta_review_contract> above — verify the prior blocking items, review ONLY changed hunks, and set regression:true on any NEW defect the fix commits introduced." : ""}`;
 }
@@ -151,28 +163,56 @@ ${context.round >= CONVERGENCE_CAP_ROUND ? `4. CONVERGENCE CAP: this PR has been
 //   • no blocking findings at all and no floor ⇒ approve.
 // Advisory findings never affect the verdict.
 
-/** Whose turn it is, split from the blocking findings. */
+/** Whose turn it is, split from the blocking findings (+ #56 follow-up split). */
 export interface Partition {
   agentActions: string[];
   humanActions: string[];
+  /**
+   * Optional-but-good advisory findings (#56, materiality "optional"): kept for
+   * display AND auto-filed as follow-up issues so they are never lost. Pure
+   * "noise"-materiality advisories are dropped and never appear here.
+   */
+  followUps: string[];
+  /**
+   * Back-compat alias of `followUps`: the advisory items surfaced in the
+   * comment. Post-#56 this is exactly the optional-good set (noise dropped).
+   */
   advisory: string[];
 }
 
-/** Partition findings into agent/human blocking action lists + advisory. */
+/**
+ * The effective materiality of a finding (#56). Blocking findings are always
+ * "material". An advisory with no explicit materiality defaults to "optional"
+ * (conservative: capture-don't-lose) — only an explicit "noise" tag drops it.
+ */
+export function findingMateriality(f: ReviewFinding): "material" | "optional" | "noise" {
+  if (f.class === "blocking") return "material";
+  if (f.materiality === "noise") return "noise";
+  if (f.materiality === "material") return "material"; // model over-tagged an advisory; keep it visible
+  return "optional";
+}
+
+/**
+ * Partition findings into agent/human blocking action lists + the optional-good
+ * follow-up list. Advisory findings are split by materiality (#56):
+ * "optional" ⇒ followUps (filed + shown); "noise" ⇒ dropped. A material-tagged
+ * advisory (model inconsistency) is kept as a follow-up rather than lost.
+ */
 export function partitionFindings(findings: ReviewFinding[]): Partition {
   const agentActions: string[] = [];
   const humanActions: string[] = [];
-  const advisory: string[] = [];
+  const followUps: string[] = [];
   for (const f of findings) {
     if (f.class === "advisory") {
-      advisory.push(f.description);
+      if (findingMateriality(f) !== "noise") followUps.push(f.description);
+      // noise ⇒ dropped: neither shown nor filed.
     } else if (f.actor === "human") {
       humanActions.push(f.description);
     } else {
       agentActions.push(f.description);
     }
   }
-  return { agentActions, humanActions, advisory };
+  return { agentActions, humanActions, followUps, advisory: followUps };
 }
 
 /**
@@ -414,7 +454,7 @@ export async function semanticReview(
   const rawFindings = normalizeFindings(parsed.failure_capsule);
   const round = context?.round ?? 1;
   const { findings, capped } = applyConvergenceCap(rawFindings, round);
-  const { agentActions, humanActions, advisory } = partitionFindings(findings);
+  const { agentActions, humanActions, followUps } = partitionFindings(findings);
 
   const protectedFloor = receipt.self_modifying === true;
   let verdict: Verdict = selectVerdict(findings, { protectedFloor });
@@ -451,7 +491,10 @@ export async function semanticReview(
       findings,
       agent_actions: agentActions,
       human_actions: humanActions,
-      advisory,
+      // #56: optional-good advisories are surfaced AND filed as follow-ups;
+      // noise is dropped in partitionFindings and never reaches either field.
+      advisory: followUps,
+      follow_ups: followUps,
       did_not_converge: capped || undefined,
     };
     if (capped) {
@@ -486,6 +529,13 @@ export function normalizeFindings(capsule: FailureCapsule | undefined): ReviewFi
         description: f.description,
         class: f.class === "advisory" ? "advisory" : "blocking",
         actor: f.actor === "human" ? "human" : "agent",
+        // Materiality (#56): honor an explicit tag; leave undefined otherwise so
+        // findingMateriality() applies the conservative default (blocking⇒material,
+        // advisory⇒optional). An unrecognized value is treated as untagged.
+        materiality:
+          f.materiality === "material" || f.materiality === "optional" || f.materiality === "noise"
+            ? f.materiality
+            : undefined,
         regression: f.regression === true ? true : undefined,
       }));
   }

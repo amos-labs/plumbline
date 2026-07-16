@@ -542,8 +542,25 @@ let the middle run unattended.
 
 ## Status
 
-v0.2.0 — the first release cut from a semver tag with a [CHANGELOG](CHANGELOG.md) and a
-release process ([RELEASING.md](RELEASING.md)); [pin a released tag](#pinning-a-version),
-not `@master`. Single-repo, GitHub Actions + Anthropic API. Planned: drift monitoring
-(scheduled job sampling merged work against the mission), provider abstraction (Bedrock),
-check-runs API instead of comments, receipt signing.
+v0.4.x — released from a semver tag with a [CHANGELOG](CHANGELOG.md) and a release
+process ([RELEASING.md](RELEASING.md)); [pin a released tag](#pinning-a-version), not
+`@master`. GitHub Actions + Azure Pipelines; Anthropic and OpenAI-compatible providers.
+
+Current gate model:
+- One idempotent authoring step — `plumb receipt --write` (scaffold if absent, else
+  refresh the mechanical fields) — then fill the judgment fields and `plumb check`.
+- Deterministic **shape** gate (schema, evidence coverage, protected paths, pinned-base
+  `diff_sha256`) runs identically in `plumb check` and the CI gate — one implementation,
+  no local/CI drift (#53).
+- Semantic **review** classifies each finding on three axes — class (blocking/advisory),
+  actor (agent/human), materiality (material/optional/noise) — and the verdict is derived
+  mechanically: any material, agent-fixable finding ⇒ **REWORK** (agent iterates, even on a
+  protected surface); a clean PR needing only human sign-off ⇒ **REVIEW**; otherwise
+  **PASS** (#56). Optional-but-good findings are auto-filed as tracked follow-up issues
+  rather than skipped; noise is dropped.
+- The three verdicts are unmistakable end-to-end — distinct check-run name + conclusion
+  (REWORK→`failure`, REVIEW→`action_required`, PASS→`success`), PR-comment title, and
+  annotation, from a single source of truth (#54/#55).
+
+Planned: drift monitoring (scheduled job sampling merged work against the mission),
+Bedrock provider, explicit inline REVIEW-approve action, receipt signing.
