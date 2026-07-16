@@ -6,9 +6,9 @@ import {
   extractPriorCapsule,
   appendAttemptHistory,
 } from "../github.js";
-import type { GateResult, FailureCapsule } from "../types.js";
+import type { GateResult, FailureCapsule, Verdict } from "../types.js";
 
-function gate(final: GateResult["final"], capsule?: FailureCapsule): GateResult {
+function gate(final: Verdict, capsule?: FailureCapsule): GateResult {
   return {
     shape: { pass: true, errors: [], warnings: [] },
     final,

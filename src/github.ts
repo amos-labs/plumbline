@@ -23,6 +23,20 @@ export function renderComment(result: GateResult): string {
   const followUps = cap?.follow_ups ?? cap?.advisory ?? [];
   const didNotConverge = cap?.did_not_converge === true;
 
+  if (result.final === "indeterminate") {
+    // Infra-error (v0.6.1): no code verdict. Surface ONLY the banner + reasons;
+    // there is no shape/review verdict to report, and we must not render
+    // anything that reads as a REWORK checklist or a PASS.
+    lines.push(`> ${pres.commentBanner}`);
+    lines.push("");
+    if (result.reasons.length > 0) {
+      for (const reason of result.reasons) lines.push(`> ${reason}`);
+      lines.push("");
+    }
+    lines.push("<sub>plumbline · proof-carrying gate for agent work</sub>");
+    return lines.join("\n");
+  }
+
   if (result.final === "review" && didNotConverge) {
     // Convergence cap fired (#41, Change 3): the loop is over, a human decides.
     // Still a REVIEW (human's turn), but with a distinct "did not converge" note.
@@ -137,6 +151,16 @@ export function renderCiSummary(result: GateResult): CiAnnotation {
       message: "Receipt passed shape + semantic review. Merging automatically — no action needed.",
     };
   }
+  if (result.final === "indeterminate") {
+    return {
+      level: pres.annotationLevel,
+      title: pres.checkName,
+      message:
+        "Could not evaluate — a GitHub infrastructure call failed transiently (e.g. 503/timeout) and " +
+        "survived all retries. This is NOT a code verdict (neither REWORK nor PASS). Re-run the gate when " +
+        "GitHub recovers." + (result.reasons.length ? ` ${result.reasons[0]}` : ""),
+    };
+  }
 
   const cap = result.review?.failure_capsule;
   const parts: string[] = [];
@@ -184,11 +208,134 @@ const GH_HEADERS = (token: string) => ({
   accept: "application/vnd.github+json",
 });
 
+// ── Transient-failure retry (v0.6.1, infra-error state) ────────────────────
+//
+// The 2026-07-16 incident: during a GitHub outage the gate's API calls got a
+// `503 Unicorn` page. The ci-evidence step reported "could not verify CI
+// checks: …503…" and that routed to a hard REWORK ("agent's turn — do not
+// merge") on a PR whose CODE was fine. The gate conflated "I couldn't evaluate
+// because of a transient upstream failure" with "the code needs rework" — which
+// trains humans to merge past REWORKs and defeats the gate.
+//
+// The fix has two halves:
+//   1. RETRY the GitHub API calls on TRANSIENT failures (this wrapper): HTTP
+//      5xx (500/502/503/504), 429, and network errors (ECONNRESET/ETIMEDOUT/
+//      socket hangups). 4xx auth/permission errors (401/403/404) are REAL and
+//      NEVER retried. Bounded exponential backoff + jitter (~<30s worst case).
+//   2. If retries are exhausted on the evaluation-critical calls, the caller
+//      raises an INDETERMINATE / infra_error outcome (see `InfraError` +
+//      cli.ts) — distinct from REWORK/REVIEW/PASS — rather than a REWORK.
+
+/** Attempts and backoff schedule for transient GitHub failures. */
+export const RETRY_ATTEMPTS = 4;
+/** Base backoff in ms; doubles each attempt, with jitter. Total added latency
+ *  worst case ≈ (0.5+1+2)s of sleeps + jitter ≈ well under 30s. */
+const RETRY_BASE_MS = 500;
+const RETRY_MAX_MS = 8000;
+
+/** HTTP statuses we treat as transient (worth retrying). */
+function isTransientStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status <= 599);
+}
+
+/** Network/socket errors we treat as transient (worth retrying). */
+function isTransientNetworkError(err: unknown): boolean {
+  const e = err as { code?: string; cause?: { code?: string }; name?: string; message?: string };
+  const code = e?.code ?? e?.cause?.code ?? "";
+  if (["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EPIPE", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"].includes(code)) {
+    return true;
+  }
+  const msg = `${e?.name ?? ""} ${e?.message ?? ""}`.toLowerCase();
+  return /socket hang up|network|fetch failed|timeout|timed out|terminated|econnreset|etimedout/.test(msg);
+}
+
+/**
+ * A GitHub call that could not be EVALUATED due to a transient upstream failure
+ * (5xx / 429 / network) that survived every retry. The gate must surface this
+ * as INDETERMINATE (infra_error) — NOT as a REWORK — because we never actually
+ * assessed the code.
+ */
+export class InfraError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InfraError";
+  }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * fetch() with bounded retry on TRANSIENT GitHub failures. Retries 5xx/429 and
+ * network errors; returns immediately on any other response (incl. 4xx, which
+ * the caller inspects — 401/403/404 are real). On exhaustion it throws an
+ * `InfraError` so the caller can route to the INDETERMINATE outcome. Kept small
+ * and injectable (the `fetchImpl`/`sleepImpl` params) for unit tests.
+ */
+export async function githubFetch(
+  url: string,
+  init: RequestInit,
+  what: string,
+  opts: {
+    attempts?: number;
+    fetchImpl?: typeof fetch;
+    sleepImpl?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<Response> {
+  const attempts = opts.attempts ?? RETRY_ATTEMPTS;
+  const doFetch = opts.fetchImpl ?? fetch;
+  const doSleep = opts.sleepImpl ?? sleep;
+  let lastDetail = "";
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    let res: Response | null = null;
+    try {
+      res = await doFetch(url, init);
+    } catch (err) {
+      if (isTransientNetworkError(err) && attempt < attempts) {
+        lastDetail = `network error: ${(err as Error).message}`;
+        await doSleep(backoffMs(attempt));
+        continue;
+      }
+      // Non-transient network error, or transient but out of attempts.
+      if (isTransientNetworkError(err)) {
+        throw new InfraError(`${what}: ${(err as Error).message} (after ${attempt} attempt${attempt === 1 ? "" : "s"})`);
+      }
+      throw err;
+    }
+    if (isTransientStatus(res.status) && attempt < attempts) {
+      lastDetail = `HTTP ${res.status}`;
+      // Drain the body so the socket is freed before retrying.
+      await res.text().catch(() => "");
+      await doSleep(backoffMs(attempt));
+      continue;
+    }
+    if (isTransientStatus(res.status)) {
+      // Transient status that survived every retry → INDETERMINATE, not REWORK.
+      const body = await res.text().catch(() => "");
+      throw new InfraError(
+        `${what}: HTTP ${res.status} after ${attempt} attempts${body ? ` — ${body.slice(0, 200)}` : ""}`,
+      );
+    }
+    // Any other status (2xx or a real 4xx) — hand back to the caller as-is.
+    void lastDetail;
+    return res;
+  }
+  // Unreachable, but keep the type-checker happy.
+  throw new InfraError(`${what}: exhausted ${attempts} attempts (${lastDetail})`);
+}
+
+/** Exponential backoff with full jitter, capped. */
+function backoffMs(attempt: number): number {
+  const base = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** (attempt - 1));
+  return Math.floor(base / 2 + Math.random() * (base / 2));
+}
+
 /** The PR's head commit SHA (the real commit CI ran on — not the merge ref). */
 export async function getPrHeadSha(repo: string, prNumber: number, token: string): Promise<string> {
-  const res = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNumber}`, {
-    headers: GH_HEADERS(token),
-  });
+  const res = await githubFetch(
+    `https://api.github.com/repos/${repo}/pulls/${prNumber}`,
+    { headers: GH_HEADERS(token) },
+    `get PR #${prNumber}`,
+  );
   if (!res.ok) throw new Error(`get PR #${prNumber}: ${res.status} ${await res.text()}`);
   const pr = (await res.json()) as { head?: { sha?: string } };
   if (!pr.head?.sha) throw new Error(`PR #${prNumber} has no head.sha`);
@@ -197,9 +344,10 @@ export async function getPrHeadSha(repo: string, prNumber: number, token: string
 
 /** All check-runs reported for a commit. */
 export async function getCheckRunsForSha(repo: string, sha: string, token: string): Promise<CheckRun[]> {
-  const res = await fetch(
+  const res = await githubFetch(
     `https://api.github.com/repos/${repo}/commits/${sha}/check-runs?per_page=100`,
     { headers: GH_HEADERS(token) },
+    `get check-runs for ${sha}`,
   );
   if (!res.ok) throw new Error(`get check-runs for ${sha}: ${res.status} ${await res.text()}`);
   const data = (await res.json()) as { check_runs?: CheckRun[] };

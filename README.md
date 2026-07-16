@@ -237,6 +237,20 @@ the semantic review did **not** run — the gate never silently pretends judgmen
 (This is orthogonal to the `skip_review` cost knobs, which are intentional per-diff skips
 that still count as a completed review decision.)
 
+**Transient GitHub outages are INDETERMINATE, not REWORK (v0.6.1).** *Could not evaluate*
+is a different thing from *the code needs rework* — conflating them (a 503 becoming a hard
+REWORK) trains humans to merge past REWORKs and defeats the gate. So the GitHub API calls
+the gate makes (the PR + check-runs fetches behind ci-evidence) **retry with exponential
+backoff + jitter** on transient failures — HTTP 5xx (500/502/503/504), 429, and network
+errors (ECONNRESET/ETIMEDOUT/socket hangups) — while real 4xx auth/permission errors
+(401/403/404) are never retried. If a transient failure survives every retry, the gate
+emits a distinct **`INDETERMINATE`** (🔌 *infra_error*) outcome: a check-run named
+`Plumbline: INDETERMINATE — could not evaluate (GitHub infra error)` (conclusion
+`action_required`) and a PR comment that states plainly it is **neither a REWORK nor an
+approval** — the gate never assessed the code. It **blocks auto-merge** (non-zero exit —
+nothing was verified) and is trivially **re-runnable**: a fresh gate run once GitHub
+recovers produces a real verdict.
+
 ### What "proof" means here
 
 Be precise about the claim. A plumbline receipt binds three things:

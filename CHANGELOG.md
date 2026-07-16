@@ -10,6 +10,42 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-16
+
+Infra-error state. During a GitHub outage the gate's API calls got a
+`503 Unicorn` page: the **ci-evidence** step reported "could not verify CI
+checks: …503…" and that routed to a hard **REWORK** ("agent's turn — do not
+merge") on a PR whose code was fine. The gate conflated "I couldn't evaluate
+because of a transient upstream failure" with "the code needs rework" — which
+trains humans to merge past REWORKs and defeats the gate. v0.6.1 makes the gate
+distinguish *could-not-evaluate* from a real verdict.
+
+### Added
+- **`INDETERMINATE` (infra_error) terminal outcome.** A NEW state distinct from
+  PASS / REWORK / REVIEW, emitted only when a GitHub API call the gate needs
+  fails transiently and survives every retry. It:
+  - surfaces with a distinct 🔌 icon, check-run name
+    (`Plumbline: INDETERMINATE — could not evaluate (GitHub infra error)`,
+    conclusion `action_required`), and a PR comment / log that state plainly:
+    *"⚠️ Gate could not evaluate — GitHub infrastructure error (e.g. 503/timeout),
+    NOT a code verdict… neither a REWORK nor an approval… Re-run the gate when
+    GitHub recovers."*
+  - **blocks auto-merge** (non-zero exit — we could not verify) without reading
+    as an agent-fix REWORK or a green PASS.
+  - is trivially **re-runnable**: a fresh gate run once GitHub is healthy
+    produces a real verdict.
+- **Bounded retry with exponential backoff + jitter** on the GitHub API calls
+  the gate makes (`githubFetch`, wrapping the PR + check-runs fetches used by
+  ci-evidence). Transient failures are retried (4 attempts, ~<30s worst case):
+  HTTP 5xx (500/502/503/504), 429, and network errors (ECONNRESET/ETIMEDOUT/
+  socket hangups). Real 4xx auth/permission errors (401/403/404) are **never**
+  retried.
+
+### Unchanged
+- Phase logic (v0.6.0) and the shape/semantic/ci-evidence gate LOGIC are
+  untouched. When GitHub is healthy, every existing outcome behaves exactly as
+  before; INDETERMINATE only appears on a sustained transient upstream failure.
+
 ## [0.6.0] - 2026-07-16
 
 Phased gate (fail-cheap-first). The monolithic gate ran the full (often ~30-min)

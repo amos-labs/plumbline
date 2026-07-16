@@ -1,0 +1,93 @@
+{
+  "receipt_version": "1.0",
+  "task_id": "feat-infra-error-state-v0.6.1",
+  "agent_id": "claude-opus-4-8",
+  "intent": "Add a distinct INDETERMINATE (infra_error) gate outcome so a transient GitHub outage (503/timeout) no longer becomes a hard REWORK. The 2026-07-16 incident: during a GitHub outage the ci-evidence step got a 503 and routed to REWORK ('agent's turn — do not merge') on a PR whose code was fine, training humans to merge past REWORKs. This wraps the GitHub API calls the gate makes (PR + check-runs fetches behind ci-evidence) in a bounded exponential-backoff+jitter retry for transient failures (5xx/429/network), never retrying real 4xx (401/403/404), and on retry-exhaustion emits INDETERMINATE — a new terminal outcome distinct from PASS/REWORK/REVIEW that blocks auto-merge (non-zero exit) but is worded as 'could not evaluate, re-run when GitHub recovers', not an agent-fix REWORK or a PASS.",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json",
+    ".plumbline/AGENTS.md"
+  ],
+  "validation_plan": [
+    {
+      "command": "npm run check",
+      "reason": "TypeScript type-check must pass; the new GateOutcome type and the INDETERMINATE table entry must be sound across cli/verdict/github/types.",
+      "required": true,
+      "id": "typecheck"
+    },
+    {
+      "command": "npm run build",
+      "reason": "tsc build must succeed so the test suite (which runs against dist/test) is exercising the new code.",
+      "required": true,
+      "id": "build"
+    },
+    {
+      "command": "npm test",
+      "reason": "Full unit suite including the new infra-error-retry tests (transient 5xx/429/network retried then INDETERMINATE; 403/404 not retried; healthy response = normal verdict) and the INDETERMINATE surface tests. Corroborated by the real CI 'test' check-run via ci_evidence_checks.",
+      "required": true,
+      "id": "test",
+      "ci_covered": true
+    },
+    {
+      "command": "npm run bundle",
+      "reason": "Rebuild dist/index.js (the Action runs the bundle); dist-check requires it be up to date with src.",
+      "required": true,
+      "id": "bundle"
+    },
+    {
+      "command": "node dist/cli.js check --base origin/master",
+      "reason": "Local plumb shape pre-flight (shape + diff_sha256) must PASS before pushing — the gate gates the gate.",
+      "required": true,
+      "id": "plumb-check"
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npm run check",
+      "status": "passed",
+      "output_ref": "tsc --noEmit exited 0, no type errors",
+      "step": "typecheck"
+    },
+    {
+      "command": "npm run build",
+      "status": "passed",
+      "output_ref": "tsc exited 0",
+      "step": "build"
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "# tests 292 / # pass 292 / # fail 0 (node --test dist/test/)",
+      "step": "test"
+    },
+    {
+      "command": "npm run bundle",
+      "status": "passed",
+      "output_ref": "esbuild -> dist/index.js 273.8kb, Done; re-bundle produces no further diff (dist-check clean)",
+      "step": "bundle"
+    },
+    {
+      "command": "node dist/cli.js check --base origin/master",
+      "status": "passed",
+      "output_ref": "shape pre-flight PASS — shape + diff_sha256 OK",
+      "step": "plumb-check"
+    }
+  ],
+  "changed_files": [
+    "CHANGELOG.md",
+    "README.md",
+    "dist/index.js",
+    "package.json",
+    "src/cli.ts",
+    "src/github.ts",
+    "src/test/infra-error-retry.test.ts",
+    "src/test/render-turn-based.test.ts",
+    "src/test/verdict-presentation.test.ts",
+    "src/types.ts",
+    "src/verdict.ts"
+  ],
+  "base_sha": "95c9027934b187fe391e56cd3fec7b68f1716ce7",
+  "diff_sha256": "c475a420fbfbd465e78454cbac17ce275612b0074638094d93fa0e239773fd7d",
+  "result_summary": "Added the INDETERMINATE (infra_error) terminal outcome and bounded retry for transient GitHub failures. github.ts: new githubFetch() retry wrapper (4 attempts, exp backoff + jitter) retrying 5xx/429/network but never 401/403/404, and an InfraError class; getPrHeadSha/getCheckRunsForSha now route through it; renderComment/renderCiSummary render the infra-error surface. types.ts: new GateOutcome = Verdict | 'indeterminate'; GateResult.final widened. verdict.ts: INDETERMINATE row in the presentation TABLE (distinct 🔌 icon, check name, action_required conclusion, 'not a code verdict / re-run when GitHub recovers' wording, mergeable:false). cli.ts: ci-evidence catch distinguishes InfraError (→ gate.final=indeterminate, skip semantic review) from real errors (→ existing severity handling); exit code stays non-zero for indeterminate so auto-merge is blocked. Verified: npm run check/build/test (292 pass, incl. new infra-error-retry.test.ts + INDETERMINATE surface tests) and npm run bundle all green; phase logic and shape/semantic/ci-evidence LOGIC unchanged. self_modifying:true — touches protected paths src/github.ts and src/types.ts."
+}
