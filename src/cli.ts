@@ -1185,22 +1185,35 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
   // (v0.5.0 #56); this only annotates the phase provenance.
   if (cmd === "run" && phase !== "full" && gate.final !== "indeterminate") {
     if (phase === "quality") {
-      if (gate.final === "approve") {
-        gate.reasons.push(
-          "✅ Phase 1 (quality) PASSED — shape + semantic review are clean. " +
-            "This is NOT a terminal PASS: tests were NOT run in this phase. " +
-            "Phase 2 (verify) runs the full test suite + ci-evidence and emits the terminal verdict.",
-        );
-      } else if (gate.final === "rework") {
+      if (gate.final === "rework") {
         gate.reasons.push(
           "🔁 Phase 1 (quality) REWORK — fast checks (shape/semantic) failed and the test suite was " +
             "SKIPPED (not yet run). These are agent-fixable: fix the 🤖 items and re-push; the cheap " +
             "phase re-runs in ~2 min. Do NOT read this as 'tests passed' — tests only run in phase 2 (verify).",
         );
+      } else if (gate.final === "review") {
+        // REVIEW is a TERMINAL verdict only (produced in verify/full, AFTER
+        // ci-evidence). Phase 1's sole blocking job is REWORK detection, so a
+        // "review" outcome here (a protected-surface change / a blocking+human
+        // finding / a low-confidence downgrade — none of which are rework) is
+        // NOT a phase-1 failure: it must NOT block the test jobs and must NOT
+        // publish a REVIEW check-run. If it did, phase 2's `needs:` chain would
+        // SKIP the tests → phase 3's ci-evidence would then see conclusion
+        // `skipped` → a contradictory REWORK. That double verdict (REVIEW +
+        // REWORK on one PR) was the 2026-07-17 incident. Remap to a non-blocking
+        // pass so the tests run; verify re-derives REVIEW terminally.
+        gate.final = "approve";
+        gate.reasons.push(
+          "✅ Phase 1 (quality) PASSED (no rework) — shape + semantic review found nothing the agent must " +
+            "fix. Human sign-off looks likely (a protected surface or a human-actor finding), but REVIEW is a " +
+            "TERMINAL verdict emitted only by phase 2 (verify), AFTER the tests run. Phase 1 blocks ONLY on " +
+            "REWORK, so this passes and lets the tests proceed — it is NOT a terminal PASS.",
+        );
       } else {
         gate.reasons.push(
-          "⚠️ Phase 1 (quality) REVIEW — a human decision is needed before tests are worth running. " +
-            "Tests were SKIPPED in this phase.",
+          "✅ Phase 1 (quality) PASSED — shape + semantic review are clean. " +
+            "This is NOT a terminal PASS: tests were NOT run in this phase. " +
+            "Phase 2 (verify) runs the full test suite + ci-evidence and emits the terminal verdict.",
         );
       }
     } else if (phase === "verify") {
