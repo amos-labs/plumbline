@@ -1,0 +1,88 @@
+{
+  "receipt_version": "1.0",
+  "task_id": "fix-review-terminal-only-v0.6.2",
+  "agent_id": "claude-opus-4-8",
+  "intent": "Fix the verdict-routing bug introduced in v0.6.0's phased gate (still present in v0.6.1): `plumb run --phase quality` treated a semantic 'review' outcome as a blocking phase-1 failure — exiting 1 and publishing a 'REVIEW — awaiting human approval' check-run. On a PR touching a protected surface this blocked the test jobs (needs: chain), so phase 3 (--phase verify) saw the required checks as conclusion=skipped, ci-evidence FAILed, and a second contradictory REWORK was published (one PR got both REVIEW and REWORK). This change makes REVIEW a TERMINAL verdict only: phase quality blocks ONLY on REWORK (shape failure / semantic 'rework'); a 'review' outcome in quality is remapped to a non-blocking pass (exit 0, PASS check-run, no REVIEW check-run) so the tests proceed. REVIEW is emitted solely in --phase verify / --phase full.",
+  "self_modifying": false,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json",
+    ".plumbline/AGENTS.md"
+  ],
+  "validation_plan": [
+    {
+      "command": "npm run check",
+      "reason": "TypeScript type-check must pass — the phase-framing edit to src/cli.ts must be type-sound (gate.final remains a GateOutcome).",
+      "required": true,
+      "id": "typecheck"
+    },
+    {
+      "command": "npm run build",
+      "reason": "tsc build must succeed so the test suite (which runs against dist/test) exercises the new code.",
+      "required": true,
+      "id": "build"
+    },
+    {
+      "command": "npm test",
+      "reason": "Full unit suite (npm test -> node --test dist/test/), including the new phase-review-terminal.test.ts (7 cases: quality+review->exit0/PASS/no-REVIEW; quality+rework->exit1; quality+shape-fail->exit1; verify+review->REVIEW terminal; verify+ci-fail->REWORK; verify+clean->PASS; full+review->REVIEW terminal). Corroborated by the real CI 'test' check-run via ci_evidence_checks.",
+      "required": true,
+      "id": "test",
+      "ci_covered": true
+    },
+    {
+      "command": "npm run bundle",
+      "reason": "Rebuild dist/index.js (the Action runs the bundle); dist-check requires it be up to date with src.",
+      "required": true,
+      "id": "bundle"
+    },
+    {
+      "command": "node dist/cli.js check --base origin/master",
+      "reason": "Local plumb shape pre-flight (shape + diff_sha256) must PASS before pushing — the gate gates the gate.",
+      "required": true,
+      "id": "plumb-check"
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npm run check",
+      "status": "passed",
+      "output_ref": "tsc --noEmit exited 0 (CHECK_EXIT=0), no type errors",
+      "step": "typecheck"
+    },
+    {
+      "command": "npm run build",
+      "status": "passed",
+      "output_ref": "tsc exited 0 (BUILD_OK)",
+      "step": "build"
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "npm test (node --test dist/test/): # tests 299 / # pass 299 / # fail 0 / # cancelled 0 (was 292 in v0.6.1; +7 new phase-review-terminal cases)",
+      "step": "test"
+    },
+    {
+      "command": "npm run bundle",
+      "status": "passed",
+      "output_ref": "esbuild -> dist/index.js 274.0kb, Done; second rebundle byte-identical (dist-check clean)",
+      "step": "bundle"
+    },
+    {
+      "command": "node dist/cli.js check --base origin/master",
+      "status": "passed",
+      "output_ref": "shape pre-flight PASS — shape + diff_sha256 OK",
+      "step": "plumb-check"
+    }
+  ],
+  "changed_files": [
+    "CHANGELOG.md",
+    "README.md",
+    "dist/index.js",
+    "package.json",
+    "src/cli.ts",
+    "src/test/phase-review-terminal.test.ts"
+  ],
+  "base_sha": "238692da462e7ae2c0b45977fed88bc4088e83dd",
+  "diff_sha256": "828a921c12f400feddff33a8052262381e08063a7c196de34b63969e3f300f5a",
+  "result_summary": "REVIEW is now a TERMINAL verdict only. src/cli.ts phase-framing block (cmd===run && phase!==full): in --phase quality a 'review' gate.final is remapped to 'approve' (non-blocking) with a clear reason that human sign-off is deferred to the terminal verify phase — so the check-run publishes PASS, reportToCi gets approve, and the exit code is 0, letting the test jobs run. REWORK stays blocking in quality; the clean-pass and REVIEW branches for verify/full are unchanged. No handoff file / cross-job state / template change: --phase verify and --phase full already re-run the full shape+semantic review on the final diff (deduped by the diff_sha256 review cache) and re-derive whether REVIEW is warranted from BOTH the protected-path floor and the model's blocking+human findings, so they emit REVIEW terminally as before. Verified: npm run check (0), npm run build (0), node --test dist/test/ (299 pass incl. 7 new phase-review-terminal cases), npm run bundle (274.0kb, stable rebundle). self_modifying:false — no protected paths touched (src/cli.ts is not in policy.protected_paths; action.yml untouched)."
+}
