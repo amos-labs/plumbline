@@ -10,6 +10,46 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-07-17
+
+REVIEW is a TERMINAL verdict only. The 2026-07-17 incident: the staged gate ran
+`plumb run --phase quality` (phase 1) on a PR touching a protected surface. Phase
+1 did shape PASS, ci-evidence SKIPPED (correct), semantic review = **review**
+(human sign-off, no rework) — then **exited 1 and published a blocking
+"REVIEW — awaiting human approval" check-run**, treating REVIEW as a phase-1
+failure. That is wrong: there was no rework, so phase 1 should have been GREEN
+and let the tests run. The cascade: phase 1 "failed" ⇒ the test jobs were SKIPPED
+(the `needs:` chain) ⇒ phase 3 (`--phase verify`) saw the required checks as
+`conclusion=skipped` ⇒ ci-evidence FAIL ⇒ a **second, contradictory REWORK**.
+One PR got both REVIEW and REWORK.
+
+### Fixed
+- **Phase 1 (quality) no longer blocks on REVIEW.** `--phase quality`'s only
+  blocking job is REWORK detection (a shape failure, or a semantic verdict of
+  `rework` — an agent-fixable, blocking+agent finding). A semantic outcome of
+  `review` (a protected-surface change, a blocking+human finding, or a
+  confidence-floor downgrade — none of which are rework) is now remapped to a
+  **non-blocking pass**: exit 0, a PASS-style check-run, and no `REVIEW —
+  awaiting human approval` check-run. The tests proceed, and the terminal REVIEW
+  is emitted by phase 2 (verify) as designed.
+
+### Model (unchanged, now enforced correctly)
+- **REWORK** = agent-fixable (shape failure / semantic `rework`). The ONLY thing
+  that blocks phase 1 (quality).
+- **REVIEW** = human sign-off required. A **terminal verdict only**, produced in
+  `--phase verify` (and `--phase full`), AFTER ci-evidence. Never in
+  `--phase quality`.
+- **PASS** = green.
+
+### Handoff / consumer impact
+- **None.** No cross-job state, no handoff file, no template change. Phase 2
+  (verify) already re-runs the full shape + semantic review on the final diff
+  (deduped by the `diff_sha256` review cache — no extra LLM call when the diff
+  is unchanged), so it re-derives whether REVIEW is warranted natively — from
+  both the protected-path/policy floor AND the semantic model's blocking+human
+  findings. `templates/workflow-staged.yml` and consumers (e.g. amos-platform's
+  staged `deploy.yml`) need no change.
+
 ## [0.6.1] - 2026-07-16
 
 Infra-error state. During a GitHub outage the gate's API calls got a

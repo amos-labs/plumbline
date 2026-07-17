@@ -1,6 +1,6 @@
 {
   "name": "plumbline",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Plumbline — the plumb line for AI agent work (Amos 7:7-8): structured proof receipts, deterministic shape checks, LLM semantic review, and failure-capsule rework loops.",
   "license": "Apache-2.0",
   "type": "module",

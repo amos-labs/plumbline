@@ -118,12 +118,19 @@ npx github:amos-labs/plumbline check --review    # full parity — also runs the
 > known-solid:
 >
 > - **`plumb run --phase quality`** (phase 1) — shape + semantic review only.
->   **ci-evidence is skipped** (tests haven't run). A REWORK fails fast so the
->   workflow's `needs:` gate blocks phase 2; a clean phase 1 passes so it
->   proceeds. A phase-1 result reads explicitly as "tests were SKIPPED" — never
->   "tests passed".
+>   **ci-evidence is skipped** (tests haven't run). Phase 1 blocks on **REWORK
+>   only** (a shape failure, or a semantic `rework` — agent-fixable): it fails
+>   fast so the workflow's `needs:` gate blocks phase 2. Everything else — a
+>   clean pass *or* a "review" outcome (human sign-off likely) — **passes** so
+>   the tests proceed. **REVIEW is a terminal verdict emitted only in phase 2,
+>   never in phase 1**; phase 1's sole job is fast rework-detection. A phase-1
+>   result reads explicitly as "tests were SKIPPED" — never "tests passed".
 > - **`plumb run --phase verify`** (phase 2) — the ci-evidence gate + the
->   terminal PASS / REWORK / REVIEW verdict, after the suite has run.
+>   terminal PASS / REWORK / REVIEW verdict, after the suite has run. This is the
+>   only phase that emits REVIEW: it re-derives whether human sign-off is
+>   warranted (from the protected-path floor + the semantic model's human
+>   findings) on the final diff — the `diff_sha256` review cache means no extra
+>   LLM call when the diff is unchanged from phase 1.
 >
 > Wire it as `quality → tests (needs: [quality]) → gate (needs: [tests])`. Copy
 > [`templates/workflow-staged.yml`](templates/workflow-staged.yml) to get the
