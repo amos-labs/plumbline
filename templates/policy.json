@@ -3,9 +3,24 @@
   "mission_file": ".plumbline/MISSION.md",
   "required_checks": [],
   "ci_evidence_checks": [],
+  "lifecycle": "review",
   "protected_paths": [
     ".plumbline/**",
-    ".github/workflows/**"
+    ".proofgate/**",
+    ".github/workflows/**",
+    "**/auth/**",
+    "**/authz/**",
+    "**/authorization/**",
+    "**/rbac/**",
+    "**/*permission*",
+    "**/*policy*",
+    "migrations/**",
+    "**/migrations/**",
+    "**/billing/**",
+    "**/payment*/**",
+    "**/*stripe*",
+    "proof/**",
+    "**/proof/**"
   ],
   "min_review_confidence": 0.8,
   "require_semantic_review": true,
@@ -25,5 +40,10 @@
   "budget": {
     "use_cheap_model": false,
     "max_usd_per_pr": 0
+  },
+  "follow_ups": {
+    "min_confidence": 0.8,
+    "consolidate": true,
+    "close_on_merge": true
   }
 }

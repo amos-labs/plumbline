@@ -88,6 +88,41 @@ export const ReceiptSchema = z.object({
 
 export type Receipt = z.infer<typeof ReceiptSchema>;
 
+/**
+ * Conservative default protected surfaces (v0.7.0) used when a policy does not
+ * set `protected_paths`. These are the surfaces where a bad change is
+ * genuinely high-consequence — so `self_modifying`/REVIEW fires on THEM and not
+ * on ordinary code, keeping REVIEW meaningful and letting green PRs flow.
+ *
+ * NOT included on purpose: broad code trees (`src/**`, `src/mcp/**`, `app/**`) —
+ * protecting those marks almost every PR self_modifying and pins REVIEW on,
+ * which is exactly the failure this default exists to avoid. A repo owner adds
+ * such globs deliberately if their risk tolerance calls for it.
+ */
+export const DEFAULT_PROTECTED_PATHS: string[] = [
+  // The gate's own configuration + the CI that runs it (self-modification).
+  ".plumbline/**",
+  ".proofgate/**",
+  ".github/workflows/**",
+  // Auth / authz — the access-control surface.
+  "**/auth/**",
+  "**/authz/**",
+  "**/authorization/**",
+  "**/rbac/**",
+  "**/*permission*",
+  "**/*policy*",
+  // Schema/data migrations — irreversible data-shape changes.
+  "migrations/**",
+  "**/migrations/**",
+  // Money / billing.
+  "**/billing/**",
+  "**/payment*/**",
+  "**/*stripe*",
+  // The proof surface itself.
+  "proof/**",
+  "**/proof/**",
+];
+
 /** Machine-readable gate policy: the deterministic half of the constitution. */
 export const PolicySchema = z.object({
   version: z.literal("1.0"),
@@ -104,10 +139,42 @@ export const PolicySchema = z.object({
    */
   ci_evidence_checks: z.array(z.string()).default([]),
   /**
-   * Glob patterns for protected surfaces. Changes matching these require
-   * self_modifying: true and always route to human review — no auto-approve.
+   * How a terminal PASS verdict is turned into a merge (v0.7.0):
+   *   "review"     (DEFAULT) — the gate judges; a HUMAN merges. Today's behavior:
+   *                a PASS means "safe to merge", but merging stays a deliberate
+   *                human act. Nothing is auto-merged.
+   *   "auto_merge" — on a terminal PASS, plumbline enables GitHub-native
+   *                auto-merge on the PR (the GitHub merge API), so GitHub merges
+   *                it once ALL required checks are green. Plumbline judges; GitHub
+   *                merges — there is no custom merge loop. A REVIEW or REWORK
+   *                verdict NEVER auto-merges (only a terminal PASS does).
+   * This is a per-repo setting: a repo owner opts a repo into hands-off flow.
+   * Requires the repo to allow auto-merge and a token with the merge scope (the
+   * default Actions GITHUB_TOKEN suffices); when either is missing the gate logs
+   * and stays PASS (never blocks on the auto-merge enablement itself).
    */
-  protected_paths: z.array(z.string()).default([]),
+  lifecycle: z.enum(["review", "auto_merge"]).default("review"),
+  /**
+   * Glob patterns for protected surfaces — the per-repo RISK KNOB. A change
+   * touching any of these requires self_modifying: true and always routes to
+   * human REVIEW (never auto-approve/auto-merge). `plumb receipt generate`
+   * reads this to auto-detect self_modifying.
+   *
+   * DEFAULT (when unset / this repo hasn't configured it): a CONSERVATIVE set of
+   * genuinely high-consequence surfaces only — the gate's own files, CI
+   * workflows, auth/authz, migrations, money/billing, proof/, and the
+   * policy/rbac enforcement files. Deliberately NOT broad code directories
+   * (not all of `src/**`, not an entire `src/mcp/**`) — over-broad protection
+   * marks almost every PR self_modifying, which pins REVIEW always-on and
+   * defeats auto-merge. Keep REVIEW meaningful: protect the surfaces where a bad
+   * change is high-consequence, and let ordinary green PRs flow.
+   *
+   * TUNE IT PER REPO: narrow it (drop a line) or widen it (add a glob, e.g.
+   * `"src/payments/**"`) to your risk tolerance. Setting protected_paths in
+   * policy.json REPLACES this default entirely — list every surface you want
+   * protected. See README "Protected paths".
+   */
+  protected_paths: z.array(z.string()).default(DEFAULT_PROTECTED_PATHS),
   /** Semantic review verdicts below this confidence are downgraded to review. */
   min_review_confidence: z.number().min(0).max(1).default(0.8),
   /**
@@ -212,6 +279,30 @@ export const PolicySchema = z.object({
    * the review audit output. Env override: PLUMBLINE_TEMPERATURE.
    */
   review_temperature: z.number().min(0).max(2).optional(),
+  /**
+   * Follow-up issue filing (v0.7.0 flood fix). Optional-but-good review findings
+   * are auto-filed as tracked GitHub issues (#56) — but a low bar floods a repo
+   * with tickets nobody reads. This tunes WHAT gets filed and HOW:
+   *   min_confidence — only file follow-ups when the review's confidence is at
+   *                    least this (0..1). Below the bar the findings stay in the
+   *                    PR comment (they're already rendered there) and are NOT
+   *                    filed as issues — nits don't become tickets. Default 0.8.
+   *   consolidate    — file ONE consolidated "Follow-ups for #<PR>" issue with a
+   *                    checklist of the material findings, updated in place on
+   *                    re-runs (deduped by PR), instead of N separate issues.
+   *                    Default true. Set false for the legacy one-issue-per-
+   *                    finding behavior.
+   *   close_on_merge — when the PR merges, close the consolidated follow-up
+   *                    issue (most items are stale-by-design once the PR lands).
+   *                    Default true.
+   */
+  follow_ups: z
+    .object({
+      min_confidence: z.number().min(0).max(1).default(0.8),
+      consolidate: z.boolean().default(true),
+      close_on_merge: z.boolean().default(true),
+    })
+    .default({}),
   /** Max receipt size in bytes (anti garbage-dump). */
   max_receipt_bytes: z.number().default(262144),
   /**

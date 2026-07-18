@@ -7,3 +7,4 @@ dist/*
 # optimization, not source of truth.
 .plumbline/cache/
 .proofgate/cache/
+.claude/

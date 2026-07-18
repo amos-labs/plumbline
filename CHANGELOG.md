@@ -10,6 +10,51 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-18
+
+The proof-carrying code-lifecycle + gate-precision release. Motivation: a
+non-coder opens PRs through an MCP `propose_code_change` verb; every PR
+dead-ended in REWORK for "no receipt", and separately the gate (a) marked almost
+everything `self_modifying` (REVIEW always-on, auto-merge never fired) and (b)
+filed too many follow-up issues per PR. Four changes, all in service of "the gate
+flags only what genuinely warrants it."
+
+### Added
+- **`plumb receipt generate`** — auto-synthesize a conformant, HONEST receipt for
+  a machine-authored (MCP) change. `validation_plan` references the repo's CI as
+  `ci_covered: true` (evidence `skipped` with a reason) — it does NOT fabricate a
+  local test run, truthfully recording that validation is deferred to CI.
+  `self_modifying` is auto-detected from the repo's `protected_paths`;
+  `diff_sha256`/`changed_files`/`base_sha` come from the real `base..HEAD` diff.
+  Idempotent. Makes MCP PRs proof-carrying by construction: green-CI +
+  non-protected → PASS; protected surface → REVIEW.
+- **`lifecycle: "review" | "auto_merge"`** (policy, per repo). `review` (default)
+  = the gate judges, a human merges (today's behavior). `auto_merge` = on a
+  terminal PASS, plumbline enables GitHub-native auto-merge on the PR
+  (`enablePullRequestAutoMerge`) so GitHub merges once all required checks are
+  green — Plumbline judges, GitHub merges (no custom merge loop). REVIEW/REWORK
+  and a phase-1 (quality) pass never auto-merge.
+- **`plumb followups close --pr <n>`** — close a merged PR's consolidated
+  follow-up issue (run on `pull_request: closed`).
+- **`follow_ups` policy block** — `min_confidence` (filing threshold),
+  `consolidate` (one issue per PR), `close_on_merge`.
+
+### Changed
+- **Protected paths: conservative documented default.** When `protected_paths` is
+  unset, the gate now protects a conservative set of genuinely high-consequence
+  surfaces only — the gate's own files, CI workflows, auth/authz, migrations,
+  money/billing, and the proof surface — NOT broad code trees (`src/**`,
+  `src/mcp/**`). Over-broad protection was marking almost every PR
+  `self_modifying`, pinning REVIEW always-on and defeating auto-merge. Setting
+  `protected_paths` in policy REPLACES the default; documented how to
+  narrow/widen per repo.
+- **Follow-up flood fix.** Follow-ups now (1) file only above a confidence bar
+  (`follow_ups.min_confidence`, default 0.8) — below it, findings stay in the PR
+  comment and are NOT filed; (2) consolidate into ONE "Follow-ups for #<PR>"
+  issue with a checklist, updated in place on re-runs (deduped by PR), instead of
+  N separate issues; (3) auto-close on merge. Legacy one-issue-per-finding
+  behavior available via `follow_ups.consolidate: false`.
+
 ## [0.6.2] - 2026-07-17
 
 REVIEW is a TERMINAL verdict only. The 2026-07-17 incident: the staged gate ran
