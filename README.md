@@ -389,6 +389,10 @@ plumb propose "<ask>"  # intake: GitHub issue + openspec/changes/<slug>/ contrac
 plumb receipt --write  # one idempotent step: scaffold or refresh the per-PR receipt's mechanical fields
                        #   (diff_sha256, changed_files, self_modifying) — judgment fields never touched
 plumb receipt --check  # mechanical staleness only; exit 1 if stale — pre-push-hook friendly
+plumb receipt generate # auto-synthesize a conformant, HONEST receipt for a machine-authored/MCP change:
+  --intent "<what/why>"#   validation deferred to repo CI (ci_covered, no fabricated local run), self_modifying
+                       #   auto-detected from protected_paths. Idempotent. Makes MCP PRs proof-carrying by
+                       #   construction — green-CI + non-protected → PASS. [--summary "<result>"] [--task id]
 plumb new              # lower-level: scaffold a fresh per-PR receipt (receipt --write supersedes)
 plumb stamp            # lower-level: fill diff_sha256 + changed_files only (receipt --write supersedes)
 plumb check            # local pre-flight: SHAPE floor + diff_sha256 only (scoped banner, not the full verdict)
@@ -399,6 +403,8 @@ plumb run              # CI mode: shape + review + posts/updates the PR comment
 plumb run --phase quality  # phased gate, phase 1: shape + semantic ONLY (ci-evidence skipped — tests not yet run)
 plumb run --phase verify   # phased gate, phase 2: ci-evidence + terminal verdict (assumes phase 1 passed)
                        #   (default --phase full = all-in-one; back-compat for non-staged consumers)
+plumb followups close  # close a merged PR's consolidated follow-up issue (run on pull_request: closed —
+  --pr N               #   most follow-ups are stale-by-design once the PR lands) [--repo owner/name]
 plumb archive <slug>   # close the loop: apply the change's spec deltas to openspec/specs/ (the living
                        #   source of truth), move it to openspec/changes/archive/<date>-<slug>/;
                        #   refuses unless the receipt passes the gate (--force overrides, loudly)
@@ -467,6 +473,104 @@ comment without failing the gate; `off` suppresses with a note.
 **The floor never moves:** `schema`, `diff_integrity` (the hash binding), and
 `protected_paths` (the `self_modifying` human-review routing) can never be downgraded —
 a policy that tries gets a warning and they stay errors. They are the point of the tool.
+
+### Receipts for machine-authored (MCP) changes (`plumb receipt generate`)
+
+When a change is opened by an MCP verb (e.g. a non-coder proposing a change through
+a `propose_code_change` tool) the author never ran tests and can't hand-write a
+receipt — so every such PR used to dead-end in REWORK for "no receipt". `plumb receipt
+generate` makes these PRs **proof-carrying by construction**:
+
+```bash
+plumb receipt generate --base origin/master \
+  --intent "Update the homepage hero copy to the launch tagline" \
+  --summary "Changed the hero <h1> text only"   # --summary optional
+```
+
+It emits a schema-conformant receipt at `.plumbline/receipts/<branch>.json` where:
+
+- **validation is HONEST** — the `validation_plan` step references the repo's CI as
+  `ci_covered: true` ("repo CI: …") and the evidence is `skipped` with a reason. It does
+  **not** fabricate a local test run; it truthfully records that validation is deferred to
+  CI. The `run` gate's `ci_evidence_checks` then corroborate against the **real** CI run.
+- **`self_modifying` is auto-detected** from the repo's configured `protected_paths` vs the
+  changed files (the same globs the gate uses).
+- `diff_sha256` / `changed_files` / `base_sha` are filled from the real `base..HEAD` diff
+  (receipts excluded), so it passes diff-integrity.
+
+Net effect: a **green-CI + non-protected** change → **PASS** (auto-merge eligible under
+`lifecycle: "auto_merge"`); a **protected-surface** change → **REVIEW**. It's idempotent —
+re-running on the same diff rewrites the same bytes.
+
+### Merge lifecycle (`lifecycle`)
+
+Per-repo knob in `policy.json` for what a terminal **PASS** does:
+
+```jsonc
+{ "lifecycle": "review" }   // "review" (default) | "auto_merge"
+```
+
+- **`review`** (default) — the gate judges; a **human** merges. A PASS means "safe to merge",
+  but merging stays a deliberate human act. Nothing is auto-merged.
+- **`auto_merge`** — on a terminal PASS, plumbline enables **GitHub-native auto-merge** on
+  the PR (the `enablePullRequestAutoMerge` API). GitHub then merges it once **all required
+  checks are green**. **Plumbline judges; GitHub merges** — there is no custom merge loop.
+  A **REVIEW** or **REWORK** verdict never auto-merges (only a terminal PASS does), and a
+  phase-1 (`--phase quality`) pass — explicitly *not* terminal — never triggers it.
+
+Requires the repo to allow auto-merge (`plumb setup-protection` enables it) and a token with
+the merge scope (the default Actions `GITHUB_TOKEN` suffices). If either is missing the gate
+logs and leaves the PASS standing — it never blocks on the auto-merge enablement itself.
+
+### Protected paths (`protected_paths`) — the per-repo risk knob
+
+`protected_paths` globs are the surfaces where a bad change is high-consequence: touching one
+forces `self_modifying: true` and routes to human **REVIEW** (never auto-approve/auto-merge).
+This is the knob that keeps REVIEW **meaningful** — protect too much and almost every PR is
+`self_modifying`, pinning REVIEW always-on and defeating auto-merge.
+
+**Conservative default** (applied when `protected_paths` is unset): the gate's own files
+(`.plumbline/**`, `.proofgate/**`), CI workflows (`.github/workflows/**`), auth/authz
+(`**/auth/**`, `**/rbac/**`, `**/*permission*`, `**/*policy*`), migrations (`migrations/**`,
+`**/migrations/**`), money/billing (`**/billing/**`, `**/payment*/**`, `**/*stripe*`), and the
+proof surface (`proof/**`). Deliberately **not** broad code trees — not all of `src/**`, not an
+entire `src/mcp/**`.
+
+**Tune it per repo** — setting `protected_paths` in `policy.json` **replaces** the default
+entirely (list every surface you want protected):
+
+```jsonc
+{
+  "protected_paths": [
+    ".plumbline/**", ".github/workflows/**",
+    "migrations/**",
+    "src/payments/**"        // widen: this repo's money code
+    // (dropped "**/*policy*" to narrow — this repo has harmless *policy* files)
+  ]
+}
+```
+
+### Follow-up issues (threshold + one-per-PR + auto-close)
+
+Optional-but-good review findings are auto-filed as tracked GitHub issues so a good suggestion
+isn't lost — but a low bar floods a repo with tickets nobody reads. `policy.json`:
+
+```jsonc
+{
+  "follow_ups": {
+    "min_confidence": 0.8,   // only file when review confidence ≥ this; below → stays in the PR comment only
+    "consolidate": true,     // ONE "Follow-ups for #<PR>" issue with a checklist, updated in place (deduped by PR)
+    "close_on_merge": true   // close it when the PR merges (most items are stale-by-design)
+  }
+}
+```
+
+- **Threshold** — below `min_confidence` the findings stay in the PR comment (already rendered
+  there) and are **not** filed as issues; nits don't become tickets.
+- **One issue per PR** — a single consolidated issue with a checklist of the material findings,
+  **updated in place** on re-runs (deduped by the PR), instead of N separate issues.
+- **Auto-close on merge** — wire `plumb followups close --pr <n>` on the `pull_request: closed`
+  event; it closes the consolidated issue when the PR lands.
 
 ### Choosing a review provider (no lock-in on intelligence)
 

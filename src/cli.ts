@@ -31,6 +31,9 @@ import {
   publishCheckRun,
   getPrHeadSha,
   fileFollowUps,
+  fileConsolidatedFollowUps,
+  closeFollowUpOnMerge,
+  enableAutoMerge,
   InfraError,
 } from "./github.js";
 import { verdictPresentation } from "./verdict.js";
@@ -52,6 +55,7 @@ import {
 import { runPropose } from "./propose.js";
 import { runArchive } from "./archive.js";
 import { resolveSeverity } from "./severity.js";
+import { generateReceipt } from "./receipt-generate.js";
 
 function loadPolicy(path: string): Policy {
   if (!existsSync(path)) {
@@ -304,7 +308,7 @@ async function main(): Promise<number> {
     receiptArg === ".proofgate/receipt.json";
   const receiptPath =
     cmd === "init" || cmd === "new" || cmd === "schema" || cmd === "propose" || cmd === "archive" ||
-    cmd === "setup-protection" || cmd === "migration-guard"
+    cmd === "setup-protection" || cmd === "migration-guard" || cmd === "followups"
       ? DEFAULT_RECEIPT
       : resolveReceiptPath(
           receiptIsDefault ? DEFAULT_RECEIPT : receiptArg,
@@ -318,7 +322,7 @@ async function main(): Promise<number> {
           ci.provider === "none" && cmd !== "run",
         );
 
-  if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check", "receipt", "propose", "archive", "setup-protection", "migration-guard"].includes(cmd)) {
+  if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check", "receipt", "propose", "archive", "setup-protection", "migration-guard", "followups"].includes(cmd)) {
     console.log(`plumbline — the plumb line for AI agent work (Amos 7:7-8): proof-carrying gate
 
 usage:
@@ -341,6 +345,11 @@ usage:
   plumb receipt --write [--task id] [--agent id]   (one idempotent step: scaffold if absent, else refresh
                 the mechanical fields — diff_sha256, changed_files, self_modifying — judgment fields untouched)
   plumb receipt --check   (mechanical staleness only; exit 1 if stale — pre-push-hook friendly)
+  plumb receipt generate --intent "<what/why>" [--summary "<result>"] [--task id] [--agent id]
+                (auto-synthesize a conformant, HONEST receipt for a machine-authored/MCP change:
+                 validation deferred to repo CI (ci_covered — no fabricated local test run),
+                 self_modifying auto-detected from protected_paths. Idempotent. Makes MCP PRs
+                 proof-carrying by construction: green-CI + non-protected → PASS.)
   plumb schema  (print the receipt field reference — every field + allowed enum values)
   plumb stamp   [--receipt path] [--base ref]   (fill diff_sha256 + changed_files from the real diff)
   plumb check   [--receipt path] [--policy path] [--base ref] [--review]   (local pre-flight: shape + diff_sha256 only; --review also runs the semantic review for the full verdict)
@@ -351,6 +360,8 @@ usage:
                  quality = shape + semantic only (ci-evidence SKIPPED — tests not yet run; REWORK fails fast);
                  verify  = ci-evidence + terminal verdict (assumes phase 1 passed);
                  full    = all-in-one (default; back-compat for non-staged consumers).)
+  plumb followups close [--pr N] [--repo owner/name]   (close a merged PR's consolidated follow-up issue;
+                run on 'pull_request: closed' — most follow-ups are stale-by-design once the PR lands)
   plumb archive <slug> [--force] [--date YYYY-MM-DD]   (apply the change's spec deltas to the living
                 openspec/specs/, move the change to openspec/changes/archive/<date>-<slug>/;
                 refuses unless the change's receipt passes the gate — --force overrides with a warning)
@@ -480,6 +491,32 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
     return 1;
   }
 
+  // --- followups close: auto-close a merged PR's consolidated follow-up (v0.7.0) ---
+  // Meant to run on `pull_request: closed` (merged): most follow-ups are
+  // stale-by-design once the PR lands, so close the ONE consolidated issue.
+  // Best-effort — never fails the workflow.
+  if (cmd === "followups") {
+    const sub = process.argv[3];
+    if (sub !== "close") {
+      console.error(`plumb followups: only 'close' is supported — plumb followups close [--pr N] [--repo owner/name]`);
+      return 2;
+    }
+    const repo = arg("repo") ?? process.env.GITHUB_REPOSITORY;
+    const token = process.env.GITHUB_TOKEN;
+    const prArg = arg("pr") ?? process.env.PLUMBLINE_PR_NUMBER ?? ci.prNumber?.toString();
+    if (!repo || !token || !prArg) {
+      console.error("plumb followups close: needs --repo owner/name, GITHUB_TOKEN, and --pr N (or a PR context).");
+      return 2;
+    }
+    const closed = await closeFollowUpOnMerge(repo, Number(prArg), token);
+    console.error(
+      closed !== null
+        ? `closed consolidated follow-up issue #${closed} for merged PR #${prArg}`
+        : `no open consolidated follow-up issue to close for PR #${prArg}`,
+    );
+    return 0;
+  }
+
   // --- propose: intake — issue + OpenSpec contract folder, born linked ---
   // The upstream end of the loop (propose → work → prove → gate). Deterministic
   // scaffolding only: folder, stubs, issue, linkage, an informational
@@ -593,15 +630,89 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
   // gate can never disagree — hand-computing these fields is the entire failure
   // class this command removes.
   if (cmd === "receipt") {
+    // `plumb receipt generate` (subcommand) or `--generate`: auto-synthesize a
+    // conformant, HONEST receipt for a machine-authored (MCP) change (v0.7.0).
+    const generate = process.argv[3] === "generate" || flag("generate");
     const write = flag("write");
     const checkOnly = flag("check");
-    if (write === checkOnly) {
-      console.error("plumb receipt: pass exactly one of --write | --check");
-      return 2;
-    }
     if (skipGit || !baseRef) {
       console.error("plumb receipt: needs git + a base ref to compute the diff");
       return 1;
+    }
+
+    if (generate) {
+      let branch = process.env.GITHUB_HEAD_REF || "";
+      if (!branch) {
+        try {
+          branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+            cwd,
+            encoding: "utf8",
+          }).trim();
+        } catch {
+          /* detached/no git — sanitizeTaskId falls back to TASK */
+        }
+      }
+      const taskId = sanitizeTaskId(arg("task", branch || "TASK")!);
+      const agentId = arg("agent", process.env.PLUMBLINE_AGENT_ID || process.env.PROOFGATE_AGENT_ID || "mcp-agent")!;
+      const intent = arg("intent") ?? arg("summary");
+      if (!intent) {
+        console.error(
+          `plumb receipt generate: --intent "<what this change is for>" is required ` +
+            `(the human's ask — used as the receipt's intent). Optional: --summary "<result>".`,
+        );
+        return 2;
+      }
+      let diffSha: string;
+      let changed: string[];
+      let baseSha: string | undefined;
+      try {
+        baseSha = gitMergeBase(baseRef, cwd) ?? undefined;
+        diffSha = computeDiffSha256(
+          baseSha ? gitDiffExcludingReceiptFrom(baseSha, cwd) : gitDiffExcludingReceipt(baseRef, cwd),
+        );
+        changed = (baseSha ? gitChangedFilesFrom(baseSha, cwd) : gitChangedFiles(baseRef, cwd)).filter(
+          (f) => !isReceiptPath(f),
+        );
+      } catch (e) {
+        console.error(`plumb receipt generate: git failed: ${String(e)}`);
+        return 1;
+      }
+      if (changed.length === 0) {
+        console.error(
+          `plumb receipt generate: no changed files vs ${baseRef} — nothing to attest. Commit the change first.`,
+        );
+        return 1;
+      }
+      const receipt = generateReceipt({
+        taskId,
+        agentId,
+        intent,
+        summary: arg("summary"),
+        changedFiles: changed,
+        diffSha256: diffSha,
+        baseSha,
+        protectedPaths: policy.protected_paths,
+        ciEvidenceChecks: policy.ci_evidence_checks,
+      });
+      const dest = join(dir, "receipts", `${taskId}.json`);
+      const destAbs = join(cwd, dest);
+      mkdirSync(dirname(destAbs), { recursive: true });
+      // Idempotent: re-running on the same diff rewrites the same bytes.
+      writeFileSync(destAbs, `${JSON.stringify(receipt, null, 2)}\n`);
+      console.error(
+        `generated ${dest} (base ${baseRef}${baseSha ? `, pinned @ ${baseSha.slice(0, 12)}…` : ""})\n` +
+          `  self_modifying: ${receipt.self_modifying} ` +
+          `(${receipt.self_modifying ? "protected surface → routes to REVIEW" : "non-protected → PASS-eligible"})\n` +
+          `  validation: deferred to repo CI (ci_covered) — HONEST: no local test run is claimed.\n` +
+          `  changed_files (${changed.length}): ${changed.join(", ")}\n\n` +
+          `Commit the receipt with the change; the gate corroborates CI on the PR. Pre-check: plumb check`,
+      );
+      return 0;
+    }
+
+    if (write === checkOnly) {
+      console.error("plumb receipt: pass exactly one of --write | --check | generate");
+      return 2;
     }
     let mech: MechanicalFields;
     try {
@@ -1232,25 +1343,53 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
       ci.prNumber = Number(prOverride);
     }
 
-    // Optional-but-good findings → tracked follow-up issues (#56). File them
-    // BEFORE posting the comment so the reasons line can report what was filed.
-    // Best-effort + deduped: never blocks the gate, never spams re-run dupes.
+    // Optional-but-good findings → tracked follow-up issue(s). File them BEFORE
+    // posting the comment so the reasons line can report what was filed.
+    // v0.7.0 flood fix: (1) THRESHOLD — only file when the review's confidence
+    // clears policy.follow_ups.min_confidence; below the bar the findings stay
+    // in the PR comment (already rendered) and are NOT filed as tickets, so nits
+    // never become issues. (2) CONSOLIDATE — a SINGLE "Follow-ups for #<PR>"
+    // issue with a checklist, updated in place on re-runs (deduped by PR),
+    // instead of N separate issues. Best-effort; never blocks the gate.
     const followUps = gate.review?.failure_capsule?.follow_ups ?? [];
-    if (ci.provider === "github" && followUps.length > 0) {
+    const followUpConfidence = gate.review?.confidence ?? 0;
+    const meetsBar = followUpConfidence >= policy.follow_ups.min_confidence;
+    if (ci.provider === "github" && followUps.length > 0 && !meetsBar) {
+      gate.reasons.push(
+        `${followUps.length} optional follow-up finding(s) below the filing bar ` +
+          `(confidence ${followUpConfidence} < ${policy.follow_ups.min_confidence}) — shown in the PR comment, not filed as issues.`,
+      );
+      console.error(
+        `follow-ups: ${followUps.length} finding(s) below min_confidence ${policy.follow_ups.min_confidence} — not filed (kept in PR comment).`,
+      );
+    } else if (ci.provider === "github" && followUps.length > 0) {
       const repo = process.env.GITHUB_REPOSITORY;
       const token = process.env.GITHUB_TOKEN;
       if (repo && token && ci.prNumber !== undefined) {
         try {
-          const created = await fileFollowUps(repo, ci.prNumber, followUps, token);
-          if (created.length > 0) {
-            gate.reasons.push(
-              `Filed ${created.length} optional follow-up issue(s) for good-but-out-of-scope findings: ${created.map((n) => `#${n}`).join(", ")}.`,
-            );
-            console.error(`filed ${created.length} follow-up issue(s): ${created.map((n) => `#${n}`).join(", ")}`);
+          if (policy.follow_ups.consolidate) {
+            const res = await fileConsolidatedFollowUps(repo, ci.prNumber, followUps, token);
+            if (res.action === "created" && res.number !== null) {
+              gate.reasons.push(
+                `Filed one consolidated follow-up issue #${res.number} with ${followUps.length} material finding(s).`,
+              );
+              console.error(`filed consolidated follow-up issue #${res.number} (${followUps.length} items)`);
+            } else if (res.action === "updated" && res.number !== null) {
+              gate.reasons.push(
+                `Updated the consolidated follow-up issue #${res.number} in place (${followUps.length} material finding(s)).`,
+              );
+              console.error(`updated consolidated follow-up issue #${res.number} in place`);
+            }
           } else {
-            gate.reasons.push(
-              `${followUps.length} optional follow-up finding(s) already tracked (no new issues filed).`,
-            );
+            const created = await fileFollowUps(repo, ci.prNumber, followUps, token);
+            if (created.length > 0) {
+              gate.reasons.push(
+                `Filed ${created.length} optional follow-up issue(s): ${created.map((n) => `#${n}`).join(", ")}.`,
+              );
+              console.error(`filed ${created.length} follow-up issue(s): ${created.map((n) => `#${n}`).join(", ")}`);
+            } else {
+              gate.reasons.push(`${followUps.length} optional follow-up finding(s) already tracked.`);
+            }
           }
         } catch (e) {
           console.error(`plumbline: could not file follow-up issues: ${(e as Error).message}`);
@@ -1304,6 +1443,42 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
           console.error(`plumbline: could not publish verdict check-run: ${(e as Error).message}`);
         }
       }
+    }
+
+    // --- Lifecycle: auto_merge on a TERMINAL PASS (v0.7.0) ---
+    // In lifecycle "auto_merge" a terminal PASS hands the merge to GitHub: we
+    // enable the PR's NATIVE auto-merge so GitHub merges it once every required
+    // check is green. Plumbline judges; GitHub merges (no custom merge loop).
+    // Gates: (1) lifecycle must be auto_merge; (2) verdict must be a TERMINAL
+    // PASS — never REVIEW/REWORK, and never a phase-1 (quality) remapped pass
+    // (which is explicitly "NOT a terminal PASS"); (3) GitHub PR context + token.
+    const terminalPhase = phase === "full" || phase === "verify";
+    if (
+      ci.provider === "github" &&
+      policy.lifecycle === "auto_merge" &&
+      gate.final === "approve" &&
+      terminalPhase
+    ) {
+      const repo = process.env.GITHUB_REPOSITORY;
+      const token = process.env.GITHUB_TOKEN;
+      if (repo && token && ci.prNumber !== undefined) {
+        const enabled = await enableAutoMerge(repo, ci.prNumber, token);
+        if (enabled) {
+          gate.reasons.push(
+            `lifecycle:auto_merge — enabled GitHub-native auto-merge on PR #${ci.prNumber}. ` +
+              `GitHub will merge once all required checks are green.`,
+          );
+          console.error(`lifecycle:auto_merge — enabled GitHub auto-merge on PR #${ci.prNumber}`);
+        }
+      }
+    } else if (
+      policy.lifecycle === "auto_merge" &&
+      gate.final !== "approve" &&
+      ci.provider === "github"
+    ) {
+      console.error(
+        `lifecycle:auto_merge — verdict is ${gate.final} (not a terminal PASS); auto-merge NOT enabled.`,
+      );
     }
   } else if (cmd === "check") {
     // `check --review`: full local parity (shape + semantic) — print the REAL

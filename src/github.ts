@@ -713,6 +713,10 @@ export async function createFollowUpIssue(
 /**
  * File every optional-but-good follow-up for a PR (#56), deduped. Returns the
  * numbers of issues actually created (excludes deduped/failed). Best-effort.
+ *
+ * LEGACY (v0.7.0): this is the ONE-ISSUE-PER-FINDING path, kept for
+ * `follow_ups.consolidate:false`. The default path is now
+ * `fileConsolidatedFollowUps` (one issue per PR).
  */
 export async function fileFollowUps(
   repo: string,
@@ -726,6 +730,199 @@ export async function fileFollowUps(
     if (n !== null) created.push(n);
   }
   return created;
+}
+
+// ── Consolidated follow-ups: ONE issue per PR (v0.7.0 flood fix) ───────────
+//
+// The flood: N separate issues per PR (one per finding), re-filed on every gate
+// re-run. The fix: a SINGLE "Follow-ups for #<PR>" issue carrying a checklist of
+// the material findings, deduped by PR (a stable marker keyed on the PR number)
+// and UPDATED IN PLACE on re-runs — plus threshold-gating so nits never become
+// tickets, and auto-close when the PR merges.
+
+/** Stable per-PR marker so re-runs update the ONE issue instead of stacking. */
+const PR_FOLLOWUP_MARKER = (prNumber: number): string => `<!-- plumbline:pr-followups:${prNumber} -->`;
+
+/** Render the consolidated issue body: a checklist of the material findings. */
+export function renderConsolidatedBody(prNumber: number, descriptions: string[]): string {
+  const items = descriptions.map((d) => `- [ ] ${d.replace(/\n+/g, " ").trim()}`).join("\n");
+  return (
+    `${PR_FOLLOWUP_MARKER(prNumber)}\n\n` +
+    `Consolidated **optional-but-good** follow-up findings from PR #${prNumber} — ` +
+    `none blocked that PR, but they're worth doing so they aren't lost:\n\n` +
+    `${items}\n\n` +
+    `_Auto-filed + updated in place by the Plumbline gate. Check off or close items ` +
+    `as you go; the gate closes this issue when #${prNumber} merges (most items are ` +
+    `stale-by-design once the PR lands)._`
+  );
+}
+
+/** Find the existing consolidated follow-up issue for a PR (open or closed). */
+async function findConsolidatedIssue(
+  repo: string,
+  prNumber: number,
+  token: string,
+): Promise<{ number: number; state: string } | null> {
+  try {
+    const q = encodeURIComponent(`repo:${repo} is:issue in:body ${PR_FOLLOWUP_MARKER(prNumber)}`);
+    const res = await fetch(`https://api.github.com/search/issues?q=${q}`, { headers: GH_HEADERS(token) });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { items?: Array<{ number: number; state: string }> };
+    const item = data.items?.[0];
+    return item ? { number: item.number, state: item.state } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * File (or update in place) the SINGLE consolidated follow-up issue for a PR
+ * (v0.7.0). Returns { number, action } where action is "created" | "updated" |
+ * "noop". Best-effort — never throws. Dedup is by the PR-scoped marker, so a
+ * gate re-run edits the same issue instead of opening a new one.
+ */
+export async function fileConsolidatedFollowUps(
+  repo: string,
+  prNumber: number,
+  descriptions: string[],
+  token: string,
+): Promise<{ number: number | null; action: "created" | "updated" | "noop" }> {
+  if (descriptions.length === 0) return { number: null, action: "noop" };
+  const body = renderConsolidatedBody(prNumber, descriptions);
+  const title = `Follow-ups for #${prNumber} (${descriptions.length} item${descriptions.length === 1 ? "" : "s"})`;
+  try {
+    const existing = await findConsolidatedIssue(repo, prNumber, token);
+    if (existing) {
+      // Update in place (and reopen if a prior run closed it but the PR is still
+      // open with fresh findings). PATCH the body + title + state=open.
+      const res = await fetch(`https://api.github.com/repos/${repo}/issues/${existing.number}`, {
+        method: "PATCH",
+        headers: { ...GH_HEADERS(token), "content-type": "application/json" },
+        body: JSON.stringify({ title, body, state: "open" }),
+      });
+      if (res.ok) return { number: existing.number, action: "updated" };
+      console.error(`plumbline: could not update consolidated follow-up issue #${existing.number} (${res.status})`);
+      return { number: existing.number, action: "noop" };
+    }
+    const create = async (withLabel: boolean): Promise<Response> =>
+      fetch(`https://api.github.com/repos/${repo}/issues`, {
+        method: "POST",
+        headers: { ...GH_HEADERS(token), "content-type": "application/json" },
+        body: JSON.stringify({ title, body, ...(withLabel ? { labels: [FOLLOWUP_LABEL] } : {}) }),
+      });
+    let res = await create(true);
+    if (!res.ok && res.status === 422) res = await create(false); // repo lacks the label
+    if (!res.ok) {
+      console.error(`plumbline: could not file consolidated follow-up issue (${res.status})`);
+      return { number: null, action: "noop" };
+    }
+    return { number: ((await res.json()) as { number?: number }).number ?? null, action: "created" };
+  } catch (e) {
+    console.error(`plumbline: could not file consolidated follow-up issue: ${(e as Error).message}`);
+    return { number: null, action: "noop" };
+  }
+}
+
+/**
+ * Close the consolidated follow-up issue for a merged PR (v0.7.0). Called when a
+ * PR merges: most of its follow-ups are stale-by-design once the PR lands, so we
+ * close the whole issue with a short note. Best-effort — returns the closed
+ * issue number, or null if there was none / on error. Dedup marker unchanged so
+ * the issue stays discoverable.
+ */
+export async function closeFollowUpOnMerge(
+  repo: string,
+  prNumber: number,
+  token: string,
+): Promise<number | null> {
+  try {
+    const existing = await findConsolidatedIssue(repo, prNumber, token);
+    if (!existing || existing.state === "closed") return null;
+    // Comment, then close.
+    await fetch(`https://api.github.com/repos/${repo}/issues/${existing.number}/comments`, {
+      method: "POST",
+      headers: { ...GH_HEADERS(token), "content-type": "application/json" },
+      body: JSON.stringify({
+        body:
+          `PR #${prNumber} merged — closing this consolidated follow-up issue. Most items were ` +
+          `stale-by-design once the PR landed. Reopen any item still worth doing.`,
+      }),
+    }).catch(() => undefined);
+    const res = await fetch(`https://api.github.com/repos/${repo}/issues/${existing.number}`, {
+      method: "PATCH",
+      headers: { ...GH_HEADERS(token), "content-type": "application/json" },
+      body: JSON.stringify({ state: "closed", state_reason: "completed" }),
+    });
+    return res.ok ? existing.number : null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Lifecycle: enable GitHub-native auto-merge on a terminal PASS (v0.7.0) ──
+//
+// In `lifecycle: "auto_merge"` a terminal PASS verdict hands the merge to
+// GitHub, not to a custom loop: we enable the PR's NATIVE auto-merge via the
+// GraphQL `enablePullRequestAutoMerge` mutation. GitHub then merges the PR the
+// instant every REQUIRED status check is green (the plumbline gate being one of
+// them). Plumbline judges; GitHub merges. A REVIEW/REWORK verdict never calls
+// this. Best-effort: if the repo doesn't allow auto-merge, or the token lacks
+// scope, we log and leave the PASS standing — we never block on enablement.
+
+/** The PR's GraphQL node id — required by the auto-merge mutation. */
+export async function getPrNodeId(repo: string, prNumber: number, token: string): Promise<string> {
+  const res = await githubFetch(
+    `https://api.github.com/repos/${repo}/pulls/${prNumber}`,
+    { headers: GH_HEADERS(token) },
+    `get PR #${prNumber} node id`,
+  );
+  if (!res.ok) throw new Error(`get PR #${prNumber}: ${res.status} ${await res.text()}`);
+  const pr = (await res.json()) as { node_id?: string };
+  if (!pr.node_id) throw new Error(`PR #${prNumber} has no node_id`);
+  return pr.node_id;
+}
+
+/**
+ * Enable GitHub-native auto-merge on a PR (the `enablePullRequestAutoMerge`
+ * GraphQL mutation). Returns true on success. Best-effort: returns false (and
+ * logs) when auto-merge isn't allowed on the repo, the PR is already mergeable
+ * (nothing to queue), or the token lacks scope — never throws so the gate never
+ * fails on the merge-enablement itself. `mergeMethod` defaults to SQUASH.
+ */
+export async function enableAutoMerge(
+  repo: string,
+  prNumber: number,
+  token: string,
+  mergeMethod: "MERGE" | "SQUASH" | "REBASE" = "SQUASH",
+): Promise<boolean> {
+  try {
+    const nodeId = await getPrNodeId(repo, prNumber, token);
+    const query =
+      "mutation($id:ID!,$m:PullRequestMergeMethod!){" +
+      "enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$m}){" +
+      "pullRequest{autoMergeRequest{enabledAt}}}}";
+    const res = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers: { ...GH_HEADERS(token), "content-type": "application/json" },
+      body: JSON.stringify({ query, variables: { id: nodeId, m: mergeMethod } }),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      data?: { enablePullRequestAutoMerge?: { pullRequest?: { autoMergeRequest?: { enabledAt?: string } } } };
+      errors?: Array<{ message?: string }>;
+    };
+    if (!res.ok || data.errors?.length) {
+      const msg = data.errors?.map((e) => e.message).join("; ") || `HTTP ${res.status}`;
+      console.error(
+        `plumbline: could not enable GitHub auto-merge on PR #${prNumber}: ${msg} ` +
+          `(is auto-merge allowed on the repo? does the token have the merge scope?) — leaving PASS standing.`,
+      );
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error(`plumbline: could not enable GitHub auto-merge on PR #${prNumber}: ${(e as Error).message}`);
+    return false;
+  }
 }
 
 /** Post (or update) the gate comment on a PR. Requires GITHUB_TOKEN. */
