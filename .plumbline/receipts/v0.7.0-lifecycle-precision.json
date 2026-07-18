@@ -1,0 +1,90 @@
+{
+  "_help": {
+    "_note": "Allowed values + requirements per field (this _help block is ignored by the gate — keep or delete). Run `plumb schema` for the full reference.",
+    "receipt_version": "one of: 1.0 — required — schema version",
+    "task_id": "required — ticket/issue/branch id (also the receipt filename)",
+    "agent_id": "required — which agent or human did the work",
+    "intent": "required — what + why, plain language — the semantic review reads this",
+    "self_modifying": "one of: true | false — required — MUST be true if changed_files touch policy.protected_paths; touching one with false is a hard fail; true routes to human review",
+    "policy_refs": "required — policy/mission docs you read",
+    "validation_plan": "required — each: { command, reason, required, id?, ci_covered? }",
+    "validation_plan[].required": "one of: true | false — required — is this check mandatory",
+    "validation_plan[].id": "optional — optional step id; evidence is matched to it via execution_evidence[].step (robust to a command wording diff)",
+    "validation_plan[].ci_covered": "one of: true | false — optional — step is corroborated by the ci-evidence gate (real CI run), not manual evidence — may be 'skipped'; also auto-recognized when command matches a policy ci_evidence_checks entry",
+    "execution_evidence": "required — each: { command, status, output_ref?, skip_reason?, step? }",
+    "execution_evidence[].status": "one of: passed | failed | skipped — required — required steps must be 'passed' (unless CI-covered); use skip_reason when 'skipped'",
+    "execution_evidence[].step": "optional — optional id of the validation_plan step this evidence is for (matches validation_plan[].id)",
+    "changed_files": "required — set by `plumb receipt --write` — don't hand-edit",
+    "base_sha": "optional — pinned merge-base the diff was computed against — makes gate verification deterministic; set by `plumb receipt --write` — never hand-edit",
+    "diff_sha256": "required — set by `plumb receipt --write` — never hand-edit (computed from base_sha)",
+    "result_summary": "required — what changed + how it was verified"
+  },
+  "receipt_version": "1.0",
+  "task_id": "v0.7.0-lifecycle-precision",
+  "agent_id": "claude-opus-4-8",
+  "intent": "Plumbline v0.7.0 — the proof-carrying code-lifecycle + gate-precision release. Adds `plumb receipt generate` (honest auto-synthesized receipt for MCP-authored changes: validation deferred to repo CI via ci_covered, self_modifying auto-detected from protected_paths), a per-repo `lifecycle: review|auto_merge` knob that enables GitHub-native auto-merge on a terminal PASS, a conservative documented default for protected_paths (high-consequence surfaces only, not broad code trees) so REVIEW stays meaningful and non-protected green PRs can flow, and a follow-up flood fix (confidence threshold + one consolidated issue per PR + auto-close on merge).",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json"
+  ],
+  "validation_plan": [
+    {
+      "command": "npm test",
+      "reason": "Full node:test suite — proves the four features: receipt-generate shape validity + self_modifying detection + ci_covered validation, lifecycle auto_merge enabling GH auto-merge only on PASS, protected-paths default + override, and follow-up threshold/consolidation/auto-close.",
+      "required": true,
+      "id": "test"
+    },
+    {
+      "command": "npm run build",
+      "reason": "tsc --noEmit-equivalent full compile — proves the TypeScript typechecks across the new modules and the edited cli/github/types.",
+      "required": true,
+      "id": "build"
+    },
+    {
+      "command": "npm run bundle",
+      "reason": "Rebuild dist/index.js so the committed prebuilt bundle the Action runs is up to date (dist-check clean).",
+      "required": false,
+      "id": "bundle"
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "# tests 318 # pass 318 # fail 0 (includes the new receipt-generate, protected-paths-default, auto-merge, and followup-consolidation suites)",
+      "step": "test"
+    },
+    {
+      "command": "npm run build",
+      "status": "passed",
+      "output_ref": "tsc exit 0 — clean compile, no type errors",
+      "step": "build"
+    },
+    {
+      "command": "npm run bundle",
+      "status": "passed",
+      "output_ref": "esbuild → dist/index.js 292.5kb, Done — dist rebuilt and committed",
+      "step": "bundle"
+    }
+  ],
+  "changed_files": [
+    ".gitignore",
+    "CHANGELOG.md",
+    "README.md",
+    "dist/index.js",
+    "package.json",
+    "src/cli.ts",
+    "src/github.ts",
+    "src/receipt-generate.ts",
+    "src/test/auto-merge.test.ts",
+    "src/test/followup-consolidation.test.ts",
+    "src/test/protected-paths-default.test.ts",
+    "src/test/receipt-generate.test.ts",
+    "src/types.ts",
+    "templates/policy.json"
+  ],
+  "base_sha": "d0563e7b56d5f571acbcc6b5c7ece89d58fed615",
+  "diff_sha256": "0989986cfa0fb3fd03219964476e1a6dc0c1b5ad6aac39aadbe02b6d605dfc59",
+  "result_summary": "Shipped four changes in src/receipt-generate.ts (new), src/cli.ts (receipt generate + lifecycle auto_merge wiring + followups close verb), src/github.ts (enableAutoMerge via enablePullRequestAutoMerge, consolidated follow-ups + auto-close), src/types.ts (DEFAULT_PROTECTED_PATHS + lifecycle + follow_ups policy fields), and templates/policy.json + README + CHANGELOG. Verified: full test suite 318/318 pass (18 new tests across 4 suites), clean tsc build, dist/index.js rebuilt (dist-check clean), and an end-to-end smoke test of `plumb receipt generate` in a scratch repo (non-protected → self_modifying false + shape PASS; protected workflow file → self_modifying true; byte-identical re-run confirms idempotency). Version bumped 0.6.2 → 0.7.0. self_modifying is true because the change edits protected surfaces (src/github.ts, src/types.ts) — routes to human REVIEW, as designed."
+}
