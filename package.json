@@ -5,8 +5,8 @@
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
-    "plumb": "dist/cli.js",
-    "proofgate": "dist/cli.js"
+    "plumb": "dist/index.js",
+    "proofgate": "dist/index.js"
   },
   "files": [
     "dist",
