@@ -1,0 +1,57 @@
+{
+  "receipt_version": "1.0",
+  "task_id": "fix-cli-bin-points-to-committed-bundle",
+  "agent_id": "claude",
+  "intent": "Fix the `plumb`/`proofgate` bin so `npx github:amos-labs/plumbline` works. The bin pointed at dist/cli.js, which is never committed (.gitignore keeps only dist/index.js) and is produced only by the devDependency tsc via the prepare script. npx installs a git dependency without devDeps, so cli.js is never built and the bin silently resolves to nothing: `plumb receipt --write` exits 0 and does nothing, which reads as success and drives agents to hand-edit receipts. dist/index.js is the committed, self-contained esbuild bundle of src/cli.ts (the same entry the Action runs via `node dist/index.js run`) and carries a `#!/usr/bin/env node` shebang, so pointing the bin at it makes the CLI work over npx with zero build.",
+  "self_modifying": false,
+  "policy_refs": [
+    ".plumbline/MISSION.md"
+  ],
+  "validation_plan": [
+    {
+      "id": "bin-resolves",
+      "command": "npm install <pkg-dir> && ./node_modules/.bin/plumb",
+      "reason": "Proves the published bin symlink resolves to an executable entry (the failure mode was a bin pointing at an uncommitted, unbuilt file).",
+      "required": true
+    },
+    {
+      "id": "cli-runs",
+      "command": "node dist/index.js receipt --check --receipt <path>",
+      "reason": "Proves the committed bundle is a working CLI that executes the receipt subcommands the bin must serve.",
+      "required": true
+    },
+    {
+      "id": "unit",
+      "command": "npm test",
+      "reason": "Confirms no regression in the shape/review logic from the packaging change.",
+      "required": true,
+      "ci_covered": true
+    }
+  ],
+  "execution_evidence": [
+    {
+      "step": "bin-resolves",
+      "command": "npm init -y && npm install <clone> && ./node_modules/.bin/plumb --help",
+      "status": "passed",
+      "output_ref": "With the fixed bin, ./node_modules/.bin/plumb resolved to dist/index.js and executed (RC 0). Before the fix the bin pointed at a missing dist/cli.js and silently no-op'd."
+    },
+    {
+      "step": "cli-runs",
+      "command": "node dist/index.js receipt --check --receipt .plumbline/receipts/*.json (in a consumer repo)",
+      "status": "passed",
+      "output_ref": "Printed '✓ mechanical fields are fresh (diff_sha256 matches the committed diff)' and generated this very receipt via `node dist/index.js receipt --write` — the bundle is a fully working CLI."
+    },
+    {
+      "step": "unit",
+      "command": "npm test",
+      "status": "skipped",
+      "skip_reason": "Corroborated by the plumbline CI test job on the pushed head; this is a package.json bin/packaging change with no change to src logic."
+    }
+  ],
+  "changed_files": [
+    "package.json"
+  ],
+  "base_sha": "53c9bfe8e63cdf14a54a145f3a1a6127456d1646",
+  "diff_sha256": "dbf92a63a9c741839c9dbf667734e6f724c21f84b08e765e278880f99758b2b2",
+  "result_summary": "One-line packaging fix: bin plumb/proofgate now point at the committed self-contained dist/index.js bundle instead of the never-committed dist/cli.js, so `npx github:amos-labs/plumbline#master receipt --write` works with zero build (previously exited 0 and did nothing, which is why agents fell back to hand-editing receipts). Verified first-hand: the installed bin resolves and executes (RC 0), and the bundle runs the receipt subcommands (it generated this receipt). Unit tests delegated to plumbline CI. No src/logic change; package.json is not a protected path."
+}
