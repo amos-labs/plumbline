@@ -1,0 +1,71 @@
+{
+  "receipt_version": "1.0",
+  "task_id": "hermetic-diff-binding",
+  "agent_id": "claude-opus-5-1m",
+  "intent": "Fix amos-labs/plumbline#69: make the receipt diff binding hermetic so diff_sha256 no longer depends on the stamping machine's git configuration. `git diff` output is not a pure function of the tree \u2014 core.abbrev, diff.algorithm, diff.context, diff.noprefix and friends each change the bytes \u2014 so a receipt stamped in one environment and verified in another failed with `diff_sha256 mismatch` even when the content was byte-identical, routing correct PRs to REWORK (local pre-flight PASS, CI FAIL). Reproduced on NuvolaNetworks/cuspr: the stamped hash a973ec40\u2026 is exactly what core.abbrev=7 yields for a tree the gate hashed as 401688b5\u2026; one knob blocked six PRs. #69's original hypothesis (the CLI's diff command changed between the v0.7.0 tag and a dev build) is disproved here \u2014 src/shape.ts is byte-identical at v0.7.0 and master, so the variable was always the environment. The binding now neutralises user/system git config via env, pins every output-affecting knob with `-c` (outranking repo-local .git/config), and prints full blob SHAs so core.abbrev is irrelevant. Both the pinned 2-dot and the legacy 3-dot paths are normalised so their equality \u2014 and the verdict cache key resting on it \u2014 is preserved. Adds a `diff_algo` receipt field so the gate verifies under the algorithm the author stamped with, with back-compat: a receipt lacking it verifies against the hermetic OR the legacy hash, so hardening the binding does not itself become a fleet-wide REWORK event. Adds `plumb diff-hash` and names the algo + gate version in the mismatch error so a config skew is diagnosable in one read instead of two REWORK loops.",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json"
+  ],
+  "validation_plan": [
+    {
+      "command": "npm run check",
+      "reason": "The gate's own type surface must compile; a break here breaks every consumer repo.",
+      "required": true
+    },
+    {
+      "command": "npm test",
+      "reason": "Full suite. The binding change touches the hash every existing receipt is verified against, so nothing may regress.",
+      "required": true
+    },
+    {
+      "command": "node --test dist/test/diff-hermetic.test.js",
+      "reason": "New regression cover: binding invariant under 14 hostile git configs, legacy binding provably drifts, legacy receipts still verify, and a real content change still fails.",
+      "required": true
+    },
+    {
+      "command": "plumb diff-hash under mutated git config on a real repo",
+      "reason": "End-to-end proof on the repo that was actually broken (cuspr), not just fixture repos.",
+      "required": true
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npm run check",
+      "status": "passed",
+      "output_ref": "tsc --noEmit exit 0."
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "324 tests, 324 pass, 0 fail. Three pre-existing tests were updated rather than worked around: pin-diff-base's '2-dot == 3-dot' pair failed until the legacy 3-dot path was ALSO made hermetic (a real bug in the first cut \u2014 fixed in src, not in the test), and receipt-write's 'no change' fixture legitimately changes now that a receipt missing diff_algo gets it stamped (fixture updated + a new test added asserting that stamp)."
+    },
+    {
+      "command": "node --test dist/test/diff-hermetic.test.js",
+      "status": "passed",
+      "output_ref": "5/5. Invariance asserted across core.abbrev 7/12/40, diff.algorithm histogram/patience/minimal, diff.context 1/7, diff.noprefix, diff.mnemonicPrefix, diff.indentHeuristic, diff.renames, diff.suppressBlankEmpty, diff.relative."
+    },
+    {
+      "command": "plumb diff-hash under mutated git config on a real repo",
+      "status": "passed",
+      "output_ref": "On NuvolaNetworks/cuspr, hermetic diff_sha256 = 777d22e32cfe9361\u2026 identically under default config, core.abbrev=7, and diff.algorithm=histogram, while the legacy hash moved f509da8d\u2026 \u2192 e083e224\u2026 under core.abbrev=7. The outage reproduced and shown fixed."
+    }
+  ],
+  "changed_files": [
+    "CHANGELOG.md",
+    "dist/index.js",
+    "package.json",
+    "src/cli.ts",
+    "src/receipt-generate.ts",
+    "src/receipt-write.ts",
+    "src/shape.ts",
+    "src/test/diff-hermetic.test.ts",
+    "src/test/receipt-write.test.ts",
+    "src/types.ts"
+  ],
+  "diff_sha256": "2305a0b03c37915a45ce2ee3da88f91a3e074e94a2dc7db4f2c9c094d4cc3c61",
+  "result_summary": "Makes the plumbline receipt binding hermetic so diff_sha256 depends only on the tree, fixing #69 \u2014 the fleet-wide source of spurious REWORK verdicts on PRs whose content never changed. Root cause corrected: not a version skew in the CLI (src/shape.ts is identical at v0.7.0 and master) but local git config, with core.abbrev reproduced as the exact culprit on cuspr. Adds a versioned diff_algo field so future normalisation changes are non-breaking, keeps pre-existing receipts verifying under the legacy hash so the fix does not itself trigger fleet-wide REWORK, and adds `plumb diff-hash` plus a self-explaining mismatch error so the next skew is diagnosed in one read. 324/324 tests pass. self_modifying: true \u2014 src/shape.ts and src/types.ts are protected paths, so this correctly routes to human review.",
+  "base_sha": "6cb89d20b34e03c7c7be00cee3e8b6ebe3b293c0",
+  "diff_algo": "v1"
+}
