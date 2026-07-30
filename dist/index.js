@@ -4098,6 +4098,9 @@ var ReceiptSchema = external_exports.object({
   diff_sha256: external_exports.string().regex(/^[0-9a-f]{64}$/, "diff_sha256 must be a 64-char lowercase hex SHA-256").describe(
     "sha256 of `git diff <base_sha>..HEAD -- . ':(exclude).plumbline/receipt.json' ':(exclude).plumbline/receipts/*.json' ':(exclude).proofgate/receipt.json' ':(exclude).proofgate/receipts/*.json'` \u2014 binds the receipt to the diff content. Computed from the pinned `base_sha` (2-dot, deterministic; equivalent to the legacy `<base>...HEAD` 3-dot). The receipt file(s) are excluded so it's computable BEFORE committing the receipt (a commit can never contain its own SHA), and so the per-PR receipt at .plumbline/receipts/<task_id>.json (or legacy .proofgate/) doesn't affect it."
   ),
+  diff_algo: external_exports.string().regex(/^v[0-9]+$/, 'diff_algo must be a version tag like "v1"').optional().describe(
+    'Which normalisation algorithm `diff_sha256` was computed under, so the gate verifies with the SAME algorithm rather than guessing. "v1" = hermetic: user and system git config neutralised, every output-affecting knob pinned (core.abbrev, diff.algorithm, diff.context, diff.noprefix, diff.renames, \u2026) and blob SHAs printed in full, so the hash depends only on the tree. This exists because a bare `git diff` is NOT a pure function of the tree \u2014 a differing core.abbrev or diff.algorithm on the stamping machine silently produces a different hash and a spurious REWORK (amos-labs/plumbline#69). Set by `plumb receipt --write`. OPTIONAL for back-compat: a receipt without it is verified against the hermetic hash OR the legacy config-dependent one, so receipts stamped before this field existed keep passing.'
+  ),
   result_summary: external_exports.string().min(40)
 });
 var DEFAULT_PROTECTED_PATHS = [
@@ -4466,6 +4469,85 @@ function isReceiptPath(file) {
 function computeDiffSha256(diff) {
   return createHash("sha256").update(diff, "utf8").digest("hex");
 }
+var DIFF_ALGO_CURRENT = "v1";
+var PLUMBLINE_VERSION = "0.7.1";
+var HERMETIC_DIFF_CONFIG = [
+  "-c",
+  "core.abbrev=40",
+  // belt-and-braces; --full-index already fixes this
+  "-c",
+  "core.quotePath=true",
+  "-c",
+  "diff.algorithm=myers",
+  // histogram/patience relayout hunks
+  "-c",
+  "diff.context=3",
+  "-c",
+  "diff.interHunkContext=0",
+  "-c",
+  "diff.indentHeuristic=true",
+  "-c",
+  "diff.noprefix=false",
+  // a/ b/ prefixes
+  "-c",
+  "diff.mnemonicPrefix=false",
+  // NOT pinned: diff.orderFile. An empty value makes git fail outright
+  // ("failed to read orderfile ''"), and there is no portable no-op value.
+  // Global/system config is already neutralised by hermeticEnv(), so the only
+  // residual exposure is a repo-local orderFile — rare, committed, and shared
+  // by stamper and gate alike.
+  "-c",
+  "diff.relative=false",
+  "-c",
+  "diff.renames=true",
+  "-c",
+  "diff.suppressBlankEmpty=false",
+  "-c",
+  "diff.external="
+  // an external differ replaces the output wholesale
+];
+var HERMETIC_DIFF_FLAGS = ["--no-color", "--no-ext-diff", "--no-textconv", "--full-index"];
+function hermeticEnv() {
+  return {
+    ...process.env,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_SYSTEM: "/dev/null",
+    GIT_EXTERNAL_DIFF: "",
+    LC_ALL: "C",
+    TZ: "UTC"
+  };
+}
+function hermeticGitDiff(revRange, cwd) {
+  return execFileSync(
+    "git",
+    [...HERMETIC_DIFF_CONFIG, "diff", ...HERMETIC_DIFF_FLAGS, revRange, ...RECEIPT_DIFF_SPEC],
+    { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: hermeticEnv() }
+  );
+}
+function legacyGitDiff(revRange, cwd) {
+  return execFileSync("git", ["diff", revRange, ...RECEIPT_DIFF_SPEC], {
+    cwd,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024
+  });
+}
+function diffBindings(revRange, cwd) {
+  return {
+    v1: computeDiffSha256(hermeticGitDiff(revRange, cwd)),
+    legacy: computeDiffSha256(legacyGitDiff(revRange, cwd))
+  };
+}
+function diffMatches(hash, revRange, cwd, algo) {
+  if (algo === DIFF_ALGO_CURRENT) {
+    const v12 = computeDiffSha256(hermeticGitDiff(revRange, cwd));
+    return { matched: v12 === hash, matchedLegacy: false, actual: v12 };
+  }
+  const { v1, legacy } = diffBindings(revRange, cwd);
+  if (v1 === hash) return { matched: true, matchedLegacy: false, actual: v1 };
+  if (legacy === hash) return { matched: true, matchedLegacy: true, actual: legacy };
+  return { matched: false, matchedLegacy: false, actual: v1 };
+}
 function gitMergeBase(baseRef, cwd) {
   try {
     return execFileSync("git", ["merge-base", baseRef, "HEAD"], {
@@ -4477,11 +4559,7 @@ function gitMergeBase(baseRef, cwd) {
   }
 }
 function gitDiffExcludingReceiptFrom(baseSha, cwd) {
-  return execFileSync(
-    "git",
-    ["diff", `${baseSha}..HEAD`, ...RECEIPT_DIFF_SPEC],
-    { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }
-  );
+  return hermeticGitDiff(`${baseSha}..HEAD`, cwd);
 }
 function gitChangedFilesFrom(baseSha, cwd) {
   const out = execFileSync(
@@ -4549,11 +4627,7 @@ function gitChangedFiles(baseRef, cwd) {
   return out.split("\n").map((l) => l.trim()).filter(Boolean);
 }
 function gitDiffExcludingReceipt(baseRef, cwd) {
-  return execFileSync(
-    "git",
-    ["diff", `${baseRef}...HEAD`, ...RECEIPT_DIFF_SPEC],
-    { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }
-  );
+  return hermeticGitDiff(`${baseRef}...HEAD`, cwd);
 }
 function shapeCheck(rawReceipt, policy, opts = {}) {
   const findings = [];
@@ -4662,22 +4736,30 @@ function shapeCheck(rawReceipt, policy, opts = {}) {
             `no base ref provided \u2014 cannot verify base_sha ${pinnedBase} is an ancestor of the default branch`
           );
         }
-        const pinnedHash = computeDiffSha256(gitDiffExcludingReceiptFrom(pinnedBase, cwd));
+        const algo = receipt.diff_algo;
+        const pinned = diffMatches(receipt.diff_sha256, `${pinnedBase}..HEAD`, cwd, algo);
         let matchedBase = pinnedBase;
-        if (pinnedHash !== receipt.diff_sha256) {
+        let matchedLegacy = pinned.matchedLegacy;
+        if (!pinned.matched) {
           const rederived = opts.baseRef ? gitMergeBase(opts.baseRef, cwd) : null;
-          const rederivedHash = rederived && rederived !== pinnedBase ? computeDiffSha256(gitDiffExcludingReceiptFrom(rederived, cwd)) : null;
-          if (rederived && rederivedHash === receipt.diff_sha256) {
+          const red = rederived && rederived !== pinnedBase ? diffMatches(receipt.diff_sha256, `${rederived}..HEAD`, cwd, algo) : null;
+          if (rederived && red?.matched) {
             matchedBase = rederived;
+            matchedLegacy = red.matchedLegacy;
             warnings.push(
               `diff matched rederived merge-base ${rederived.slice(0, 12)} (pinned base_sha ${pinnedBase.slice(0, 12)} was stranded by a rebase; PR content unchanged)`
             );
           } else {
             findings.push({
               check: "diff_integrity",
-              message: `diff_sha256 mismatch: receipt=${receipt.diff_sha256} actual=${pinnedHash} (computed against pinned base_sha ${pinnedBase}: git diff ${pinnedBase}..HEAD -- . ':(exclude).plumbline/receipts/*.json' \u2026 | sha256 \u2014 or just: plumb receipt --write)`
+              message: `diff_sha256 mismatch: receipt=${receipt.diff_sha256} actual=${pinned.actual} [algo=${algo ?? "legacy(unstamped)"}, gate=plumbline ${PLUMBLINE_VERSION}] (computed against pinned base_sha ${pinnedBase}. Reproduce exactly: plumb diff-hash --base ${pinnedBase} \u2014 or just re-stamp: plumb receipt --write. NOTE: a bare 'git diff | sha256' will NOT reproduce this \u2014 the binding is normalised against local git config (core.abbrev, diff.algorithm, diff.context, diff.noprefix), which is the usual cause of a mismatch when the content is identical.)`
             });
           }
+        }
+        if (matchedLegacy) {
+          warnings.push(
+            `receipt has no diff_algo and matched only the LEGACY (config-dependent) diff hash. It verified, but the binding is sensitive to local git config. Re-stamp with 'plumb receipt --write' to pin diff_algo=${DIFF_ALGO_CURRENT}.`
+          );
         }
         const actual = gitChangedFilesFrom(matchedBase, cwd).filter((f) => !isReceiptPath(f));
         const declared = new Set(receipt.changed_files);
@@ -6490,6 +6572,13 @@ function refreshMechanical(receipt, mech) {
     out.diff_sha256 = mech.diffSha256;
     changed = true;
   }
+  if (out.diff_algo !== DIFF_ALGO_CURRENT) {
+    notes.push(
+      `diff_algo: ${String(out.diff_algo ?? "(unset)")} \u2192 ${DIFF_ALGO_CURRENT} (hermetic, config-independent)`
+    );
+    out.diff_algo = DIFF_ALGO_CURRENT;
+    changed = true;
+  }
   if (mech.baseSha && out.base_sha !== mech.baseSha) {
     notes.push(
       `base_sha: ${String(out.base_sha ?? "(unset)").slice(0, 12)}\u2026 \u2192 ${mech.baseSha.slice(0, 12)}\u2026 (pinned diff base)`
@@ -6982,6 +7071,9 @@ function generateReceipt(input) {
     changed_files: input.changedFiles,
     ...input.baseSha ? { base_sha: input.baseSha } : {},
     diff_sha256: input.diffSha256,
+    // The generator computes diffSha256 from the canonical helper, which is
+    // hermetic — record that so the gate verifies under the same algorithm.
+    diff_algo: DIFF_ALGO_CURRENT,
     result_summary: resultSummary,
     /** Provenance: this receipt was synthesized, not hand-authored. */
     _generated_by: "plumb receipt generate"
@@ -7130,7 +7222,7 @@ async function main() {
   const runCiEvidence = phase !== "quality";
   const receiptArg = arg("receipt", "auto");
   const receiptIsDefault = receiptArg === "auto" || receiptArg === ".plumbline/receipt.json" || receiptArg === ".proofgate/receipt.json";
-  const receiptPath = cmd === "init" || cmd === "new" || cmd === "schema" || cmd === "propose" || cmd === "archive" || cmd === "setup-protection" || cmd === "migration-guard" || cmd === "followups" ? DEFAULT_RECEIPT : resolveReceiptPath(
+  const receiptPath = cmd === "init" || cmd === "new" || cmd === "schema" || cmd === "propose" || cmd === "archive" || cmd === "setup-protection" || cmd === "migration-guard" || cmd === "followups" || cmd === "diff-hash" ? DEFAULT_RECEIPT : resolveReceiptPath(
     receiptIsDefault ? DEFAULT_RECEIPT : receiptArg,
     skipGit ? void 0 : baseRef,
     cwd,
@@ -7141,7 +7233,7 @@ async function main() {
     // detected by ci.provider; `run` is excluded belt-and-suspenders.
     ci.provider === "none" && cmd !== "run"
   );
-  if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check", "receipt", "propose", "archive", "setup-protection", "migration-guard", "followups"].includes(cmd)) {
+  if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check", "receipt", "propose", "archive", "setup-protection", "migration-guard", "followups", "diff-hash"].includes(cmd)) {
     console.log(`plumbline \u2014 the plumb line for AI agent work (Amos 7:7-8): proof-carrying gate
 
 usage:
@@ -7600,6 +7692,37 @@ Now fill the judgment fields (the tool never writes these):`);
 Then: git add ${dest} && commit && push  (pre-check: plumb check)`);
     return 0;
   }
+  if (cmd === "diff-hash") {
+    if (skipGit) {
+      console.error("plumb diff-hash: needs git");
+      return 1;
+    }
+    const explicitBase = arg("base-sha");
+    const baseSha = explicitBase ?? (baseRef ? gitMergeBase(baseRef, cwd) : null);
+    if (!baseSha) {
+      console.error("plumb diff-hash: could not resolve a base \u2014 pass --base-sha <sha> or --base <ref>");
+      return 1;
+    }
+    let bindings;
+    try {
+      bindings = diffBindings(`${baseSha}..HEAD`, cwd);
+    } catch (e) {
+      console.error(`plumb diff-hash: git failed: ${String(e)}`);
+      return 1;
+    }
+    console.log(`base_sha:   ${baseSha}`);
+    console.log(`diff_algo:  ${DIFF_ALGO_CURRENT} (hermetic \u2014 this is what the gate verifies)`);
+    console.log(`diff_sha256: ${bindings.v1}`);
+    if (bindings.legacy !== bindings.v1) {
+      console.log(`legacy:      ${bindings.legacy}  (config-dependent; accepted only for receipts with no diff_algo)`);
+      console.log(
+        `
+NOTE: your git config makes a bare 'git diff' produce the legacy value above.
+That divergence is exactly what plumbline#69 was \u2014 the hermetic value is authoritative.`
+      );
+    }
+    return 0;
+  }
   if (!existsSync7(receiptPath)) {
     console.error(
       `plumb: no receipt found at ${receiptPath}.
@@ -7638,6 +7761,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
     const prevSha = receiptObj.diff_sha256;
     if (baseSha) receiptObj.base_sha = baseSha;
     receiptObj.diff_sha256 = diffSha;
+    receiptObj.diff_algo = DIFF_ALGO_CURRENT;
     receiptObj.changed_files = changed;
     writeFileSync5(receiptPath, `${JSON.stringify(receiptObj, null, 2)}
 `);
