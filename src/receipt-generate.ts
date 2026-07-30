@@ -1,4 +1,5 @@
 import { matchesAny } from "./glob.js";
+import { DIFF_ALGO_CURRENT } from "./shape.js";
 import type { Policy } from "./types.js";
 
 /**
@@ -127,6 +128,9 @@ export function generateReceipt(input: GenerateInput): Record<string, unknown> {
     changed_files: input.changedFiles,
     ...(input.baseSha ? { base_sha: input.baseSha } : {}),
     diff_sha256: input.diffSha256,
+    // The generator computes diffSha256 from the canonical helper, which is
+    // hermetic — record that so the gate verifies under the same algorithm.
+    diff_algo: DIFF_ALGO_CURRENT,
     result_summary: resultSummary,
     /** Provenance: this receipt was synthesized, not hand-authored. */
     _generated_by: "plumb receipt generate",

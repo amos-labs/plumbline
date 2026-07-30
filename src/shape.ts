@@ -76,6 +76,141 @@ export function computeDiffSha256(diff: string): string {
 }
 
 /**
+ * Identifier for the diff-normalisation algorithm a receipt was stamped under.
+ * Stamped into the receipt as `diff_algo` so the gate verifies with the SAME
+ * algorithm the author stamped with, instead of assuming. Bump this (v2, …)
+ * whenever a change would alter the hash for an identical tree; the gate keeps
+ * verifying older receipts under their own algorithm.
+ */
+export const DIFF_ALGO_CURRENT = "v1";
+
+/**
+ * Reported in the receipt and in the diff-mismatch error so a version skew
+ * between the stamping CLI and the pinned gate is diagnosable in one read
+ * rather than two REWORK loops (amos-labs/plumbline#69, ask 2).
+ * Keep in sync with package.json — see RELEASING.md.
+ */
+export const PLUMBLINE_VERSION = "0.7.1";
+
+/**
+ * `git diff` output is NOT a pure function of the tree — it depends on the
+ * machine's git configuration. The receipt binding is a sha256 over that
+ * output, so ANY of these knobs differing between the machine that stamps the
+ * receipt and the machine that verifies it produces a spurious `diff_sha256`
+ * mismatch. Local pre-flight passes, CI fails, and it reads as an unexplained
+ * "receipt fumble" (amos-labs/plumbline#69).
+ *
+ * This was not theoretical: on NuvolaNetworks/cuspr the stamped hash
+ * a973ec40… is EXACTLY what `core.abbrev=7` produces for a tree whose hash
+ * under the gate's environment was 401688b5…. One config knob, six blocked
+ * PRs, and a diagnosis that cost two REWORK loops. Measured on that same tree:
+ * `diff.algorithm=histogram|patience`, `core.abbrev`, `diff.noprefix` and
+ * `diff.context` each produce a different hash.
+ *
+ * So the binding diff is computed HERMETICALLY: user and system config are
+ * neutralised via env, every output-affecting knob is pinned with `-c` (which
+ * outranks repo-local `.git/config`), and blob SHAs are printed in full so
+ * `core.abbrev` cannot matter at all. The hash then depends only on the tree.
+ */
+const HERMETIC_DIFF_CONFIG = [
+  "-c", "core.abbrev=40",           // belt-and-braces; --full-index already fixes this
+  "-c", "core.quotePath=true",
+  "-c", "diff.algorithm=myers",     // histogram/patience relayout hunks
+  "-c", "diff.context=3",
+  "-c", "diff.interHunkContext=0",
+  "-c", "diff.indentHeuristic=true",
+  "-c", "diff.noprefix=false",      // a/ b/ prefixes
+  "-c", "diff.mnemonicPrefix=false",
+  // NOT pinned: diff.orderFile. An empty value makes git fail outright
+  // ("failed to read orderfile ''"), and there is no portable no-op value.
+  // Global/system config is already neutralised by hermeticEnv(), so the only
+  // residual exposure is a repo-local orderFile — rare, committed, and shared
+  // by stamper and gate alike.
+  "-c", "diff.relative=false",
+  "-c", "diff.renames=true",
+  "-c", "diff.suppressBlankEmpty=false",
+  "-c", "diff.external=",           // an external differ replaces the output wholesale
+];
+
+/** Flags that pin output independently of config (and of `.gitattributes`). */
+const HERMETIC_DIFF_FLAGS = ["--no-color", "--no-ext-diff", "--no-textconv", "--full-index"];
+
+/** Env that neutralises user/system git config and locale-dependent output. */
+function hermeticEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_SYSTEM: "/dev/null",
+    GIT_EXTERNAL_DIFF: "",
+    LC_ALL: "C",
+    TZ: "UTC",
+  };
+}
+
+/**
+ * Run `git diff` so the bytes depend only on the tree. `revRange` is e.g.
+ * `<baseSha>..HEAD`; `spec` is the receipt-exclusion pathspec.
+ */
+function hermeticGitDiff(revRange: string, cwd: string): string {
+  return execFileSync(
+    "git",
+    [...HERMETIC_DIFF_CONFIG, "diff", ...HERMETIC_DIFF_FLAGS, revRange, ...RECEIPT_DIFF_SPEC],
+    { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: hermeticEnv() },
+  );
+}
+
+/**
+ * The LEGACY (pre-v1) binding: a bare `git diff`, at the mercy of whatever git
+ * config the caller happens to have. Retained ONLY so receipts stamped before
+ * `diff_algo` existed keep verifying — hardening the hash must not itself
+ * become a fleet-wide REWORK event, which is the very failure being fixed.
+ */
+function legacyGitDiff(revRange: string, cwd: string): string {
+  return execFileSync("git", ["diff", revRange, ...RECEIPT_DIFF_SPEC], {
+    cwd,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+}
+
+/** Both bindings for a rev range: the hermetic v1 hash and the legacy one. */
+export function diffBindings(
+  revRange: string,
+  cwd: string,
+): { v1: string; legacy: string } {
+  return {
+    v1: computeDiffSha256(hermeticGitDiff(revRange, cwd)),
+    legacy: computeDiffSha256(legacyGitDiff(revRange, cwd)),
+  };
+}
+
+/**
+ * Does `hash` match this rev range under the algorithm the receipt claims?
+ *
+ * - `diff_algo: "v1"` → v1 only. The author stamped hermetically; a legacy
+ *   match would mean the hermetic bytes changed, which is a real difference.
+ * - absent (legacy receipt) → v1 OR legacy, so pre-existing receipts across the
+ *   fleet keep passing. A legacy-only match returns `matchedLegacy` so the
+ *   caller can nudge a re-stamp without blocking.
+ */
+export function diffMatches(
+  hash: string,
+  revRange: string,
+  cwd: string,
+  algo: string | undefined,
+): { matched: boolean; matchedLegacy: boolean; actual: string } {
+  if (algo === DIFF_ALGO_CURRENT) {
+    const v1 = computeDiffSha256(hermeticGitDiff(revRange, cwd));
+    return { matched: v1 === hash, matchedLegacy: false, actual: v1 };
+  }
+  const { v1, legacy } = diffBindings(revRange, cwd);
+  if (v1 === hash) return { matched: true, matchedLegacy: false, actual: v1 };
+  if (legacy === hash) return { matched: true, matchedLegacy: true, actual: legacy };
+  return { matched: false, matchedLegacy: false, actual: v1 };
+}
+
+/**
  * Resolve the merge-base commit of `baseRef` and HEAD — the exact commit the
  * 3-dot `git diff <base>...HEAD` diffs against. Recording THIS at stamp time
  * (as the receipt's `base_sha`) is what makes verification deterministic: a
@@ -103,11 +238,7 @@ export function gitMergeBase(baseRef: string, cwd: string): string | null {
  * advances between stamp time and gate time.
  */
 export function gitDiffExcludingReceiptFrom(baseSha: string, cwd: string): string {
-  return execFileSync(
-    "git",
-    ["diff", `${baseSha}..HEAD`, ...RECEIPT_DIFF_SPEC],
-    { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
-  );
+  return hermeticGitDiff(`${baseSha}..HEAD`, cwd);
 }
 
 /** Changed-file list from the pinned base (2-dot), for the pinned path. */
@@ -265,11 +396,10 @@ export function gitChangedFiles(baseRef: string, cwd: string): string[] {
 }
 
 export function gitDiffExcludingReceipt(baseRef: string, cwd: string): string {
-  return execFileSync(
-    "git",
-    ["diff", `${baseRef}...HEAD`, ...RECEIPT_DIFF_SPEC],
-    { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
-  );
+  // Hermetic, exactly like the pinned 2-dot path — otherwise the two forms stop
+  // agreeing and the "2-dot == 3-dot" invariant (and the verdict cache key that
+  // rests on it) silently breaks.
+  return hermeticGitDiff(`${baseRef}...HEAD`, cwd);
 }
 
 /**
@@ -463,17 +593,20 @@ export function shapeCheck(
         // moving (and clean rebases onto it) without ever tolerating changed
         // content. `receipt --write` keeps stamping the pinned base_sha for
         // provenance; only verification accepts the rederived fallback.
-        const pinnedHash = computeDiffSha256(gitDiffExcludingReceiptFrom(pinnedBase, cwd));
+        const algo = receipt.diff_algo;
+        const pinned = diffMatches(receipt.diff_sha256, `${pinnedBase}..HEAD`, cwd, algo);
         let matchedBase = pinnedBase;
-        if (pinnedHash !== receipt.diff_sha256) {
+        let matchedLegacy = pinned.matchedLegacy;
+        if (!pinned.matched) {
           const rederived = opts.baseRef ? gitMergeBase(opts.baseRef, cwd) : null;
-          const rederivedHash =
+          const red =
             rederived && rederived !== pinnedBase
-              ? computeDiffSha256(gitDiffExcludingReceiptFrom(rederived, cwd))
+              ? diffMatches(receipt.diff_sha256, `${rederived}..HEAD`, cwd, algo)
               : null;
-          if (rederived && rederivedHash === receipt.diff_sha256) {
+          if (rederived && red?.matched) {
             // Content is unchanged; base_sha was merely stranded by a rebase.
             matchedBase = rederived;
+            matchedLegacy = red.matchedLegacy;
             warnings.push(
               `diff matched rederived merge-base ${rederived.slice(0, 12)} ` +
                 `(pinned base_sha ${pinnedBase.slice(0, 12)} was stranded by a rebase; PR content unchanged)`,
@@ -482,10 +615,22 @@ export function shapeCheck(
             findings.push({
               check: "diff_integrity",
               message:
-                `diff_sha256 mismatch: receipt=${receipt.diff_sha256} actual=${pinnedHash} ` +
-                `(computed against pinned base_sha ${pinnedBase}: git diff ${pinnedBase}..HEAD -- . ':(exclude).plumbline/receipts/*.json' … | sha256 — or just: plumb receipt --write)`,
+                `diff_sha256 mismatch: receipt=${receipt.diff_sha256} actual=${pinned.actual} ` +
+                `[algo=${algo ?? "legacy(unstamped)"}, gate=plumbline ${PLUMBLINE_VERSION}] ` +
+                `(computed against pinned base_sha ${pinnedBase}. Reproduce exactly: ` +
+                `plumb diff-hash --base ${pinnedBase} — or just re-stamp: plumb receipt --write. ` +
+                `NOTE: a bare 'git diff | sha256' will NOT reproduce this — the binding is ` +
+                `normalised against local git config (core.abbrev, diff.algorithm, diff.context, ` +
+                `diff.noprefix), which is the usual cause of a mismatch when the content is identical.)`,
             });
           }
+        }
+        if (matchedLegacy) {
+          warnings.push(
+            `receipt has no diff_algo and matched only the LEGACY (config-dependent) diff hash. ` +
+              `It verified, but the binding is sensitive to local git config. ` +
+              `Re-stamp with 'plumb receipt --write' to pin diff_algo=${DIFF_ALGO_CURRENT}.`,
+          );
         }
         const actual = gitChangedFilesFrom(matchedBase, cwd).filter((f) => !isReceiptPath(f));
         const declared = new Set(receipt.changed_files);

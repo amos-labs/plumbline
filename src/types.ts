@@ -83,6 +83,23 @@ export const ReceiptSchema = z.object({
         "and so the per-PR receipt at .plumbline/receipts/<task_id>.json (or legacy " +
         ".proofgate/) doesn't affect it.",
     ),
+  diff_algo: z
+    .string()
+    .regex(/^v[0-9]+$/, 'diff_algo must be a version tag like "v1"')
+    .optional()
+    .describe(
+      "Which normalisation algorithm `diff_sha256` was computed under, so the gate " +
+        'verifies with the SAME algorithm rather than guessing. "v1" = hermetic: user ' +
+        "and system git config neutralised, every output-affecting knob pinned " +
+        "(core.abbrev, diff.algorithm, diff.context, diff.noprefix, diff.renames, …) and " +
+        "blob SHAs printed in full, so the hash depends only on the tree. This exists " +
+        "because a bare `git diff` is NOT a pure function of the tree — a differing " +
+        "core.abbrev or diff.algorithm on the stamping machine silently produces a " +
+        "different hash and a spurious REWORK (amos-labs/plumbline#69). Set by " +
+        "`plumb receipt --write`. OPTIONAL for back-compat: a receipt without it is " +
+        "verified against the hermetic hash OR the legacy config-dependent one, so " +
+        "receipts stamped before this field existed keep passing.",
+    ),
   result_summary: z.string().min(40),
 });
 

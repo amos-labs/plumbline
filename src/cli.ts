@@ -8,6 +8,8 @@ import {
   computeDiffSha256,
   gitDiffExcludingReceipt,
   gitDiffExcludingReceiptFrom,
+  DIFF_ALGO_CURRENT,
+  diffBindings,
   gitChangedFiles,
   gitChangedFilesFrom,
   gitMergeBase,
@@ -308,7 +310,8 @@ async function main(): Promise<number> {
     receiptArg === ".proofgate/receipt.json";
   const receiptPath =
     cmd === "init" || cmd === "new" || cmd === "schema" || cmd === "propose" || cmd === "archive" ||
-    cmd === "setup-protection" || cmd === "migration-guard" || cmd === "followups"
+    cmd === "setup-protection" || cmd === "migration-guard" || cmd === "followups" ||
+    cmd === "diff-hash"
       ? DEFAULT_RECEIPT
       : resolveReceiptPath(
           receiptIsDefault ? DEFAULT_RECEIPT : receiptArg,
@@ -322,7 +325,7 @@ async function main(): Promise<number> {
           ci.provider === "none" && cmd !== "run",
         );
 
-  if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check", "receipt", "propose", "archive", "setup-protection", "migration-guard", "followups"].includes(cmd)) {
+  if (!cmd || !["init", "new", "schema", "shape", "review", "run", "stamp", "check", "receipt", "propose", "archive", "setup-protection", "migration-guard", "followups", "diff-hash"].includes(cmd)) {
     console.log(`plumbline — the plumb line for AI agent work (Amos 7:7-8): proof-carrying gate
 
 usage:
@@ -850,6 +853,43 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
     return 0;
   }
 
+  // --- diff-hash: reproduce the gate's binding, exactly (#69) ---
+  // The whole class of "receipt fumble" confusion came from people trying to
+  // reproduce diff_sha256 with a bare `git diff | sha256` and getting a
+  // different answer, because the binding is normalised against local git
+  // config and a bare diff is not. This prints the authoritative value (and
+  // the legacy one) so a mismatch is diagnosable without guessing.
+  if (cmd === "diff-hash") {
+    if (skipGit) {
+      console.error("plumb diff-hash: needs git");
+      return 1;
+    }
+    const explicitBase = arg("base-sha");
+    const baseSha = explicitBase ?? (baseRef ? gitMergeBase(baseRef, cwd) : null);
+    if (!baseSha) {
+      console.error("plumb diff-hash: could not resolve a base — pass --base-sha <sha> or --base <ref>");
+      return 1;
+    }
+    let bindings: { v1: string; legacy: string };
+    try {
+      bindings = diffBindings(`${baseSha}..HEAD`, cwd);
+    } catch (e) {
+      console.error(`plumb diff-hash: git failed: ${String(e)}`);
+      return 1;
+    }
+    console.log(`base_sha:   ${baseSha}`);
+    console.log(`diff_algo:  ${DIFF_ALGO_CURRENT} (hermetic — this is what the gate verifies)`);
+    console.log(`diff_sha256: ${bindings.v1}`);
+    if (bindings.legacy !== bindings.v1) {
+      console.log(`legacy:      ${bindings.legacy}  (config-dependent; accepted only for receipts with no diff_algo)`);
+      console.log(
+        `\nNOTE: your git config makes a bare 'git diff' produce the legacy value above.\n` +
+          `That divergence is exactly what plumbline#69 was — the hermetic value is authoritative.`,
+      );
+    }
+    return 0;
+  }
+
   if (!existsSync(receiptPath)) {
     console.error(
       `plumb: no receipt found at ${receiptPath}.\n` +
@@ -894,6 +934,9 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
     const prevSha = receiptObj.diff_sha256;
     if (baseSha) receiptObj.base_sha = baseSha;
     receiptObj.diff_sha256 = diffSha;
+    // Record the normalisation the hash was computed under, so the gate
+    // verifies with the same one rather than guessing (#69).
+    receiptObj.diff_algo = DIFF_ALGO_CURRENT;
     receiptObj.changed_files = changed;
     writeFileSync(receiptPath, `${JSON.stringify(receiptObj, null, 2)}\n`);
     console.error(`stamped ${receiptPath} (base ${baseRef}${baseSha ? `, pinned @ ${baseSha.slice(0, 12)}…` : ""}):`);

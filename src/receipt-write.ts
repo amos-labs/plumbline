@@ -1,4 +1,5 @@
 import { matchesAny } from "./glob.js";
+import { DIFF_ALGO_CURRENT } from "./shape.js";
 
 /**
  * `plumb receipt --write/--check` — the mechanical half of a receipt,
@@ -69,6 +70,17 @@ export function refreshMechanical(
       `diff_sha256: ${String(out.diff_sha256 ?? "(unset)").slice(0, 12)}… → ${mech.diffSha256.slice(0, 12)}…`,
     );
     out.diff_sha256 = mech.diffSha256;
+    changed = true;
+  }
+  // Record WHICH normalisation the hash above was computed under, so the gate
+  // verifies with the same algorithm instead of assuming. Without this a
+  // receipt stamped on a machine with a different core.abbrev/diff.algorithm
+  // is indistinguishable from one whose content genuinely changed (#69).
+  if (out.diff_algo !== DIFF_ALGO_CURRENT) {
+    notes.push(
+      `diff_algo: ${String(out.diff_algo ?? "(unset)")} → ${DIFF_ALGO_CURRENT} (hermetic, config-independent)`,
+    );
+    out.diff_algo = DIFF_ALGO_CURRENT;
     changed = true;
   }
   // Pin the base: record the exact merge-base so the gate verifies against it

@@ -6,6 +6,7 @@ import {
   checkMechanical,
   type MechanicalFields,
 } from "../receipt-write.js";
+import { DIFF_ALGO_CURRENT } from "../shape.js";
 
 const GLOBS = ["**/auth/**", "migrations/**", ".github/workflows/**"];
 
@@ -66,14 +67,34 @@ test("refreshMechanical upgrades self_modifying on protected hits, never silentl
   assert.ok(up.notes.some((n) => n.includes("migrations/x.sql")));
 
   // Voluntary true with no hits → preserved (author may be requesting review on purpose).
+  // diff_algo is already current here, so this asserts what it means to assert:
+  // nothing changed. (A receipt MISSING diff_algo does legitimately change — below.)
   const noHit = mech();
   const keep = refreshMechanical(
-    { diff_sha256: noHit.diffSha256, changed_files: noHit.changedFiles, self_modifying: true },
+    {
+      diff_sha256: noHit.diffSha256,
+      changed_files: noHit.changedFiles,
+      self_modifying: true,
+      diff_algo: DIFF_ALGO_CURRENT,
+    },
     noHit,
   );
   assert.equal(keep.receipt.self_modifying, true);
   assert.equal(keep.changed, false);
   assert.ok(keep.notes.some((n) => n.includes("voluntary human-review request")));
+});
+
+test("refreshMechanical stamps diff_algo on a receipt that predates it", () => {
+  const m = mech();
+  // A pre-#69 receipt: mechanically correct, but carrying no record of WHICH
+  // diff normalisation its hash was computed under.
+  const res = refreshMechanical(
+    { diff_sha256: m.diffSha256, changed_files: m.changedFiles, self_modifying: false },
+    m,
+  );
+  assert.equal(res.receipt.diff_algo, DIFF_ALGO_CURRENT);
+  assert.equal(res.changed, true, "adding the missing diff_algo is a real change");
+  assert.ok(res.notes.some((n) => n.includes("diff_algo")));
 });
 
 test("refreshMechanical pins base_sha and preserves an existing one until it changes", () => {

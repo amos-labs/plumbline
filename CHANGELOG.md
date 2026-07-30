@@ -10,6 +10,48 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-30
+
+The diff binding no longer depends on local git config.
+
+### Fixed
+
+- **The receipt binding is now hermetic (#69).** `diff_sha256` was a sha256 over
+  raw `git diff` output, and that output is **not** a pure function of the tree —
+  it varies with the stamping machine's git configuration. A different
+  `core.abbrev`, `diff.algorithm`, `diff.context`, `diff.noprefix`, … produced a
+  hash the gate could not reproduce, so a PR whose content was byte-identical was
+  failed with `diff_sha256 mismatch` and routed to REWORK. Local pre-flight
+  passed, CI failed, and it presented as a generic "receipt fumble".
+
+  Measured on `NuvolaNetworks/cuspr`: the stamped hash `a973ec40…` is exactly what
+  `core.abbrev=7` yields for a tree the gate hashed as `401688b5…`. One config
+  knob blocked six PRs across two days and cost two REWORK loops to diagnose.
+  The earlier hypothesis in #69 — that the CLI's diff command changed between the
+  tag and a dev build — was wrong: `src/shape.ts` is byte-identical at `v0.7.0`
+  and `master`. The variable was always the environment, never the version.
+
+  The binding diff now neutralises user/system config via env, pins every
+  output-affecting knob with `-c` (which outranks repo-local `.git/config`), and
+  prints full blob SHAs so `core.abbrev` cannot matter at all. Both the pinned
+  2-dot and legacy 3-dot paths are normalised, preserving their equality — and the
+  verdict cache key that rests on it.
+
+### Added
+
+- **`diff_algo` in the receipt.** Records which normalisation `diff_sha256` was
+  computed under, so the gate verifies with the *same* algorithm instead of
+  assuming. `plumb receipt --write` / `stamp` / `generate` stamp `v1`.
+  **Back-compat:** a receipt without `diff_algo` is accepted against either the
+  hermetic or the legacy hash, so hardening the binding does not itself become a
+  fleet-wide REWORK event. A legacy-only match passes with a warning to re-stamp.
+- **`plumb diff-hash`** — prints the authoritative binding for a base (and the
+  legacy value when local config makes them differ). A bare `git diff | sha256`
+  never reproduced the binding; this does.
+- The diff-mismatch error now names the algorithm and the gate version, and says
+  outright that a bare `git diff` will not reproduce the hash — so a config skew
+  is diagnosable in one read rather than two REWORK loops.
+
 ## [0.7.0] - 2026-07-18
 
 The proof-carrying code-lifecycle + gate-precision release. Motivation: a
