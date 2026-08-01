@@ -1,4 +1,5 @@
 import { matchesAny } from "./glob.js";
+import { PLUMB_VERSION } from "./version.js";
 import { DIFF_ALGO_CURRENT } from "./shape.js";
 import type { Policy } from "./types.js";
 
@@ -133,6 +134,6 @@ export function generateReceipt(input: GenerateInput): Record<string, unknown> {
     diff_algo: DIFF_ALGO_CURRENT,
     result_summary: resultSummary,
     /** Provenance: this receipt was synthesized, not hand-authored. */
-    _generated_by: "plumb receipt generate",
+    _generated_by: `plumb receipt generate v${PLUMB_VERSION}`,
   };
 }

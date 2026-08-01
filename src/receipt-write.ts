@@ -1,4 +1,5 @@
 import { matchesAny } from "./glob.js";
+import { PLUMB_VERSION } from "./version.js";
 import { DIFF_ALGO_CURRENT } from "./shape.js";
 
 /**
@@ -81,6 +82,14 @@ export function refreshMechanical(
       `diff_algo: ${String(out.diff_algo ?? "(unset)")} → ${DIFF_ALGO_CURRENT} (hermetic, config-independent)`,
     );
     out.diff_algo = DIFF_ALGO_CURRENT;
+    changed = true;
+  }
+  // Record WHICH CLI stamped the mechanical fields, so a producer/gate version
+  // skew (#69's remaining producer-side ask) is readable off the receipt
+  // itself instead of reconstructed from npx caches and workflow pins.
+  const stampedBy = `plumb receipt --write v${PLUMB_VERSION}`;
+  if (out._stamped_by !== stampedBy) {
+    out._stamped_by = stampedBy;
     changed = true;
   }
   // Pin the base: record the exact merge-base so the gate verifies against it
