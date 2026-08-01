@@ -1,0 +1,61 @@
+{
+  "receipt_version": "1.0",
+  "task_id": "producer-version-guard",
+  "agent_id": "claude",
+  "intent": "Close the producer side of #69. The documented quick-start invocation (npx github:amos-labs/plumbline@tag) is silently mis-parsed by npm <= 10 \u2014 the Node 20 default \u2014 into 'null/<tag>' and exits 128 with no output on either stream, so producers on typical dev machines could not run the CLI at all and hand-stamped receipts instead (14 MCP-authored PRs re-stamped by hand in four days). Reproduced end to end on npm 10.8.2, including npm's underlying 'git ls-remote ssh://git@github.com/null/v0.7.1.git'. Three fixes: README switches every npx invocation to the git+https://\u2026#tag spec form (parses on npm 10 and 12, avoids the ssh-key requirement) and names the trap; plumb check's preflight warns when this CLI's version differs from the plumbline version pinned in the repo's own workflow files, printing the exact npx command for the pinned version; and plumb receipt --write stamps _stamped_by with the CLI version so skew is readable off the receipt itself. PLUMB_VERSION is read from package.json at runtime so the tsc layout and the esbuild bundle agree. Version bumped to 0.7.2.",
+  "self_modifying": false,
+  "policy_refs": [
+    ".plumbline/MISSION.md"
+  ],
+  "validation_plan": [
+    {
+      "id": "tests",
+      "command": "npm test",
+      "reason": "Full suite incl. the new _stamped_by stamp test and the updated no-change fixture (same precedent as #74's diff_algo fixture change).",
+      "required": true,
+      "ci_covered": true
+    },
+    {
+      "id": "skew-warning-e2e",
+      "command": "node dist/index.js check (in a repo pinning v0.7.1)",
+      "reason": "The new warning must fire against a real consumer repo pinned to a different version.",
+      "required": true,
+      "ci_covered": false
+    }
+  ],
+  "execution_evidence": [
+    {
+      "step": "tests",
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "325 tests, 325 pass, 0 fail (324 baseline + the new _stamped_by test; no-change fixture updated per the #74 precedent)"
+    },
+    {
+      "step": "skew-warning-e2e",
+      "command": "node dist/index.js check (in a repo pinning v0.7.1)",
+      "status": "passed",
+      "output_ref": "printed: version skew: this CLI is v0.7.2 but the repo's gate workflow pins plumbline v0.7.1 \u2026 npx -y \"git+https://github.com/amos-labs/plumbline#v0.7.1\""
+    },
+    {
+      "step": "npm10-repro",
+      "command": "npx -y github:amos-labs/plumbline@v0.7.1 --help (npm 10.8.2)",
+      "status": "passed",
+      "output_ref": "exit 128, zero bytes on stdout+stderr; npm --loglevel silly shows 'git ls-remote ssh://git@github.com/null/v0.7.1.git \u2014 Repository not found'; git+https\u2026#v0.7.1 form exits 0"
+    }
+  ],
+  "changed_files": [
+    "README.md",
+    "dist/index.js",
+    "package.json",
+    "src/cli.ts",
+    "src/receipt-generate.ts",
+    "src/receipt-write.ts",
+    "src/test/receipt-write.test.ts",
+    "src/version.ts"
+  ],
+  "base_sha": "9fd89e6bce2dc11f08f38ecad5ddfa8917de114f",
+  "diff_sha256": "9d822bc1f3730aae955d1b8a907eb47783ae7c25a986af8cff4f0c7b703f5e50",
+  "result_summary": "Producers can actually run the CLI again: the documented npx form works on npm 10, version skew between a producer's CLI and the repo's pinned gate is announced at plumb check time with the exact fix command, and every stamped receipt records which CLI stamped it. The hand-stamping era ends with this change.",
+  "diff_algo": "v1",
+  "_stamped_by": "plumb receipt --write v0.7.2"
+}
