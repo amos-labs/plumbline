@@ -40,11 +40,11 @@ Every stage stands alone; none requires the previous one.
 # 1. Scaffold a correct-by-default governed CI. On a Cargo.toml + migrations/ + sqlx
 #    repo this auto-detects the `rust-sqlx` preset; force one with --stack, or skip
 #    presets with --no-stack.
-npx github:amos-labs/plumbline init
+npx -y "git+https://github.com/amos-labs/plumbline#v0.7.2" init
 
 # 2. Make the gate + CI checks REQUIRED and blocking on the default branch, and turn
 #    on auto-merge — the "blocking + auto-merge on all green" shape. Idempotent.
-GITHUB_TOKEN=<repo-admin token> npx github:amos-labs/plumbline setup-protection --repo owner/name
+GITHUB_TOKEN=<repo-admin token> npx -y "git+https://github.com/amos-labs/plumbline#v0.7.2" setup-protection --repo owner/name
 #    (or fold it into step 1: `plumb init --protect --repo owner/name`)
 ```
 
@@ -78,7 +78,7 @@ write unless you pass `--force`.
 Then the full lifecycle — **propose → work → prove → gate → archive** — starts at intake:
 
 ```bash
-npx github:amos-labs/plumbline propose "Rotate auth session tokens" --body "Tokens never expire today."
+npx -y "git+https://github.com/amos-labs/plumbline#v0.7.2" propose "Rotate auth session tokens" --body "Tokens never expire today."
 # → opens the GitHub issue AND scaffolds openspec/changes/rotate-auth-session-tokens/
 #   (proposal.md + specs/ + tasks.md), born linked: the issue number is written into the
 #   proposal's task_id front-matter, the issue body carries the contract path. Prints an
@@ -90,14 +90,14 @@ npx github:amos-labs/plumbline propose "Rotate auth session tokens" --body "Toke
 Then the per-PR loop (no human needed after one-time setup):
 
 ```bash
-npx github:amos-labs/plumbline receipt --write   # one idempotent step: scaffold .plumbline/receipts/<branch>.json
+npx -y "git+https://github.com/amos-labs/plumbline#v0.7.2" receipt --write   # one idempotent step: scaffold .plumbline/receipts/<branch>.json
                                                  # (or refresh it) with ALL mechanical fields computed —
                                                  # diff_sha256, changed_files, and self_modifying derived from
                                                  # the policy's protected paths. Judgment fields never touched.
 # …fill intent / validation_plan / execution_evidence / result_summary (the judgment half — yours to assert)…
-npx github:amos-labs/plumbline check             # local pre-flight — the SHAPE floor + diff_sha256 only (fast, offline, free).
+npx -y "git+https://github.com/amos-labs/plumbline#v0.7.2" check             # local pre-flight — the SHAPE floor + diff_sha256 only (fast, offline, free).
                                                  # NOT the full verdict: the LLM semantic review runs in CI.
-npx github:amos-labs/plumbline check --review    # full parity — also runs the semantic review locally for the real verdict
+npx -y "git+https://github.com/amos-labs/plumbline#v0.7.2" check --review    # full parity — also runs the semantic review locally for the real verdict
                                                  # (needs ANTHROPIC_API_KEY / PLUMBLINE_API_KEY; degrades to shape-only without one).
 ```
 
@@ -149,7 +149,7 @@ single-purpose commands.)
 And once the PR is merged, close the loop — recorded truth:
 
 ```bash
-npx github:amos-labs/plumbline archive rotate-auth-session-tokens
+npx -y "git+https://github.com/amos-labs/plumbline#v0.7.2" archive rotate-auth-session-tokens
 # → applies the change's ADDED/MODIFIED/REMOVED spec deltas to openspec/specs/ (the living
 #   source of truth a fresh agent reads to know how the system behaves), then moves the
 #   change to openspec/changes/archive/<date>-rotate-auth-session-tokens/ with full context.
@@ -175,7 +175,7 @@ is also a Claude Code plugin — two commands make any Claude gate-native:
 ```
 
 The plugin ships the skill only — install `plumb` itself per the
-[Quick start](#quick-start-agent-installable) above (`npx github:amos-labs/plumbline`).
+[Quick start](#quick-start-agent-installable) above (`npx -y "git+https://github.com/amos-labs/plumbline#v0.7.2"`). Use the `git+https…#tag` spec form: `github:owner/repo@tag` is silently mis-parsed by npm ≤ 10 (the Node 20 default) into `null/<tag>` and exits 128 with no output at all.
 Other harnesses can drop [`skills/plumbline/SKILL.md`](skills/plumbline/SKILL.md)
 straight into their agent instructions.
 

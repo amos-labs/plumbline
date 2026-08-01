@@ -6,6 +6,7 @@ import {
   checkMechanical,
   type MechanicalFields,
 } from "../receipt-write.js";
+import { PLUMB_VERSION } from "../version.js";
 import { DIFF_ALGO_CURRENT } from "../shape.js";
 
 const GLOBS = ["**/auth/**", "migrations/**", ".github/workflows/**"];
@@ -76,12 +77,28 @@ test("refreshMechanical upgrades self_modifying on protected hits, never silentl
       changed_files: noHit.changedFiles,
       self_modifying: true,
       diff_algo: DIFF_ALGO_CURRENT,
+      _stamped_by: `plumb receipt --write v${PLUMB_VERSION}`,
     },
     noHit,
   );
   assert.equal(keep.receipt.self_modifying, true);
   assert.equal(keep.changed, false);
   assert.ok(keep.notes.some((n) => n.includes("voluntary human-review request")));
+});
+
+test("refreshMechanical stamps _stamped_by (CLI version) on a receipt that predates it", () => {
+  const m = mech();
+  const res = refreshMechanical(
+    {
+      diff_sha256: m.diffSha256,
+      changed_files: m.changedFiles,
+      self_modifying: false,
+      diff_algo: DIFF_ALGO_CURRENT,
+    },
+    m,
+  );
+  assert.equal(res.receipt._stamped_by, `plumb receipt --write v${PLUMB_VERSION}`);
+  assert.equal(res.changed, true, "recording the stamping CLI version is a real change");
 });
 
 test("refreshMechanical stamps diff_algo on a receipt that predates it", () => {

@@ -7,7 +7,14 @@ var __export = (target, all) => {
 
 // src/cli.ts
 import { execFileSync as execFileSync5 } from "node:child_process";
-import { readFileSync as readFileSync6, writeFileSync as writeFileSync5, existsSync as existsSync7, mkdirSync as mkdirSync5 } from "node:fs";
+
+// src/version.ts
+import { createRequire } from "node:module";
+var require2 = createRequire(import.meta.url);
+var PLUMB_VERSION = require2("../package.json").version;
+
+// src/cli.ts
+import { readFileSync as readFileSync6, writeFileSync as writeFileSync5, existsSync as existsSync7, mkdirSync as mkdirSync5, readdirSync as readdirSync3 } from "node:fs";
 import { join as join7, dirname as dirname4 } from "node:path";
 
 // node_modules/zod/v3/external.js
@@ -6579,6 +6586,11 @@ function refreshMechanical(receipt, mech) {
     out.diff_algo = DIFF_ALGO_CURRENT;
     changed = true;
   }
+  const stampedBy = `plumb receipt --write v${PLUMB_VERSION}`;
+  if (out._stamped_by !== stampedBy) {
+    out._stamped_by = stampedBy;
+    changed = true;
+  }
   if (mech.baseSha && out.base_sha !== mech.baseSha) {
     notes.push(
       `base_sha: ${String(out.base_sha ?? "(unset)").slice(0, 12)}\u2026 \u2192 ${mech.baseSha.slice(0, 12)}\u2026 (pinned diff base)`
@@ -7076,7 +7088,7 @@ function generateReceipt(input) {
     diff_algo: DIFF_ALGO_CURRENT,
     result_summary: resultSummary,
     /** Provenance: this receipt was synthesized, not hand-authored. */
-    _generated_by: "plumb receipt generate"
+    _generated_by: `plumb receipt generate v${PLUMB_VERSION}`
   };
 }
 
@@ -7134,6 +7146,26 @@ function preflightWarnings(cwd, baseRef) {
     }
   } catch {
   }
+  const pinned = pinnedGateVersion(cwd);
+  if (pinned && pinned !== PLUMB_VERSION) {
+    console.error(
+      `plumb \u26A0\uFE0F  version skew: this CLI is v${PLUMB_VERSION} but the repo's gate workflow pins plumbline v${pinned}. A receipt stamped by one version may hash differently under the other (#69). Prefer the pinned CLI: npx -y "git+https://github.com/amos-labs/plumbline#v${pinned}" (the git+https#tag form \u2014 \`github:owner/repo@tag\` silently exits 128 on npm \u2264 10).`
+    );
+  }
+}
+function pinnedGateVersion(cwd) {
+  try {
+    const dir = join7(cwd, ".github", "workflows");
+    if (!existsSync7(dir)) return null;
+    for (const f of readdirSync3(dir)) {
+      if (!/\.ya?ml$/.test(f)) continue;
+      const text = readFileSync6(join7(dir, f), "utf8");
+      const m = text.match(/plumbline[@#]v?(\d+\.\d+\.\d+)/);
+      if (m) return m[1];
+    }
+  } catch {
+  }
+  return null;
 }
 function defaultReceipt(dir) {
   return `${dir}/receipt.json`;

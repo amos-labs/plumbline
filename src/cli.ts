@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { PLUMB_VERSION } from "./version.js";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { PolicySchema, type GateResult, type Policy, type Receipt, type Verdict } from "./types.js";
 import {
@@ -147,6 +148,37 @@ function preflightWarnings(cwd: string, baseRef: string): void {
   } catch {
     /* not a git repo / git unavailable — skip */
   }
+  const pinned = pinnedGateVersion(cwd);
+  if (pinned && pinned !== PLUMB_VERSION) {
+    console.error(
+      `plumb ⚠️  version skew: this CLI is v${PLUMB_VERSION} but the repo's gate workflow pins ` +
+        `plumbline v${pinned}. A receipt stamped by one version may hash differently under the ` +
+        `other (#69). Prefer the pinned CLI: npx -y "git+https://github.com/amos-labs/plumbline#v${pinned}" ` +
+        `(the git+https#tag form — \`github:owner/repo@tag\` silently exits 128 on npm ≤ 10).`,
+    );
+  }
+}
+
+/**
+ * The plumbline version the repo's OWN CI pins (`amos-labs/plumbline@vX.Y.Z` or
+ * `…plumbline#vX.Y.Z` in any workflow file), or null when none is found. Used
+ * to warn on producer/gate version skew — the #69 failure mode where a locally
+ * stamped receipt fails CI with a hash the author cannot reproduce.
+ */
+function pinnedGateVersion(cwd: string): string | null {
+  try {
+    const dir = join(cwd, ".github", "workflows");
+    if (!existsSync(dir)) return null;
+    for (const f of readdirSync(dir)) {
+      if (!/\.ya?ml$/.test(f)) continue;
+      const text = readFileSync(join(dir, f), "utf8");
+      const m = text.match(/plumbline[@#]v?(\d+\.\d+\.\d+)/);
+      if (m) return m[1];
+    }
+  } catch {
+    /* unreadable workflows — skip the warning, never block */
+  }
+  return null;
 }
 
 function defaultReceipt(dir: string): string {
