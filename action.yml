@@ -25,6 +25,16 @@ inputs:
     description: "Phased gate stage: full (default, all-in-one), quality (phase 1: shape + semantic, ci-evidence skipped — tests not yet run), or verify (phase 2: ci-evidence + terminal verdict). See templates/workflow-staged.yml."
     required: false
     default: "full"
+  merge-token:
+    description: >-
+      Token used to enable auto-merge in lifecycle:auto_merge. Defaults to github-token.
+      SET THIS TO A PAT (or GitHub App token) IF ANYTHING SHOULD RUN ON THE MERGE COMMIT.
+      GitHub's recursion guard suppresses every workflow trigger for actions taken with the
+      default GITHUB_TOKEN, so an auto-merged PR produces NO `push` event: a CD workflow on
+      `push: [main]` never fires and the commit sits on main looking shipped. A PAT attributes
+      the merge to a real identity and `push` behaves normally.
+    required: false
+    default: ""
 
 runs:
   using: "composite"
@@ -44,6 +54,7 @@ runs:
       env:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
+        PLUMBLINE_MERGE_TOKEN: ${{ inputs.merge-token }}
         PLUMBLINE_PR_NUMBER: ${{ github.event.pull_request.number }}
       # Runs the committed prebuilt bundle (dist/index.js) directly — no
       # `npm ci` / `npm run build` at runtime. The bundle is self-contained

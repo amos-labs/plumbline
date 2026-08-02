@@ -883,6 +883,38 @@ export async function getPrNodeId(repo: string, prNumber: number, token: string)
 }
 
 /**
+ * Which token to enable auto-merge with, and whether it will fire downstream
+ * workflows.
+ *
+ * GitHub's recursion guard suppresses EVERY workflow trigger for actions taken
+ * with the default `GITHUB_TOKEN`. Auto-merge is performed by GitHub on behalf
+ * of whoever enabled it, so enabling it with `GITHUB_TOKEN` produces a merge
+ * commit that fires NO `push` event: a CD workflow on `push: [main]` never
+ * runs, and the commit sits on main looking shipped while nothing deployed.
+ *
+ * Observed downstream (cuspr, 2026-08-02): four PRs auto-merged green and none
+ * of them deployed. The repo had papered over it with a ten-minute cron safety
+ * net, but GitHub throttles schedules on busy shared runners — the observed
+ * cadence was 1–3 HOURS, so "merged" and "deployed" drifted apart by hours with
+ * no signal. An earlier incident in the same repo held 29 commits for 5 days.
+ *
+ * `PLUMBLINE_MERGE_TOKEN` (the action's `merge-token` input) lets a repo supply
+ * a PAT, which attributes the merge to a real identity so `push` behaves
+ * normally. Falls back to `GITHUB_TOKEN` so repos that don't deploy on push
+ * keep working with no configuration.
+ */
+export function resolveMergeToken(env: Record<string, string | undefined>): {
+  token: string | undefined;
+  /** True when the token will NOT fire downstream workflows (the GITHUB_TOKEN fallback). */
+  suppressesWorkflows: boolean;
+} {
+  const merge = env.PLUMBLINE_MERGE_TOKEN?.trim();
+  if (merge) return { token: merge, suppressesWorkflows: false };
+  const fallback = env.GITHUB_TOKEN?.trim() || undefined;
+  return { token: fallback, suppressesWorkflows: fallback !== undefined };
+}
+
+/**
  * Enable GitHub-native auto-merge on a PR (the `enablePullRequestAutoMerge`
  * GraphQL mutation). Returns true on success. Best-effort: returns false (and
  * logs) when auto-merge isn't allowed on the repo, the PR is already mergeable
