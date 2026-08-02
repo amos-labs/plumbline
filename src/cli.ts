@@ -37,6 +37,7 @@ import {
   fileConsolidatedFollowUps,
   closeFollowUpOnMerge,
   enableAutoMerge,
+  resolveMergeToken,
   InfraError,
 } from "./github.js";
 import { verdictPresentation } from "./verdict.js";
@@ -1535,7 +1536,14 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
       terminalPhase
     ) {
       const repo = process.env.GITHUB_REPOSITORY;
-      const token = process.env.GITHUB_TOKEN;
+      // Prefer a dedicated merge token. GitHub's recursion guard suppresses
+      // EVERY workflow trigger for actions taken with the default GITHUB_TOKEN,
+      // so a PR auto-merged under it produces no `push` event: a CD workflow on
+      // `push: [main]` never fires and the commit sits on main looking shipped
+      // while nothing deployed. A PAT attributes the merge to a real identity
+      // and `push` behaves normally. Falls back to GITHUB_TOKEN so repos that
+      // don't deploy on push keep working with no config.
+      const { token, suppressesWorkflows } = resolveMergeToken(process.env);
       if (repo && token && ci.prNumber !== undefined) {
         const enabled = await enableAutoMerge(repo, ci.prNumber, token);
         if (enabled) {
@@ -1544,6 +1552,18 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
               `GitHub will merge once all required checks are green.`,
           );
           console.error(`lifecycle:auto_merge — enabled GitHub auto-merge on PR #${ci.prNumber}`);
+          if (suppressesWorkflows) {
+            // Say it out loud. Silence here is what makes the failure mode so
+            // confusing downstream: the PR merges, the gate is green, and the
+            // deploy simply never happens.
+            const warning =
+              `auto-merge was enabled with the default GITHUB_TOKEN. GitHub suppresses workflow ` +
+              `triggers for GITHUB_TOKEN actions, so this merge will NOT fire a \`push\` event — ` +
+              `any CD workflow on \`push: [main]\` will not run for it. Set the action's ` +
+              `\`merge-token\` input to a PAT if anything should run on the merge commit.`;
+            gate.reasons.push(`lifecycle:auto_merge — ${warning}`);
+            console.error(`lifecycle:auto_merge — WARNING: ${warning}`);
+          }
         }
       }
     } else if (

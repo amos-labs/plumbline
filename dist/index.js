@@ -5929,6 +5929,12 @@ async function getPrNodeId(repo, prNumber, token) {
   if (!pr.node_id) throw new Error(`PR #${prNumber} has no node_id`);
   return pr.node_id;
 }
+function resolveMergeToken(env) {
+  const merge = env.PLUMBLINE_MERGE_TOKEN?.trim();
+  if (merge) return { token: merge, suppressesWorkflows: false };
+  const fallback = env.GITHUB_TOKEN?.trim() || void 0;
+  return { token: fallback, suppressesWorkflows: fallback !== void 0 };
+}
 async function enableAutoMerge(repo, prNumber, token, mergeMethod = "SQUASH") {
   try {
     const nodeId = await getPrNodeId(repo, prNumber, token);
@@ -8181,7 +8187,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
     const terminalPhase = phase === "full" || phase === "verify";
     if (ci.provider === "github" && policy.lifecycle === "auto_merge" && gate.final === "approve" && terminalPhase) {
       const repo = process.env.GITHUB_REPOSITORY;
-      const token = process.env.GITHUB_TOKEN;
+      const { token, suppressesWorkflows } = resolveMergeToken(process.env);
       if (repo && token && ci.prNumber !== void 0) {
         const enabled = await enableAutoMerge(repo, ci.prNumber, token);
         if (enabled) {
@@ -8189,6 +8195,11 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
             `lifecycle:auto_merge \u2014 enabled GitHub-native auto-merge on PR #${ci.prNumber}. GitHub will merge once all required checks are green.`
           );
           console.error(`lifecycle:auto_merge \u2014 enabled GitHub auto-merge on PR #${ci.prNumber}`);
+          if (suppressesWorkflows) {
+            const warning = `auto-merge was enabled with the default GITHUB_TOKEN. GitHub suppresses workflow triggers for GITHUB_TOKEN actions, so this merge will NOT fire a \`push\` event \u2014 any CD workflow on \`push: [main]\` will not run for it. Set the action's \`merge-token\` input to a PAT if anything should run on the merge commit.`;
+            gate.reasons.push(`lifecycle:auto_merge \u2014 ${warning}`);
+            console.error(`lifecycle:auto_merge \u2014 WARNING: ${warning}`);
+          }
         }
       }
     } else if (policy.lifecycle === "auto_merge" && gate.final !== "approve" && ci.provider === "github") {
