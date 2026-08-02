@@ -1,0 +1,69 @@
+{
+  "receipt_version": "1.0",
+  "task_id": "fix-auto-merge-triggers-deploy",
+  "agent_id": "claude-opus-5-1m",
+  "intent": "Fixes 'auto-merged, green, and never deployed'. lifecycle:auto_merge hands the merge to GitHub via the enablePullRequestAutoMerge mutation; GitHub then performs the merge on behalf of whoever ENABLED it. We enabled it with the default GITHUB_TOKEN, and GitHub's recursion guard suppresses every workflow trigger for GITHUB_TOKEN actions \u2014 so an auto-merged PR fires NO `push` event, a CD workflow on `push: [main]` never runs, and the commit sits on main looking shipped while nothing deployed. OBSERVED DOWNSTREAM (cuspr, 2026-08-02): PRs #416, #417, #418 and #419 all auto-merged on terminal PASS and not one of them triggered a deploy. `gh run list --commit <sha>` returned ZERO runs of any kind for the merge commit. That repo had already recognised the hazard and papered over it with a ten-minute cron safety net, but GitHub throttles scheduled workflows on busy shared runners: every deploy run in the last 12 was `event: schedule`, never `push`, at an observed cadence of 1-3 HOURS (01:16, 04:42, 07:19, 09:26, 10:57, 12:03, 13:48, 14:51, 15:56, 16:54, 17:56, 19:06). So 'merged' and 'deployed' drift apart by hours with nothing anywhere saying so. An earlier incident in the same repo held 29 commits for 5 days (their issue #347). The cron is a mitigation for the symptom; this is the cause. THE FIX: a `merge-token` action input (env PLUMBLINE_MERGE_TOKEN). When set to a PAT or GitHub App token the merge is attributed to a real identity and `push` behaves normally. It falls back to GITHUB_TOKEN so repos that do not deploy on push need no configuration \u2014 but the gate now SAYS SO on that path, in both the PR comment (gate.reasons) and the job log, instead of merging silently into a void. Making the fallback loud is half the value here: the bug wasted time because it was invisible, not because it was slow. Token selection is extracted into resolveMergeToken() so both the choice and the suppression flag are unit testable rather than buried in the middle of the run command. Blank and whitespace-only values are treated as absent \u2014 an unset action input arrives as the empty string, and passing that as a bearer token would fail the mutation and silently disable auto-merge altogether, turning one quiet failure into another. NOT CHANGED: the gate's verdict logic, the mutation itself, and the GITHUB_TOKEN default. No repo behaviour changes until a repo opts in by setting merge-token. NOTE FOR THE RELEASE: downstream pins the action by tag, so this needs a tag before cuspr can adopt it; tagging is left to the maintainer. PROTECTED SURFACE: YES \u2014 this touches action.yml and src/github.ts, both on the mission's protected list, so self_modifying is true and human sign-off is required. That is correct: the change alters how the gate authenticates the merge it performs on a repo's behalf, which is exactly the class of change that should not self-approve.",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json"
+  ],
+  "validation_plan": [
+    {
+      "id": "regression-fails-before",
+      "command": "Neutralise the PLUMBLINE_MERGE_TOKEN branch in resolveMergeToken and re-run the new test; it must fail",
+      "reason": "A guard that passes against the old always-GITHUB_TOKEN behaviour guards nothing.",
+      "required": true
+    },
+    {
+      "id": "unit-merge-token",
+      "command": "node --test dist/test/merge-token.test.js",
+      "reason": "Pins the contract: PAT preferred and not suppressing; GITHUB_TOKEN fallback flagged as suppressing; blank/whitespace treated as absent; no-token yields nothing to warn about.",
+      "required": true
+    },
+    {
+      "id": "npm-test",
+      "command": "npm test",
+      "reason": "cli.ts and github.ts are on the gate's hot path; the full suite confirms the extraction changed no verdict behaviour.",
+      "required": true
+    },
+    {
+      "id": "observe-downstream",
+      "command": "After tagging, set merge-token to a PAT in cuspr's plumbline.yml and confirm the next auto-merge produces a `push`-triggered deploy run",
+      "reason": "The user-visible behaviour this exists to restore.",
+      "required": false
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "Neutralise the PLUMBLINE_MERGE_TOKEN branch in resolveMergeToken and re-run the new test; it must fail",
+      "status": "passed",
+      "output_ref": "With the merge-token branch forced to undefined (simulating the old behaviour): '# pass 4 / # fail 1' \u2014 the failing case is 'a merge token is preferred and does not suppress workflows'. Source restored and re-verified at 5 passed."
+    },
+    {
+      "command": "node --test dist/test/merge-token.test.js",
+      "status": "passed",
+      "output_ref": "5 passed, 0 failed."
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "330 tests, 330 pass, 0 fail. (A first run reported 333/1-fail from a STALE dist/test artifact left by a sibling branch \u2014 src/test/npx-bin-name.test.ts is not on this branch; `rm -rf dist/test && npx tsc` cleared it. Recorded because a stale dist is easy to misread as a real regression.)"
+    },
+    {
+      "command": "After tagging, set merge-token to a PAT in cuspr's plumbline.yml and confirm the next auto-merge produces a `push`-triggered deploy run",
+      "status": "skipped",
+      "output_ref": "Needs a tag plus a PAT secret in the downstream repo, neither of which is done here. Baseline for the comparison is recorded in intent: 12 consecutive deploy runs on cuspr, all event=schedule, none event=push, and zero workflow runs of any kind on merge commit bfce074d."
+    }
+  ],
+  "changed_files": [
+    "action.yml",
+    "dist/index.js",
+    "src/cli.ts",
+    "src/github.ts",
+    "src/test/merge-token.test.ts"
+  ],
+  "base_sha": "f2c07c04b2fee5030646b8d991c36c3bc2404b2e",
+  "diff_sha256": "62219d0515f28c288c8467d08a9dcb006c6386fa9eb5cca39f0364014f95c98b",
+  "result_summary": "Auto-merged PRs never deployed, and nothing said so. lifecycle:auto_merge enabled GitHub's native auto-merge with the default GITHUB_TOKEN, and GitHub suppresses workflow triggers for GITHUB_TOKEN actions \u2014 so the merge commit fired no `push`, CD on `push: [main]` never ran, and main looked shipped when it was not. Confirmed on cuspr: four auto-merged PRs, zero workflow runs on the merge commit, and 12 straight deploy runs that were all `event: schedule` at a 1-3 hour throttled cadence rather than the ten-minute cron the repo had configured as a safety net. Adds a `merge-token` input so the merge can be attributed to a real identity, keeps GITHUB_TOKEN as the default, and \u2014 importantly \u2014 makes the fallback warn loudly in the PR comment and the log instead of failing silently. Token selection extracted to resolveMergeToken() for testability, with blank inputs treated as absent so an unset input cannot disable auto-merge outright. New test verified to fail against the old behaviour; 330/330 pass. Needs a tag before downstream can adopt it."
+}
