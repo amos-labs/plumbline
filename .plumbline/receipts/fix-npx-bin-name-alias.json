@@ -1,0 +1,66 @@
+{
+  "receipt_version": "1.0",
+  "task_id": "fix-npx-bin-name-alias",
+  "agent_id": "claude-opus-5-1m",
+  "intent": "Makes the documented npx quick start actually run. Every invocation in README.md (8 of them) and in downstream contributor docs has the shape `npx -y \"git+https://github.com/amos-labs/plumbline#v0.7.2\" <cmd>`. npx resolves `<spec> <args>` to the bin entry whose NAME MATCHES THE PACKAGE NAME. This package is named `plumbline`, but its bin map declared only `plumb` and `proofgate` \u2014 so no bin matched, npx could not choose one, and the command exited 0 having done nothing: no output, no error, exit code 0. That is the worst failure mode a quick start can have, because it is indistinguishable from success. FOUND IN THE FIELD, not in review: while following the documented receipt flow in the cuspr repo on npm 10.8.2 / Node 20, every npx form produced zero bytes on both stdout and stderr. The downstream cost was concrete \u2014 cuspr contributors had given up on the CLI and were hand-computing diff_sha256 with a bare `git diff | shasum`, which cannot reproduce the hermetic binding introduced in v0.7.1. That produced four consecutive REWORK verdicts and re-stamp commits on cuspr PRs #416-#419, plus a wrong root-cause diagnosis (CI base resolution under a shallow fetch) that survived until someone ran `plumb diff-hash` from a local checkout \u2014 at which point the CLI printed both the hermetic and legacy hashes and named the divergence in plain text. The tool was right and self-diagnosing all along; nobody could reach it. THE FIX: add `plumbline` to the bin map, keeping `plumb` (short ergonomic alias, used for local checkouts) and `proofgate` (pre-rename name still baked into older repos' scripts) so no existing caller breaks. Adds src/test/npx-bin-name.test.ts pinning the invariant that the package name is always a bin key, plus that both historical aliases survive and every bin points at dist/index.js. NOTE FOR THE RELEASE: this only reaches users once tagged \u2014 downstream pins a version in the npx spec and in action.yml, so v0.7.2 stays broken for them until a v0.7.3 exists. Tagging is deliberately left to the maintainer rather than done here.",
+  "self_modifying": false,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json"
+  ],
+  "validation_plan": [
+    {
+      "id": "regression-fails-before",
+      "command": "Remove the `plumbline` bin entry and re-run the new test; it must fail",
+      "reason": "A guard that passes on the broken package guards nothing.",
+      "required": true
+    },
+    {
+      "id": "unit-bin-name",
+      "command": "node --test dist/test/npx-bin-name.test.js",
+      "reason": "Pins the invariant: package name is a bin key, both aliases survive, every bin points at dist/index.js.",
+      "required": true
+    },
+    {
+      "id": "npm-test",
+      "command": "npm test",
+      "reason": "package.json is load-bearing for packaging and the action; the full suite confirms nothing else keys off the bin map.",
+      "required": true
+    },
+    {
+      "id": "npx-end-to-end",
+      "command": "npx -y \"git+https://github.com/amos-labs/plumbline#v0.7.3\" diff-hash --base origin/main",
+      "reason": "The actual user-facing behaviour this exists to restore.",
+      "required": false
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "Remove the `plumbline` bin entry and re-run the new test; it must fail",
+      "status": "passed",
+      "output_ref": "With the entry deleted: '# pass 2 / # fail 1' and the assertion message 'package \"plumbline\" has no bin named \"plumbline\" (bins: plumb, proofgate). npx resolves <spec> <args> to the bin matching the package name; without it every documented \"npx -y <spec> <cmd>\" exits 0 silently having done nothing.' package.json restored and re-verified at 3 passed."
+    },
+    {
+      "command": "node --test dist/test/npx-bin-name.test.js",
+      "status": "passed",
+      "output_ref": "3 passed, 0 failed."
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "328 tests, 328 pass, 0 fail, 0 skipped (duration 6.28s) \u2014 includes the 3 new npx-bin-name cases."
+    },
+    {
+      "command": "npx -y \"git+https://github.com/amos-labs/plumbline#v0.7.3\" diff-hash --base origin/main",
+      "status": "skipped",
+      "output_ref": "Cannot run until a v0.7.3 tag exists \u2014 the npx spec pins a tag, so this is only observable after release. Baseline recorded for comparison: on npm 10.8.2 / Node 20 the v0.7.2 spec returns 0 bytes on stdout AND stderr with exit 0, for the bare form, the explicit-command form, and the `-p <spec> plumb <cmd>` form alike, while `git ls-remote` resolves the tag fine and `node <checkout>/dist/index.js diff-hash` works correctly \u2014 isolating bin resolution rather than fetch or the CLI itself."
+    }
+  ],
+  "changed_files": [
+    "package.json",
+    "src/test/npx-bin-name.test.ts"
+  ],
+  "base_sha": "f2c07c04b2fee5030646b8d991c36c3bc2404b2e",
+  "diff_sha256": "1db7ff01dbc5702a34462143c75a0a72021c1098a4bf84a3ddf59e1827fce063",
+  "result_summary": "The documented npx quick start has been a silent no-op: package `plumbline` had bins `plumb` and `proofgate` but none matching the package name, so `npx -y <spec> <cmd>` could not resolve a binary and exited 0 with no output. Adding a `plumbline` bin fixes all 8 README invocations at once; the two existing aliases are kept so nothing that already worked breaks. This was not cosmetic \u2014 cuspr contributors, unable to reach the CLI, fell back to a bare `git diff | shasum` that cannot reproduce the hermetic v0.7.1 binding, which cost four re-stamp commits across PRs #416-#419 and a wrong root-cause diagnosis that only collapsed once the CLI was run from a local checkout and printed the hermetic-vs-legacy divergence itself. New test pins the package-name-is-a-bin-key invariant and was verified to fail without the fix. 328/328 tests pass. Needs a v0.7.3 tag to reach users, since downstream pins the version in both the npx spec and action.yml."
+}
