@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { ZodIssue } from "zod";
 import { ReceiptSchema, type Policy, type Receipt, type ShapeResult } from "./types.js";
 import { matchesAny } from "./glob.js";
+import { PLUMB_VERSION } from "./version.js";
 import {
   applySeverities,
   resolveSeverity,
@@ -88,9 +89,15 @@ export const DIFF_ALGO_CURRENT = "v1";
  * Reported in the receipt and in the diff-mismatch error so a version skew
  * between the stamping CLI and the pinned gate is diagnosable in one read
  * rather than two REWORK loops (amos-labs/plumbline#69, ask 2).
- * Keep in sync with package.json — see RELEASING.md.
+ *
+ * Derived from package.json rather than hand-maintained. This was a literal
+ * `"0.7.1"` with a "keep in sync with package.json" comment above it, and it
+ * had already drifted: v0.7.2 shipped with the gate reporting itself as
+ * `gate=plumbline 0.7.1` in every diff-mismatch message. That is precisely the
+ * message someone reads while debugging a version skew, so a stale value here
+ * actively misleads the one investigation it exists to serve.
  */
-export const PLUMBLINE_VERSION = "0.7.1";
+export const PLUMBLINE_VERSION = PLUMB_VERSION;
 
 /**
  * `git diff` output is NOT a pure function of the tree — it depends on the
