@@ -5,6 +5,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
+    "plumbline": "dist/index.js",
     "plumb": "dist/index.js",
     "proofgate": "dist/index.js"
   },
