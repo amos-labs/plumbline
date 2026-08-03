@@ -4477,7 +4477,7 @@ function computeDiffSha256(diff) {
   return createHash("sha256").update(diff, "utf8").digest("hex");
 }
 var DIFF_ALGO_CURRENT = "v1";
-var PLUMBLINE_VERSION = "0.7.1";
+var PLUMBLINE_VERSION = PLUMB_VERSION;
 var HERMETIC_DIFF_CONFIG = [
   "-c",
   "core.abbrev=40",

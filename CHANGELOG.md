@@ -10,6 +10,61 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-08-02
+
+The CLI is reachable again, and an auto-merge no longer swallows your deploy.
+
+### Fixed
+
+- **`npx` could not run the CLI at all (silently).** Every documented invocation
+  has the form `npx -y "git+https://github.com/amos-labs/plumbline#<tag>" <cmd>`.
+  npx resolves `<spec> <args>` to the bin entry whose name matches the **package
+  name** — and the package is `plumbline`, while `bin` declared only `plumb` and
+  `proofgate`. No bin matched, npx could not choose one, and the command **exited
+  0 with no output on either stream**. The worst failure mode a quick start can
+  have: indistinguishable from success.
+
+  This is why #69 kept resurfacing after it was fixed. `plumb diff-hash` prints
+  the hermetic hash, the legacy hash, and a plain-text note naming the divergence
+  — a complete self-diagnosis nobody could reach. Downstream on
+  `NuvolaNetworks/cuspr`, contributors fell back to hand-computing `diff_sha256`
+  with a bare `git diff | shasum`, which cannot reproduce the hermetic binding;
+  that produced four consecutive REWORK verdicts (#416–#419) and a wrong
+  root-cause diagnosis before anyone ran the CLI from a local checkout.
+
+  `plumbline` is now a bin alias; `plumb` and `proofgate` are unchanged.
+
+- **`lifecycle: auto_merge` merged PRs that never deployed.** Auto-merge is
+  enabled via GitHub's `enablePullRequestAutoMerge`, and GitHub performs the
+  merge on behalf of whoever enabled it. We enabled it with the default
+  `GITHUB_TOKEN`, and GitHub's recursion guard suppresses **every** workflow
+  trigger for `GITHUB_TOKEN` actions — so the merge commit fired no `push`
+  event, any CD workflow on `push: [main]` never ran, and the commit sat on the
+  default branch looking shipped.
+
+  Measured on cuspr: four auto-merged PRs, **zero** workflow runs of any kind on
+  their merge commits. That repo had already added a ten-minute cron safety net,
+  but GitHub throttles schedules on busy shared runners — all 12 most recent
+  deploy runs were `event: schedule` at a 1–3 **hour** cadence, never `push`. An
+  earlier incident there held 29 commits for 5 days.
+
+  New `merge-token` action input (env `PLUMBLINE_MERGE_TOKEN`): set it to a PAT
+  or App token and the merge is attributed to a real identity, so `push` behaves
+  normally. It still falls back to `GITHUB_TOKEN` — but the gate now **says so**,
+  in the PR comment and the job log, instead of merging silently into a void.
+
+- **The gate misreported its own version.** `PLUMBLINE_VERSION` in `src/shape.ts`
+  was a hand-maintained literal with a "keep in sync with `package.json`" comment
+  above it, and it had already drifted: v0.7.2 shipped reporting
+  `gate=plumbline 0.7.1` in every diff-mismatch message. That is exactly the
+  message someone reads while debugging a version skew, so the stale value
+  actively misled the one investigation it exists to serve. It is now derived
+  from `package.json` and cannot drift again.
+
+### Note
+
+v0.7.2 shipped without a changelog entry; its contents are described in #76.
+
 ## [0.7.1] - 2026-07-30
 
 The diff binding no longer depends on local git config.
@@ -531,7 +586,14 @@ floating `v0` tag: proof-carrying gate for AI agent work — structured receipt,
 deterministic shape check, an LLM semantic review against the repository's mission,
 and a failure-capsule rework loop. Single-repo, GitHub Actions + Anthropic API.
 
-[Unreleased]: https://github.com/amos-labs/plumbline/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/amos-labs/plumbline/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/amos-labs/plumbline/compare/v0.7.2...v0.7.3
+[0.7.2]: https://github.com/amos-labs/plumbline/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/amos-labs/plumbline/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/amos-labs/plumbline/compare/v0.6.2...v0.7.0
+[0.6.2]: https://github.com/amos-labs/plumbline/compare/v0.6.1...v0.6.2
+[0.6.1]: https://github.com/amos-labs/plumbline/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/amos-labs/plumbline/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/amos-labs/plumbline/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/amos-labs/plumbline/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/amos-labs/plumbline/compare/v0.3.0...v0.4.0

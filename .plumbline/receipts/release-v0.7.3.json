@@ -1,0 +1,69 @@
+{
+  "receipt_version": "1.0",
+  "task_id": "release-v0.7.3",
+  "agent_id": "claude-opus-5-1m",
+  "intent": "Cuts v0.7.3, the release that makes #78 and #79 reachable. Both are inert without a tag: downstream repos pin the version in the npx spec and in the action reference, so cuspr cannot adopt either fix until this exists. #78 added a `plumbline` bin so the documented `npx -y \"git+https://github.com/amos-labs/plumbline#<tag>\" <cmd>` quick start resolves a binary instead of exiting 0 with no output. #79 added the `merge-token` input so a lifecycle:auto_merge merge can be attributed to a real identity and therefore fire `push`, plus a loud warning on the GITHUB_TOKEN fallback path. THIRD FIX, FOUND WHILE PREPARING THE RELEASE: PLUMBLINE_VERSION in src/shape.ts was a hand-maintained string literal carrying a 'Keep in sync with package.json \u2014 see RELEASING.md' comment, and it had already drifted. v0.7.2 shipped with package.json at 0.7.2 while the gate printed 'gate=plumbline 0.7.1' in every diff-mismatch finding. That is exactly the message a person reads while debugging a producer/gate version skew \u2014 the single scenario the constant exists to serve \u2014 so a stale value there actively misleads the investigation it is meant to support. It now derives from PLUMB_VERSION (which reads package.json at runtime), so the manual sync step is deleted rather than re-performed. Verified after the change that package.json, PLUMB_VERSION and PLUMBLINE_VERSION all report 0.7.3. CHANGELOG: adds the [0.7.3] section per RELEASING.md step 2 (the release workflow extracts it as the release notes and FAILS if the tag and package.json disagree), and repairs the compare-link block, which had been stale since v0.5.0 \u2014 links for 0.6.0, 0.6.1, 0.6.2, 0.7.0, 0.7.1 and 0.7.2 were all missing and [Unreleased] still compared from v0.5.0. Also records honestly that v0.7.2 shipped with no changelog entry at all rather than inventing one after the fact. README's 8 npx invocations move from #v0.7.2 to #v0.7.3. NO BEHAVIOUR CHANGE beyond the version-derivation fix: this is a version bump plus docs. PROTECTED SURFACE: YES \u2014 touches src/shape.ts and dist/, so self_modifying is true and human sign-off is required, which is correct for a release commit.",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/policy.json"
+  ],
+  "validation_plan": [
+    {
+      "id": "version-agreement",
+      "command": "Confirm package.json, PLUMB_VERSION and PLUMBLINE_VERSION all report 0.7.3",
+      "reason": "The release workflow fails if the tag and package.json disagree, and the whole point of this change is that the gate stops misreporting itself.",
+      "required": true
+    },
+    {
+      "id": "tsc",
+      "command": "npx tsc --noEmit",
+      "reason": "shape.ts gained an import and lost a literal; the bundle and the tsc layout must both still resolve it.",
+      "required": true
+    },
+    {
+      "id": "npm-test",
+      "command": "npm test",
+      "reason": "Full suite, including the guards added by #78 and #79 now that both are on master.",
+      "required": true
+    },
+    {
+      "id": "release-workflow",
+      "command": "Push the v0.7.3 tag and confirm the release workflow builds, tests, matches tag to package.json, and publishes the Release",
+      "reason": "The release is only real once the workflow accepts it.",
+      "required": false
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "Confirm package.json, PLUMB_VERSION and PLUMBLINE_VERSION all report 0.7.3",
+      "status": "passed",
+      "output_ref": "package.json: 0.7.3 \u00b7 PLUMB_VERSION (CLI reports): 0.7.3 \u00b7 PLUMBLINE_VERSION (gate reports): 0.7.3. Before the change the third value was the literal '0.7.1' while the first was '0.7.2'."
+    },
+    {
+      "command": "npx tsc --noEmit",
+      "status": "passed",
+      "output_ref": "exit 0, no diagnostics."
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "333 tests, 333 pass, 0 fail \u2014 up from 328 at v0.7.2, the extra 5 being the merge-token guards from #79 and the 3 bin-name guards from #78 (one file overlaps the count)."
+    },
+    {
+      "command": "Push the v0.7.3 tag and confirm the release workflow builds, tests, matches tag to package.json, and publishes the Release",
+      "status": "skipped",
+      "output_ref": "Deliberately not done from this branch. RELEASING.md is explicit that cutting a release is a human-triggered act and that the tag goes on the MERGE commit, not on a branch head \u2014 so the tag follows this PR landing on master."
+    }
+  ],
+  "changed_files": [
+    "CHANGELOG.md",
+    "README.md",
+    "dist/index.js",
+    "package.json",
+    "src/shape.ts"
+  ],
+  "base_sha": "440a74b7d7f01a45622061e26d7d73745e0cd696",
+  "diff_sha256": "dd63927da8b0d4ec23e79e780d81bd4961253fb8a05b457786c7033f91db513f",
+  "result_summary": "v0.7.3 \u2014 the release that makes the last two fixes reachable. #78 (npx could not resolve a bin and exited 0 silently) and #79 (auto-merge under GITHUB_TOKEN fires no push, so CD never runs) are both inert until tagged, because downstream pins the version in the npx spec and the action reference. Preparing the release surfaced a third bug: PLUMBLINE_VERSION was a hand-maintained literal that had already drifted, so v0.7.2 shipped with the gate announcing itself as 0.7.1 in exactly the diff-mismatch message people read when debugging version skew. It now derives from package.json, deleting the manual sync step instead of repeating it \u2014 verified that all three version sources agree at 0.7.3. CHANGELOG gains the 0.7.3 section required by the release workflow, and its compare-link chain is repaired after drifting since v0.5.0; v0.7.2's missing entry is recorded rather than back-filled with invented notes. tsc clean, 333/333 tests pass. The tag itself is left for the merge commit per RELEASING.md."
+}
