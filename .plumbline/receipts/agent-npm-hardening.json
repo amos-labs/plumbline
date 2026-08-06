@@ -1,0 +1,35 @@
+{
+  "receipt_version": "1.0",
+  "task_id": "npm-hardening",
+  "agent_id": "claude",
+  "intent": "Supply-chain hardening in response to the 2026-08-04 npm infostealer worm (444+ packages incl. keyv@6.0.0/cacheable@2.5.1; executes via install lifecycle hooks; steals cloud/GitHub credentials). Audit of this machine and all org lockfiles found no exposure. This adds .npmrc ignore-scripts=true so install hooks never execute here: the gate CLI is npx-invoked into consumer repos, making its dependency install surface a cross-repo blast radius. esbuild (the only script-bearing dev dep) works without its postinstall via optionalDependencies platform binaries — full suite green.",
+  "self_modifying": false,
+  "policy_refs": [
+    ".plumbline/MISSION.md"
+  ],
+  "validation_plan": [
+    {
+      "id": "tests",
+      "command": "npm test",
+      "reason": "Full suite under ignore-scripts (npm ci ran clean without lifecycle hooks).",
+      "required": true,
+      "ci_covered": true
+    }
+  ],
+  "execution_evidence": [
+    {
+      "step": "tests",
+      "command": "npm test",
+      "status": "passed",
+      "output_ref": "325 tests, 325 pass, 0 fail after npm ci with ignore-scripts=true"
+    }
+  ],
+  "changed_files": [
+    ".npmrc"
+  ],
+  "base_sha": "e862b585517c38f35de15a0528794118ab7808d7",
+  "diff_sha256": "0d630854afe85243e96839e2d8a57815ad96ccdfee10c3b334f8900b4a79f694",
+  "result_summary": "plumbline installs execute no third-party lifecycle scripts; a future compromised transitive dependency cannot run code at install time on producer machines or CI.",
+  "diff_algo": "v1",
+  "_stamped_by": "plumb receipt --write v0.7.3"
+}
