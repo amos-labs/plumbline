@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { readOutcomes, summarize } from "./outcomes.js";
+import { testProvenance } from "./test-provenance.js";
+import { canSignOff, revisionApproval } from "./revision.js";
 import { execFileSync } from "node:child_process";
 import { PLUMB_VERSION } from "./version.js";
 import {
@@ -6,6 +11,8 @@ import {
   writeFileSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
+  appendFileSync,
   readdirSync,
   realpathSync,
 } from "node:fs";
@@ -33,6 +40,8 @@ import {
 import { selectProvider } from "./provider.js";
 import { shouldSkipReview, readReviewCache, writeReviewCache, protectedFloor } from "./cost.js";
 import {
+  type CheckRun,
+  followUpFingerprint,
   renderComment,
   renderCiSummary,
   verifyCiEvidence,
@@ -314,6 +323,11 @@ function flag(name: string): boolean {
 
 async function main(): Promise<number> {
   const cmd = process.argv[2];
+  if (cmd === "outcomes") {
+    if (!process.argv[3]) throw new Error("Usage: plumb outcomes DIRECTORY");
+    console.log(JSON.stringify(summarize(readOutcomes(process.argv[3])), null, 2));
+    return 0;
+  }
   const ci = detectCi();
   const cwd = arg("cwd", process.cwd())!;
   // `.plumbline/` is canonical; `.proofgate/` (the pre-rename dir) still fully
@@ -370,6 +384,7 @@ async function main(): Promise<number> {
     console.log(`plumbline — the plumb line for AI agent work (Amos 7:7-8): proof-carrying gate
 
 usage:
+  plumb outcomes DIRECTORY   (summarize gate receipts, reuse evidence and labeled outcomes)
   plumb init    [--stack rust-sqlx] [--no-stack] [--protect]   (scaffold the governed CI into this
                 repo: gate workflow WITH ci-evidence poll-wait + .plumbline/ + AGENTS.md, and — on a
                 detected stack — the stack preset (rust-sqlx: migration guard + rust-cache CI). Start here.)
@@ -1030,6 +1045,7 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
       }
     }
 
+    if (arg("result") && (!wantReview || !canReviewLocally)) throw new Error("--result requires an available reviewer and --review");
     if (!wantReview || !canReviewLocally) {
       // Shape-only pre-flight: assert ONLY the dimension we actually ran.
       for (const e of shape.errors) console.error(`shape ❌ ${e}`);
@@ -1069,6 +1085,19 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
   // survives every retry — the gate could not evaluate. Promotes the terminal
   // outcome to INDETERMINATE (infra_error), distinct from REWORK/REVIEW/PASS.
   let infraError: InfraError | undefined;
+  const repository = process.env.GITHUB_REPOSITORY;
+  const githubPr = cmd === "run" && ci.provider === "github" && ci.prNumber !== undefined;
+  const resultPath = arg("result");
+  if (resultPath && cmd === "check" && (!(repository || arg("repo")) || !(ci.prNumber || Number(arg("pr")) > 0) || skipGit)) {
+    throw new Error("A shadow result needs a Git checkout, --repo OWNER/REPO and --pr NUMBER");
+  }
+  const gitId = (ref: string) => execFileSync("git", ["rev-parse", "--verify", ref], { cwd, encoding: "utf8" }).trim();
+  const head = !skipGit && (githubPr || resultPath) ? gitId("HEAD") : undefined;
+  const allowApproval = githubPr && process.env.PLUMBLINE_REVISION_APPROVAL === "true";
+  let checks: CheckRun[] = [];
+  let verified = false;
+  let approval: Awaited<ReturnType<typeof revisionApproval>>;
+  let reviewMs: number | undefined;
 
   // --- CI evidence integrity (run mode): corroborate against the real CI run (#6) ---
   // Don't trust the receipt's self-reported execution_evidence for these — read
@@ -1105,7 +1134,13 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
     };
     if (ci.provider === "github" && repo && token && ci.prNumber !== undefined) {
       try {
-        const ev = await verifyCiEvidence(repo, ci.prNumber, token, policy.ci_evidence_checks);
+        const ev = await verifyCiEvidence(repo, ci.prNumber, token, policy.ci_evidence_checks, head);
+        checks = ev.checks ?? [];
+        verified = !!head && ev.pass && policy.ci_evidence_checks.every(name => {
+          const matches = checks.filter(check => check.name === name);
+          return matches.length === 1 && matches[0].app?.slug === "github-actions" &&
+            matches[0].status === "completed" && matches[0].conclusion === "success";
+        });
         for (const n of ev.notes) console.error(`ci-evidence ✓ ${n}`);
         for (const e of ev.errors) fail(e);
         console.error(
@@ -1262,7 +1297,7 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
         }
       }
 
-      if (provider && cacheKeyValid) {
+      if (provider && cacheKeyValid && !allowApproval && !resultPath) {
         const hit = readReviewCache(
           cacheDir,
           receipt.diff_sha256!,
@@ -1308,6 +1343,7 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
         // API error (5xx/429/auth), a network/DNS error, or a timeout. That is
         // ALSO a review that did not complete, so it must not silently fall
         // through to a shape-only pass: same require_semantic_review contract.
+        const started = performance.now();
         try {
           review = await semanticReview(mission, receipt, diff, policy, provider, reviewContext);
         } catch (e) {
@@ -1330,6 +1366,7 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
             );
           }
         }
+        reviewMs = Math.round(performance.now() - started);
         // Only persist a REAL, provider-produced verdict under a key we verified
         // matches the actual diff — never cache a fail-closed/unavailable verdict
         // (audit is undefined on those), and never under a stale/wrong sha.
@@ -1417,6 +1454,50 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
           "real CI run. Phase 1 (quality: shape + semantic) is assumed already green.",
       );
     }
+  }
+
+  if (allowApproval && head && repository && process.env.GITHUB_TOKEN && ci.prNumber !== undefined &&
+      canSignOff(gate, verified, phase)) {
+    try {
+      approval = await revisionApproval(repository, ci.prNumber, head, process.env.GITHUB_TOKEN);
+      if (approval && await getPrHeadSha(repository, ci.prNumber, process.env.GITHUB_TOKEN) === head) {
+        gate.final = "approve";
+        gate.reasons.push(`@${approval.actor} approved revision \`${head}\` in PR comment #${approval.comment_id}.`);
+      } else {
+        approval = undefined;
+        gate.reasons.push(`A maintainer can comment \`/plumbline approve ${head}\` and rerun the gate job.`);
+      }
+    } catch (error) {
+      approval = undefined;
+      gate.reasons.push("Maintainer approval could not be verified. Rerun the gate.");
+      console.error(String(error));
+    }
+  }
+
+  const artifact = githubPr && phase !== "quality" && process.env.GITHUB_OUTPUT && head;
+  if (artifact || resultPath) {
+    const path = resultPath ?? join(mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), "plumbline-")), "gate-result.json");
+    const pr = ci.prNumber ?? Number(arg("pr", "0"));
+    const observedChecks = await Promise.all(checks.map(async check => {
+      try {
+        const provenance = await testProvenance(repository!, pr, head!, check, process.env.GITHUB_TOKEN!);
+        return { ...check, provenance };
+      } catch {
+        return { ...check, provenance_unavailable: true };
+      }
+    }));
+    const result = {
+      schema: "plumbline.gate-result.v1", source: cmd === "check" ? "shadow" : "ci",
+      repository: repository ?? arg("repo"), pr, head, tree: head && gitId("HEAD^{tree}"), phase,
+      policy_sha256: createHash("sha256").update(existsSync(policyPath) ? readFileSync(policyPath) : JSON.stringify(policy)).digest("hex"),
+      diff_sha256: receipt?.diff_sha256, workflow: process.env.GITHUB_WORKFLOW_REF,
+      run_id: process.env.GITHUB_RUN_ID, attempt: process.env.GITHUB_RUN_ATTEMPT, job: process.env.GITHUB_JOB,
+      checks: observedChecks, verdict: gate.final, reviewer_verdict: gate.review?.verdict, audit: gate.review?.audit,
+      review_ms: reviewMs, approval,
+      findings: (gate.review?.failure_capsule?.findings ?? []).map(f => ({ ...f, id: followUpFingerprint(pr, f.description) })),
+    };
+    writeFileSync(path, JSON.stringify(result, null, 2) + "\n");
+    if (artifact) appendFileSync(process.env.GITHUB_OUTPUT!, `receipt=${path}\n`);
   }
 
   // --- CI reporting ---
@@ -1508,7 +1589,7 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
       if (repo && token && ci.prNumber !== undefined) {
         const pres = verdictPresentation(gate.final);
         try {
-          const headSha = await getPrHeadSha(repo, ci.prNumber, token);
+          const headSha = head ?? await getPrHeadSha(repo, ci.prNumber, token);
           const ok = await publishCheckRun(
             repo,
             headSha,
@@ -1539,7 +1620,7 @@ env: ANTHROPIC_API_KEY (default provider), GITHUB_TOKEN + GITHUB_REPOSITORY + PR
     const terminalPhase = phase === "full" || phase === "verify";
     if (
       ci.provider === "github" &&
-      policy.lifecycle === "auto_merge" &&
+      policy.lifecycle === "auto_merge" && !approval &&
       gate.final === "approve" &&
       terminalPhase
     ) {

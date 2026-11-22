@@ -16,6 +16,8 @@ Extracted from the [AMOS](https://github.com/amos-labs) proof-carrying autonomou
 
 **Compatible with [OpenSpec](https://github.com/Fission-AI/OpenSpec). Dependent on nothing.** The intake and archive ends of the loop follow OpenSpec's format and lifecycle conventions (MIT — see `THIRD-PARTY.md`), so existing `openspec/` folders just work — and every stage is adoptable on its own.
 
+[Revision approvals, exact-tree test reuse and reviewer outcome tracking](docs/revision-proof.md)
+
 ## Why Plumbline
 
 AI writes most of the code now; the bottleneck is no longer typing — it's **trust**. When an agent opens a PR, a human still has to reconstruct what it was trying to do, whether it actually did that, and whether it stayed inside what the project is *for*. That reconstruction doesn't scale.

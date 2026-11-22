@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   FailureCapsule,
   Policy,
@@ -392,6 +393,7 @@ export async function semanticReview(
   const prov = provider ?? selectProvider(policy);
 
   const audit: NonNullable<ReviewResult["audit"]> = {
+    input_sha256: createHash("sha256").update(prompt).digest("hex"),
     provider: prov.id ?? resolveProviderId(policy),
     model,
     prompt_version: PROMPT_VERSION,

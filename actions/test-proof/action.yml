@@ -1,0 +1,35 @@
+name: Exact-tree test proof
+description: Verify a same-repository PR test before reusing it on a branch push
+inputs:
+  workflow:
+    description: Workflow file name or numeric ID
+    required: true
+  job:
+    description: Exact CI job display name
+    required: true
+  test-step:
+    description: Exact display name of the step running the full suite
+    required: true
+outputs:
+  reuse:
+    description: True only when the PR job proves this tree
+    value: ${{ steps.proof.outputs.reuse }}
+  receipt:
+    description: Local JSON file containing verified test provenance when reused
+    value: ${{ steps.proof.outputs.receipt }}
+runs:
+  using: composite
+  steps:
+    - id: proof
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PROOF_WORKFLOW: ${{ inputs.workflow }}
+        PROOF_JOB: ${{ inputs.job }}
+        PROOF_STEP: ${{ inputs.test-step }}
+      run: python3 "$GITHUB_ACTION_PATH/proof.py"
+    - uses: actions/upload-artifact@v4
+      if: steps.proof.outputs.reuse == 'true'
+      with:
+        name: plumbline-test-proof-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+        path: ${{ steps.proof.outputs.receipt }}

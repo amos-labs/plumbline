@@ -480,6 +480,7 @@ export interface ReviewResult {
     provider?: string;
     model?: string;
     prompt_version?: string;
+    input_sha256?: string;
     temperature?: number;
     /** True when this verdict was reused from the diff_sha256 cache. */
     cached?: boolean;
