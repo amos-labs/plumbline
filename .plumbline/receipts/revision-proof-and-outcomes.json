@@ -1,0 +1,92 @@
+{
+  "receipt_version": "1.0",
+  "task_id": "revision-proof-and-outcomes",
+  "agent_id": "codex",
+  "intent": "Allow an authorized maintainer to resolve a human governance decision for one tested PR head. Record the independently observed CI proof, reuse exact merge-tree tests on pushes and compare reviewer contributions using labeled outcomes.",
+  "self_modifying": true,
+  "policy_refs": [
+    ".plumbline/MISSION.md",
+    ".plumbline/AGENTS.md",
+    ".plumbline/policy.json",
+    "CONTRIBUTING.md"
+  ],
+  "validation_plan": [
+    {
+      "command": "npm run check",
+      "reason": "Type-check gate, receipt and reporting changes.",
+      "required": true
+    },
+    {
+      "command": "npm run package",
+      "reason": "Build the action bundle from the modified sources.",
+      "required": true
+    },
+    {
+      "command": "node --test dist/test/*.test.js",
+      "reason": "Exercise the compiled suite including the eligibility, API identity and comparison fixtures.",
+      "required": true
+    },
+    {
+      "command": "python3 -B -m unittest discover -s actions/test-proof",
+      "reason": "Exercise positive evidence and fallback cases for stale, ambiguous, forked or failed tests.",
+      "required": true
+    },
+    {
+      "command": "npm test",
+      "reason": "Verify the suite on the repository's CI Node 20 runtime.",
+      "required": true,
+      "ci_covered": true
+    }
+  ],
+  "execution_evidence": [
+    {
+      "command": "npm run check",
+      "status": "passed",
+      "output_ref": "TypeScript passed."
+    },
+    {
+      "command": "npm run package",
+      "status": "passed",
+      "output_ref": "TypeScript and esbuild succeeded."
+    },
+    {
+      "command": "node --test dist/test/*.test.js",
+      "status": "passed",
+      "output_ref": "338 tests passed. The local Git fixtures used commit.gpgsign=false."
+    },
+    {
+      "command": "python3 -B -m unittest discover -s actions/test-proof",
+      "status": "passed",
+      "output_ref": "Both Python tests passed, including the table of negative cases."
+    },
+    {
+      "command": "npm test",
+      "status": "skipped",
+      "skip_reason": "CI-covered by the independently required test job on Node 20."
+    }
+  ],
+  "changed_files": [
+    ".github/workflows/ci.yml",
+    ".plumbline/policy.json",
+    "CHANGELOG.md",
+    "README.md",
+    "action.yml",
+    "actions/test-proof/action.yml",
+    "actions/test-proof/proof.py",
+    "actions/test-proof/test_proof.py",
+    "dist/index.js",
+    "docs/revision-proof.md",
+    "src/cli.ts",
+    "src/github.ts",
+    "src/outcomes.ts",
+    "src/review.ts",
+    "src/revision.ts",
+    "src/test-provenance.ts",
+    "src/test/revision-outcomes.test.ts",
+    "src/types.ts",
+    "src/verdict.ts"
+  ],
+  "base_sha": "3c74ea0a0b6e2c77fc3c649cee27bcb444b4d3e3",
+  "diff_sha256": "9525a2195a87b04946f794408dc93ad1d455f5de8fb536c8b9125c88dae12ff0",
+  "result_summary": "A fresh human REVIEW can clear after maintain/admin sign-off and corroborated GitHub Actions checks. The gate and test receipts identify the revision, reviewer input, workflow execution and test tree when witnessed. The offline reporter pairs identical inputs and tracks explicit outcome labels and measured test reuse. Fixture tests cover stale, revoked, ambiguous and unavailable evidence. A separate read-only trial matched a real successful PR test step to its merged Git tree."
+}
