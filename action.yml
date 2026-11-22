@@ -25,6 +25,10 @@ inputs:
     description: "Phased gate stage: full (default, all-in-one), quality (phase 1: shape + semantic, ci-evidence skipped — tests not yet run), or verify (phase 2: ci-evidence + terminal verdict). See templates/workflow-staged.yml."
     required: false
     default: "full"
+  revision-approval:
+    description: "Allow a maintainer's exact-revision PR comment to resolve a human REVIEW after verified Actions checks"
+    default: "false"
+    required: false
   merge-token:
     description: >-
       Token used to enable auto-merge in lifecycle:auto_merge. Defaults to github-token.
@@ -50,10 +54,12 @@ runs:
         git fetch origin "${{ github.base_ref }}" --depth=200 || true
 
     - name: Run gate
+      id: gate
       shell: bash
       env:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
+        PLUMBLINE_REVISION_APPROVAL: ${{ inputs.revision-approval }}
         PLUMBLINE_MERGE_TOKEN: ${{ inputs.merge-token }}
         PLUMBLINE_PR_NUMBER: ${{ github.event.pull_request.number }}
       # Runs the committed prebuilt bundle (dist/index.js) directly — no
@@ -66,3 +72,9 @@ runs:
           --policy "${{ inputs.policy }}" \
           --phase "${{ inputs.phase }}" \
           --base "origin/${{ github.base_ref }}"
+
+    - uses: actions/upload-artifact@v4
+      if: always() && steps.gate.outputs.receipt != ''
+      with:
+        name: plumbline-gate-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+        path: ${{ steps.gate.outputs.receipt }}

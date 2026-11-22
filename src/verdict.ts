@@ -69,9 +69,9 @@ const TABLE: Record<GateOutcome, VerdictPresentation> = {
     checkName: "Plumbline: PASS",
     conclusion: "success",
     label: "✅ PASS",
-    commentTitle: "✅ Plumbline: PASS — merging automatically",
+    commentTitle: "✅ Plumbline: PASS",
     commentBanner:
-      "**✅ Passed shape + semantic review. Merging automatically — no action needed.**",
+      "**✅ Plumbline passed. GitHub applies the repository’s merge settings.**",
     annotationLevel: "notice",
     mergeable: true,
   },

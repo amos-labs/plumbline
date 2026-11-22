@@ -6,24 +6,12 @@ var __export = (target, all) => {
 };
 
 // src/cli.ts
-import { execFileSync as execFileSync5 } from "node:child_process";
+import { createHash as createHash4 } from "node:crypto";
+import { tmpdir } from "node:os";
 
-// src/version.ts
-import { createRequire } from "node:module";
-var require2 = createRequire(import.meta.url);
-var PLUMB_VERSION = require2("../package.json").version;
-
-// src/cli.ts
-import {
-  readFileSync as readFileSync6,
-  writeFileSync as writeFileSync5,
-  existsSync as existsSync7,
-  mkdirSync as mkdirSync5,
-  readdirSync as readdirSync3,
-  realpathSync
-} from "node:fs";
-import { join as join7, dirname as dirname4 } from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
+// src/outcomes.ts
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 // node_modules/zod/v3/external.js
 var external_exports = {};
@@ -4066,6 +4054,828 @@ var coerce = {
 };
 var NEVER = INVALID;
 
+// src/outcomes.ts
+var sha = external_exports.string().regex(/^[0-9a-f]{40}$/);
+var identity = { repository: external_exports.string().min(1), pr: external_exports.number().int().positive(), head: sha };
+var finding = external_exports.object({ id: external_exports.string(), description: external_exports.string() });
+var record = external_exports.discriminatedUnion("schema", [
+  external_exports.object({
+    schema: external_exports.literal("plumbline.gate-result.v1"),
+    ...identity,
+    phase: external_exports.string(),
+    source: external_exports.enum(["ci", "shadow"]),
+    reviewer_verdict: external_exports.string().optional(),
+    audit: external_exports.object({
+      provider: external_exports.string(),
+      model: external_exports.string(),
+      input_sha256: external_exports.string().optional(),
+      cached: external_exports.boolean().optional()
+    }).optional(),
+    review_ms: external_exports.number().nonnegative().optional(),
+    policy_sha256: external_exports.string(),
+    findings: external_exports.array(finding)
+  }),
+  external_exports.object({
+    schema: external_exports.literal("plumbline.test-proof.v1"),
+    ...identity,
+    merged_commit: sha,
+    job_id: external_exports.number(),
+    test_seconds: external_exports.number().nonnegative()
+  }),
+  external_exports.object({
+    schema: external_exports.literal("plumbline.outcome.v1"),
+    ...identity,
+    outcome: external_exports.enum(["fixed", "dismissed", "regression"]),
+    finding: external_exports.string().optional(),
+    evidence: external_exports.string().min(1)
+  })
+]);
+function summarize(inputs) {
+  const records = inputs.map((input) => record.parse(input));
+  const counts = () => ({ reviews: 0, findings: 0, fixed: 0, dismissed: 0, unlabeled: 0, latency_ms: [] });
+  const models = /* @__PURE__ */ new Map();
+  const pairs = /* @__PURE__ */ new Map();
+  const dispositions = /* @__PURE__ */ new Map();
+  const observed = /* @__PURE__ */ new Set();
+  const attributed = /* @__PURE__ */ new Set();
+  const regressions = /* @__PURE__ */ new Set();
+  const reused = /* @__PURE__ */ new Map();
+  let unavailable = 0;
+  const key = (r) => JSON.stringify([r.repository, r.pr, r.head]);
+  for (const r of records) {
+    if (r.schema === "plumbline.outcome.v1") {
+      if (r.outcome === "regression") {
+        regressions.add(key(r));
+        continue;
+      }
+      if (!r.finding) throw new Error("A fixed or dismissed outcome needs a finding ID");
+      const id = key(r) + r.finding;
+      if (dispositions.has(id) && dispositions.get(id) !== r.outcome) throw new Error("Conflicting outcomes for " + id);
+      dispositions.set(id, r.outcome);
+    } else if (r.schema === "plumbline.test-proof.v1") {
+      reused.set(JSON.stringify([r.repository, r.merged_commit, r.job_id]), r.test_seconds);
+    }
+  }
+  for (const r of records) {
+    if (r.schema !== "plumbline.gate-result.v1" || r.phase === "quality") continue;
+    if (!r.audit || !r.reviewer_verdict) {
+      unavailable++;
+      continue;
+    }
+    const model = r.audit.provider + "/" + r.audit.model;
+    const group = models.get(model) ?? counts();
+    models.set(model, group);
+    group.reviews++;
+    if (!r.audit.cached && r.review_ms !== void 0) group.latency_ms.push(r.review_ms);
+    for (const f of r.findings) {
+      const id2 = key(r) + f.id;
+      observed.add(id2);
+      if (attributed.has(model + id2)) continue;
+      attributed.add(model + id2);
+      group.findings++;
+      const status = dispositions.get(id2);
+      if (status === "fixed") group.fixed++;
+      else if (status === "dismissed") group.dismissed++;
+      else group.unlabeled++;
+    }
+    if (!r.audit.input_sha256) continue;
+    const id = key(r) + "/" + r.policy_sha256 + "/" + r.audit.input_sha256;
+    const pair = pairs.get(id) ?? /* @__PURE__ */ new Map();
+    pairs.set(id, pair);
+    const verdicts = pair.get(model) ?? /* @__PURE__ */ new Set();
+    pair.set(model, verdicts.add(r.reviewer_verdict));
+  }
+  for (const id of dispositions.keys()) if (!observed.has(id)) throw new Error("Unknown annotated finding: " + id);
+  return {
+    models: Object.fromEntries(Array.from(models, ([name, { latency_ms, ...m }]) => [name, {
+      ...m,
+      timed_reviews: latency_ms.length,
+      mean_review_ms: latency_ms.length ? Math.round(latency_ms.reduce((a, b) => a + b, 0) / latency_ms.length) : null
+    }])),
+    unevaluated_reviews: unavailable,
+    confirmed_regression_revisions: regressions.size,
+    reused_test_minutes: [...reused.values()].reduce((a, b) => a + b, 0) / 60,
+    matched_inputs: [...pairs].filter(([, models2]) => models2.size > 1).map(([input, models2]) => ({
+      input,
+      verdicts: Object.fromEntries([...models2].map(([m, vs]) => [m, [...vs]]))
+    }))
+  };
+}
+function readOutcomes(directory) {
+  const records = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const file = join(directory, entry.name);
+    if (entry.isDirectory()) records.push(...readOutcomes(file));
+    if (entry.isFile() && entry.name.endsWith(".json")) records.push(JSON.parse(readFileSync(file, "utf8")));
+  }
+  return records;
+}
+
+// src/github.ts
+import { createHash } from "node:crypto";
+
+// src/verdict.ts
+var TABLE = {
+  approve: {
+    verdict: "approve",
+    checkName: "Plumbline: PASS",
+    conclusion: "success",
+    label: "\u2705 PASS",
+    commentTitle: "\u2705 Plumbline: PASS",
+    commentBanner: "**\u2705 Plumbline passed. GitHub applies the repository\u2019s merge settings.**",
+    annotationLevel: "notice",
+    mergeable: true
+  },
+  rework: {
+    verdict: "rework",
+    checkName: "Plumbline: REWORK \u2014 blocked, do not merge",
+    conclusion: "failure",
+    label: "\u{1F501} REWORK",
+    commentTitle: "\u{1F501} Plumbline: REWORK \u2014 BLOCKED, do NOT merge",
+    commentBanner: "**\u{1F501} REWORK \u2014 do NOT merge. The agent must fix the \u{1F916} items below and re-push.** This is the agent's turn, not a human sign-off \u2014 merging now ships un-reworked code.",
+    annotationLevel: "error",
+    mergeable: false
+  },
+  review: {
+    verdict: "review",
+    checkName: "Plumbline: REVIEW \u2014 awaiting human approval",
+    // action_required (not failure): the UI renders it as "needs a human to act"
+    // rather than "broken", which is exactly the REVIEW semantic — and makes it
+    // visually distinct from a REWORK failure at a glance.
+    conclusion: "action_required",
+    label: "\u26A0\uFE0F REVIEW",
+    commentTitle: "\u26A0\uFE0F Plumbline: REVIEW \u2014 awaiting explicit human approval",
+    commentBanner: "**\u26A0\uFE0F REVIEW \u2014 Human approval required. This is the human's turn: no agent rework needed, but this is NOT a rubber stamp.** A maintainer must read the findings and, if sound, approve/override-merge. Merging must be a deliberate act \u2014 do not confuse this with a REWORK (agent-fix) failure.",
+    annotationLevel: "warning",
+    mergeable: false
+  },
+  // INDETERMINATE (infra_error, v0.6.1): the gate could NOT evaluate because a
+  // GitHub infrastructure call failed transiently (503/timeout/etc.) and
+  // survived every retry. This is NEITHER a rework NOR an approval — there is
+  // no code verdict at all. It BLOCKS auto-merge (exit non-zero: we could not
+  // verify), but the wording must never read as "agent's turn to fix code"
+  // (REWORK) or as green PASS. It is trivially re-runnable: a fresh gate run
+  // once GitHub recovers produces a real verdict. Uses `action_required` so the
+  // UI reads it as "a human needs to act" (re-run) rather than a red "broken"
+  // failure — and the distinct 🔌 icon + wording keeps it unmistakable.
+  indeterminate: {
+    verdict: "indeterminate",
+    checkName: "Plumbline: INDETERMINATE \u2014 could not evaluate (GitHub infra error)",
+    conclusion: "action_required",
+    label: "\u{1F50C} INDETERMINATE",
+    commentTitle: "\u{1F50C} Plumbline: INDETERMINATE \u2014 could not evaluate (GitHub infrastructure error)",
+    commentBanner: "**\u26A0\uFE0F Gate could not evaluate \u2014 GitHub infrastructure error (e.g. 503/timeout), NOT a code verdict.** This is **neither a REWORK nor an approval**: the gate never assessed the code \u2014 a GitHub API call failed transiently and survived all retries. Do NOT change the code in response to this, and do NOT merge on it. **Re-run the gate when GitHub recovers** and it will produce a real verdict.",
+    annotationLevel: "warning",
+    mergeable: false
+  }
+};
+function verdictPresentation(verdict) {
+  return TABLE[verdict];
+}
+
+// src/github.ts
+function renderComment(result) {
+  const pres = verdictPresentation(result.final);
+  const lines = [];
+  lines.push(`## ${pres.commentTitle}`);
+  lines.push("");
+  const cap = result.review?.failure_capsule;
+  const agentActions = cap?.agent_actions ?? [];
+  const humanActions = cap?.human_actions ?? [];
+  const followUps = cap?.follow_ups ?? cap?.advisory ?? [];
+  const didNotConverge = cap?.did_not_converge === true;
+  if (result.final === "indeterminate") {
+    lines.push(`> ${pres.commentBanner}`);
+    lines.push("");
+    if (result.reasons.length > 0) {
+      for (const reason of result.reasons) lines.push(`> ${reason}`);
+      lines.push("");
+    }
+    lines.push("<sub>plumbline \xB7 proof-carrying gate for agent work</sub>");
+    return lines.join("\n");
+  }
+  if (result.final === "review" && didNotConverge) {
+    lines.push(
+      "> **\u{1F9D1}\u200D\u2696\uFE0F Gate did not converge \u2014 human decides.** After 2 rework rounds the gate stops iterating the agent. A maintainer reviews the remaining \u{1F9D1} items and override-merges if sound: `gh pr merge <PR> --squash --admin`."
+    );
+  } else {
+    lines.push(`> ${pres.commentBanner}`);
+  }
+  lines.push("");
+  if (result.final !== "approve" && result.review) {
+    const riskCount = (result.review.risk_notes.match(/(?:^|\s)\d+[\).]/g) || []).length;
+    const riskLabel = riskCount > 0 ? `${riskCount} risk finding${riskCount === 1 ? "" : "s"}` : "risk notes";
+    lines.push(
+      `> \u{1F4CB} **Review findings below \u2014 don't merge without reading them:** ${riskLabel}, plus validation-coverage and mission-alignment notes.`
+    );
+    lines.push("");
+  }
+  lines.push(`**Shape gate:** ${result.shape.pass ? "pass" : "FAIL"}`);
+  for (const e of result.shape.errors) lines.push(`- \u274C ${e}`);
+  for (const w of result.shape.warnings) lines.push(`- \u26A0\uFE0F ${w}`);
+  lines.push("");
+  if (result.review) {
+    const r = result.review;
+    lines.push(`**Semantic review:** ${r.verdict} (confidence ${r.confidence})`);
+    lines.push("");
+    lines.push(`- **Validation coverage:** ${r.validation_coverage_notes}`);
+    lines.push(`- **Mission alignment:** ${r.mission_alignment_notes}`);
+    lines.push(`- **Risk:** ${r.risk_notes}`);
+    if (r.failure_capsule) {
+      lines.push("");
+      lines.push(`### What's needed \u2014 ${r.failure_capsule.failing_check}`);
+      lines.push(`_${r.failure_capsule.suspected_cause}_`);
+      if (humanActions.length > 0) {
+        lines.push("");
+        lines.push("#### \u{1F9D1} Human must decide");
+        for (const a of humanActions) lines.push(`- [ ] ${a}`);
+      }
+      if (agentActions.length > 0) {
+        lines.push("");
+        lines.push("#### \u{1F916} Agent can do now");
+        for (const a of agentActions) lines.push(`- [ ] ${a}`);
+        lines.push("");
+        lines.push("_Agent: do the \u{1F916} items and re-push with an updated receipt._");
+      }
+      if (humanActions.length === 0 && agentActions.length === 0) {
+        lines.push("");
+        lines.push(`**Next action:** ${r.failure_capsule.next_action_requested}`);
+      }
+      if (followUps.length > 0) {
+        lines.push("");
+        lines.push("#### \u{1F4A1} Optional follow-ups \u2014 non-blocking (auto-filed as tracked issues)");
+        for (const a of followUps) lines.push(`- ${a}`);
+      }
+      lines.push("");
+      lines.push("<details><summary>Full capsule (JSON)</summary>");
+      lines.push("");
+      lines.push("```json");
+      lines.push(JSON.stringify(r.failure_capsule, null, 2));
+      lines.push("```");
+      lines.push("</details>");
+    }
+  }
+  if (result.reasons.length > 0) {
+    lines.push("");
+    for (const reason of result.reasons) lines.push(`> ${reason}`);
+  }
+  lines.push("");
+  lines.push("<sub>plumbline \xB7 proof-carrying gate for agent work</sub>");
+  return lines.join("\n");
+}
+function renderCiSummary(result) {
+  const pres = verdictPresentation(result.final);
+  if (result.final === "approve") {
+    return {
+      level: pres.annotationLevel,
+      title: pres.checkName,
+      message: "Plumbline passed. GitHub applies the repository\u2019s merge settings."
+    };
+  }
+  if (result.final === "indeterminate") {
+    return {
+      level: pres.annotationLevel,
+      title: pres.checkName,
+      message: "Could not evaluate \u2014 a GitHub infrastructure call failed transiently (e.g. 503/timeout) and survived all retries. This is NOT a code verdict (neither REWORK nor PASS). Re-run the gate when GitHub recovers." + (result.reasons.length ? ` ${result.reasons[0]}` : "")
+    };
+  }
+  const cap = result.review?.failure_capsule;
+  const parts = [];
+  if (result.final === "rework") {
+    parts.push("REWORK \u2014 do NOT merge. The agent fixes the items in the PR comment and re-pushes.");
+  } else if (cap?.did_not_converge) {
+    parts.push("REVIEW \u2014 gate did not converge after 2 rework rounds; a human decides the remaining items.");
+  } else {
+    parts.push("REVIEW \u2014 human approval required (protected/billing surface). NOT a rubber stamp; NOT a broken build.");
+  }
+  if (cap?.failing_check) parts.push(`Focus: ${cap.failing_check}.`);
+  if (result.review) {
+    const riskCount = (result.review.risk_notes.match(/(?:^|\s)\d+[\).]/g) || []).length;
+    const findings = riskCount > 0 ? `${riskCount} risk finding${riskCount === 1 ? "" : "s"} + validation notes` : "risk + validation notes";
+    parts.push(`Read the ${findings} in the PR comment before merging.`);
+  }
+  return {
+    level: pres.annotationLevel,
+    title: pres.checkName,
+    message: parts.join(" ")
+  };
+}
+var GH_HEADERS = (token) => ({
+  authorization: `Bearer ${token}`,
+  accept: "application/vnd.github+json"
+});
+var RETRY_ATTEMPTS = 4;
+var RETRY_BASE_MS = 500;
+var RETRY_MAX_MS = 8e3;
+function isTransientStatus(status) {
+  return status === 429 || status >= 500 && status <= 599;
+}
+function isTransientNetworkError(err) {
+  const e = err;
+  const code = e?.code ?? e?.cause?.code ?? "";
+  if (["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EPIPE", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"].includes(code)) {
+    return true;
+  }
+  const msg = `${e?.name ?? ""} ${e?.message ?? ""}`.toLowerCase();
+  return /socket hang up|network|fetch failed|timeout|timed out|terminated|econnreset|etimedout/.test(msg);
+}
+var InfraError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "InfraError";
+  }
+};
+var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function githubFetch(url, init, what, opts = {}) {
+  const attempts = opts.attempts ?? RETRY_ATTEMPTS;
+  const doFetch = opts.fetchImpl ?? fetch;
+  const doSleep = opts.sleepImpl ?? sleep;
+  let lastDetail = "";
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    let res = null;
+    try {
+      res = await doFetch(url, init);
+    } catch (err) {
+      if (isTransientNetworkError(err) && attempt < attempts) {
+        lastDetail = `network error: ${err.message}`;
+        await doSleep(backoffMs(attempt));
+        continue;
+      }
+      if (isTransientNetworkError(err)) {
+        throw new InfraError(`${what}: ${err.message} (after ${attempt} attempt${attempt === 1 ? "" : "s"})`);
+      }
+      throw err;
+    }
+    if (isTransientStatus(res.status) && attempt < attempts) {
+      lastDetail = `HTTP ${res.status}`;
+      await res.text().catch(() => "");
+      await doSleep(backoffMs(attempt));
+      continue;
+    }
+    if (isTransientStatus(res.status)) {
+      const body = await res.text().catch(() => "");
+      throw new InfraError(
+        `${what}: HTTP ${res.status} after ${attempt} attempts${body ? ` \u2014 ${body.slice(0, 200)}` : ""}`
+      );
+    }
+    void lastDetail;
+    return res;
+  }
+  throw new InfraError(`${what}: exhausted ${attempts} attempts (${lastDetail})`);
+}
+function backoffMs(attempt) {
+  const base = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** (attempt - 1));
+  return Math.floor(base / 2 + Math.random() * (base / 2));
+}
+async function getPrHeadSha(repo, prNumber, token) {
+  const res = await githubFetch(
+    `https://api.github.com/repos/${repo}/pulls/${prNumber}`,
+    { headers: GH_HEADERS(token) },
+    `get PR #${prNumber}`
+  );
+  if (!res.ok) throw new Error(`get PR #${prNumber}: ${res.status} ${await res.text()}`);
+  const pr = await res.json();
+  if (!pr.head?.sha) throw new Error(`PR #${prNumber} has no head.sha`);
+  return pr.head.sha;
+}
+async function getCheckRunsForSha(repo, sha2, token) {
+  const res = await githubFetch(
+    `https://api.github.com/repos/${repo}/commits/${sha2}/check-runs?per_page=100`,
+    { headers: GH_HEADERS(token) },
+    `get check-runs for ${sha2}`
+  );
+  if (!res.ok) throw new Error(`get check-runs for ${sha2}: ${res.status} ${await res.text()}`);
+  const data = await res.json();
+  if ((data.total_count ?? 0) > (data.check_runs?.length ?? 0)) throw new Error("Incomplete check-run list");
+  return (data.check_runs ?? []).map((c) => ({
+    id: c.id,
+    details_url: c.details_url,
+    app: c.app && { slug: c.app.slug },
+    name: c.name,
+    status: c.status,
+    conclusion: c.conclusion ?? null
+  }));
+}
+function evaluateCiEvidence(checkRuns, required) {
+  const errors = [];
+  const notes = [];
+  for (const name of required) {
+    const runs = checkRuns.filter((c) => c.name === name);
+    if (runs.length === 0) {
+      errors.push(
+        `ci-evidence: required check "${name}" did not run for the head commit (the gate verifies the real CI run, not the receipt's self-report)`
+      );
+    } else if (runs.some((c) => c.conclusion === "success")) {
+      notes.push(`${name}: success`);
+    } else {
+      const w = runs.find((c) => c.status === "completed") ?? runs[0];
+      errors.push(
+        `ci-evidence: required check "${name}" did not pass \u2014 status=${w.status} conclusion=${w.conclusion ?? "none"}`
+      );
+    }
+  }
+  return { pass: errors.length === 0, errors, notes };
+}
+async function verifyCiEvidence(repo, prNumber, token, required, expectedHead) {
+  if (required.length === 0) return { pass: true, errors: [], notes: [] };
+  const sha2 = await getPrHeadSha(repo, prNumber, token);
+  if (expectedHead && sha2 !== expectedHead) throw new Error("PR head changed since checkout");
+  const runs = await getCheckRunsForSha(repo, sha2, token);
+  return { ...evaluateCiEvidence(runs, required), checks: runs.filter((c) => required.includes(c.name)) };
+}
+var HISTORY_MARKER = "<!-- plumbline:attempt-history -->";
+var ATTEMPT_DELIM = "<!-- plumbline:attempt -->";
+var HISTORY_CAP = 5;
+var ATTEMPT_MAX_CHARS = 4e3;
+function truncateBalanced(s, max) {
+  if (s.length <= max) return s;
+  let out = `${s.slice(0, max)}
+\u2026 (truncated)`;
+  const opens = (out.match(/<details/g) ?? []).length;
+  const closes = (out.match(/<\/details>/g) ?? []).length;
+  for (let i = closes; i < opens; i++) out += "\n</details>";
+  return out;
+}
+function appendAttemptHistory(newBody, existingBody, now = /* @__PURE__ */ new Date()) {
+  const idx = existingBody.indexOf(HISTORY_MARKER);
+  const existingCurrent = (idx >= 0 ? existingBody.slice(0, idx) : existingBody).trim();
+  const historyPart = idx >= 0 ? existingBody.slice(idx) : "";
+  const priorBlocks = historyPart.split(ATTEMPT_DELIM).slice(1).map((b, i, arr) => (i === arr.length - 1 ? b.replace(/\s*<\/details>\s*$/, "") : b).trim()).filter(Boolean);
+  const verdict = existingCurrent.match(/^##.*?plumbline:\s*(\w+)/im)?.[1]?.toUpperCase() ?? "PRIOR";
+  const when = `${now.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+  const archived = `<details><summary>${verdict} \u2014 superseded ${when}</summary>
+
+${truncateBalanced(existingCurrent, ATTEMPT_MAX_CHARS)}
+
+</details>`;
+  const blocks = [archived, ...priorBlocks].slice(0, HISTORY_CAP);
+  return `${newBody}
+
+${HISTORY_MARKER}
+<details><summary>\u{1F4DC} Attempt history (${blocks.length})</summary>
+
+` + blocks.map((b) => `${ATTEMPT_DELIM}
+${b}`).join("\n\n") + `
+</details>`;
+}
+function countRounds(existingBody) {
+  if (!existingBody) return 1;
+  const idx = existingBody.indexOf(HISTORY_MARKER);
+  if (idx < 0) return 2;
+  const priorBlocks = existingBody.slice(idx).split(ATTEMPT_DELIM).slice(1).filter((b) => b.trim());
+  return priorBlocks.length + 2;
+}
+function extractPriorCapsule(existingBody) {
+  if (!existingBody) return void 0;
+  const hIdx = existingBody.indexOf(HISTORY_MARKER);
+  const current = hIdx >= 0 ? existingBody.slice(0, hIdx) : existingBody;
+  const m = current.match(/Full capsule \(JSON\)<\/summary>\s*```json\s*([\s\S]*?)```/);
+  if (!m) return void 0;
+  try {
+    return JSON.parse(m[1].trim());
+  } catch {
+    return void 0;
+  }
+}
+async function fetchExistingGateComment(repo, prNumber, token) {
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${repo}/issues/${prNumber}/comments?per_page=100`,
+      { headers: GH_HEADERS(token) }
+    );
+    if (!res.ok) return void 0;
+    const comments = await res.json();
+    return comments.find(
+      (c) => c.body.includes("plumbline \xB7 proof-carrying gate") || // Legacy footer from the pre-rename (proofgate→Plumbline) version —
+      // still matched so re-runs update the existing thread instead of stacking.
+      c.body.includes("proofgate \xB7 proof-carrying gate")
+    )?.body;
+  } catch {
+    return void 0;
+  }
+}
+async function publishCheckRun(repo, headSha, name, conclusion, title, summary, token) {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/check-runs`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: "application/vnd.github+json",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        name,
+        head_sha: headSha,
+        status: "completed",
+        conclusion,
+        // GitHub caps the check-run output summary; the full detail lives in the
+        // PR comment. Keep this short and pointed.
+        output: { title, summary: summary.slice(0, 6e4) }
+      })
+    });
+    if (!res.ok) {
+      console.error(`plumbline: could not publish verdict check-run (${res.status} ${await res.text().catch(() => "")})`);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error(`plumbline: could not publish verdict check-run: ${e.message}`);
+    return false;
+  }
+}
+var FOLLOWUP_LABEL = "plumbline-followup";
+var FOLLOWUP_MARKER = "<!-- plumbline:followup:";
+function followUpFingerprint(prNumber, description) {
+  const h = createHash("sha256").update(`${prNumber}
+${description.trim()}`, "utf8").digest("hex");
+  return h.slice(0, 16);
+}
+async function followUpExists(repo, fingerprint, token) {
+  try {
+    const q = encodeURIComponent(`repo:${repo} is:issue is:open in:body ${FOLLOWUP_MARKER}${fingerprint}`);
+    const res = await fetch(`https://api.github.com/search/issues?q=${q}`, { headers: GH_HEADERS(token) });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return (data.total_count ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+async function createFollowUpIssue(repo, prNumber, description, token) {
+  const fingerprint = followUpFingerprint(prNumber, description);
+  if (await followUpExists(repo, fingerprint, token)) return null;
+  const title = `[plumbline follow-up] ${description.slice(0, 120)}${description.length > 120 ? "\u2026" : ""}`;
+  const body = `${FOLLOWUP_MARKER}${fingerprint} -->
+
+Filed by the Plumbline gate from PR #${prNumber} as an **optional-but-good** review finding (not blocking that PR, but worth doing so it isn't lost):
+
+> ${description}
+
+_Auto-filed so the suggestion is tracked instead of skipped. Close if not worth pursuing._`;
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/issues`, {
+      method: "POST",
+      headers: { ...GH_HEADERS(token), "content-type": "application/json" },
+      body: JSON.stringify({ title, body, labels: [FOLLOWUP_LABEL] })
+    });
+    if (!res.ok) {
+      if (res.status === 422) {
+        const retry = await fetch(`https://api.github.com/repos/${repo}/issues`, {
+          method: "POST",
+          headers: { ...GH_HEADERS(token), "content-type": "application/json" },
+          body: JSON.stringify({ title, body })
+        });
+        if (retry.ok) return (await retry.json()).number ?? null;
+      }
+      console.error(`plumbline: could not file follow-up issue (${res.status})`);
+      return null;
+    }
+    return (await res.json()).number ?? null;
+  } catch (e) {
+    console.error(`plumbline: could not file follow-up issue: ${e.message}`);
+    return null;
+  }
+}
+async function fileFollowUps(repo, prNumber, descriptions, token) {
+  const created = [];
+  for (const d of descriptions) {
+    const n = await createFollowUpIssue(repo, prNumber, d, token);
+    if (n !== null) created.push(n);
+  }
+  return created;
+}
+var PR_FOLLOWUP_MARKER = (prNumber) => `<!-- plumbline:pr-followups:${prNumber} -->`;
+function renderConsolidatedBody(prNumber, descriptions) {
+  const items = descriptions.map((d) => `- [ ] ${d.replace(/\n+/g, " ").trim()}`).join("\n");
+  return `${PR_FOLLOWUP_MARKER(prNumber)}
+
+Consolidated **optional-but-good** follow-up findings from PR #${prNumber} \u2014 none blocked that PR, but they're worth doing so they aren't lost:
+
+${items}
+
+_Auto-filed + updated in place by the Plumbline gate. Check off or close items as you go; the gate closes this issue when #${prNumber} merges (most items are stale-by-design once the PR lands)._`;
+}
+async function findConsolidatedIssue(repo, prNumber, token) {
+  try {
+    const q = encodeURIComponent(`repo:${repo} is:issue in:body ${PR_FOLLOWUP_MARKER(prNumber)}`);
+    const res = await fetch(`https://api.github.com/search/issues?q=${q}`, { headers: GH_HEADERS(token) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const item = data.items?.[0];
+    return item ? { number: item.number, state: item.state } : null;
+  } catch {
+    return null;
+  }
+}
+async function fileConsolidatedFollowUps(repo, prNumber, descriptions, token) {
+  if (descriptions.length === 0) return { number: null, action: "noop" };
+  const body = renderConsolidatedBody(prNumber, descriptions);
+  const title = `Follow-ups for #${prNumber} (${descriptions.length} item${descriptions.length === 1 ? "" : "s"})`;
+  try {
+    const existing = await findConsolidatedIssue(repo, prNumber, token);
+    if (existing) {
+      const res2 = await fetch(`https://api.github.com/repos/${repo}/issues/${existing.number}`, {
+        method: "PATCH",
+        headers: { ...GH_HEADERS(token), "content-type": "application/json" },
+        body: JSON.stringify({ title, body, state: "open" })
+      });
+      if (res2.ok) return { number: existing.number, action: "updated" };
+      console.error(`plumbline: could not update consolidated follow-up issue #${existing.number} (${res2.status})`);
+      return { number: existing.number, action: "noop" };
+    }
+    const create = async (withLabel) => fetch(`https://api.github.com/repos/${repo}/issues`, {
+      method: "POST",
+      headers: { ...GH_HEADERS(token), "content-type": "application/json" },
+      body: JSON.stringify({ title, body, ...withLabel ? { labels: [FOLLOWUP_LABEL] } : {} })
+    });
+    let res = await create(true);
+    if (!res.ok && res.status === 422) res = await create(false);
+    if (!res.ok) {
+      console.error(`plumbline: could not file consolidated follow-up issue (${res.status})`);
+      return { number: null, action: "noop" };
+    }
+    return { number: (await res.json()).number ?? null, action: "created" };
+  } catch (e) {
+    console.error(`plumbline: could not file consolidated follow-up issue: ${e.message}`);
+    return { number: null, action: "noop" };
+  }
+}
+async function closeFollowUpOnMerge(repo, prNumber, token) {
+  try {
+    const existing = await findConsolidatedIssue(repo, prNumber, token);
+    if (!existing || existing.state === "closed") return null;
+    await fetch(`https://api.github.com/repos/${repo}/issues/${existing.number}/comments`, {
+      method: "POST",
+      headers: { ...GH_HEADERS(token), "content-type": "application/json" },
+      body: JSON.stringify({
+        body: `PR #${prNumber} merged \u2014 closing this consolidated follow-up issue. Most items were stale-by-design once the PR landed. Reopen any item still worth doing.`
+      })
+    }).catch(() => void 0);
+    const res = await fetch(`https://api.github.com/repos/${repo}/issues/${existing.number}`, {
+      method: "PATCH",
+      headers: { ...GH_HEADERS(token), "content-type": "application/json" },
+      body: JSON.stringify({ state: "closed", state_reason: "completed" })
+    });
+    return res.ok ? existing.number : null;
+  } catch {
+    return null;
+  }
+}
+async function getPrNodeId(repo, prNumber, token) {
+  const res = await githubFetch(
+    `https://api.github.com/repos/${repo}/pulls/${prNumber}`,
+    { headers: GH_HEADERS(token) },
+    `get PR #${prNumber} node id`
+  );
+  if (!res.ok) throw new Error(`get PR #${prNumber}: ${res.status} ${await res.text()}`);
+  const pr = await res.json();
+  if (!pr.node_id) throw new Error(`PR #${prNumber} has no node_id`);
+  return pr.node_id;
+}
+function resolveMergeToken(env) {
+  const merge = env.PLUMBLINE_MERGE_TOKEN?.trim();
+  if (merge) return { token: merge, suppressesWorkflows: false };
+  const fallback = env.GITHUB_TOKEN?.trim() || void 0;
+  return { token: fallback, suppressesWorkflows: fallback !== void 0 };
+}
+async function enableAutoMerge(repo, prNumber, token, mergeMethod = "SQUASH") {
+  try {
+    const nodeId = await getPrNodeId(repo, prNumber, token);
+    const query = "mutation($id:ID!,$m:PullRequestMergeMethod!){enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$m}){pullRequest{autoMergeRequest{enabledAt}}}}";
+    const res = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers: { ...GH_HEADERS(token), "content-type": "application/json" },
+      body: JSON.stringify({ query, variables: { id: nodeId, m: mergeMethod } })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.errors?.length) {
+      const msg = data.errors?.map((e) => e.message).join("; ") || `HTTP ${res.status}`;
+      console.error(
+        `plumbline: could not enable GitHub auto-merge on PR #${prNumber}: ${msg} (is auto-merge allowed on the repo? does the token have the merge scope?) \u2014 leaving PASS standing.`
+      );
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error(`plumbline: could not enable GitHub auto-merge on PR #${prNumber}: ${e.message}`);
+    return false;
+  }
+}
+async function postPrComment(repo, prNumber, body, token) {
+  const api = `https://api.github.com/repos/${repo}/issues/${prNumber}/comments`;
+  const headers2 = {
+    authorization: `Bearer ${token}`,
+    accept: "application/vnd.github+json",
+    "content-type": "application/json"
+  };
+  const list = await fetch(`${api}?per_page=100`, { headers: headers2 });
+  if (list.ok) {
+    const comments = await list.json();
+    const mine = comments.find(
+      (c) => c.body.includes("plumbline \xB7 proof-carrying gate") || // Legacy footer from the pre-rename (proofgate→Plumbline) version.
+      c.body.includes("proofgate \xB7 proof-carrying gate")
+    );
+    if (mine) {
+      const merged = appendAttemptHistory(body, mine.body);
+      const upd = await fetch(
+        `https://api.github.com/repos/${repo}/issues/comments/${mine.id}`,
+        { method: "PATCH", headers: headers2, body: JSON.stringify({ body: merged }) }
+      );
+      if (upd.ok) return;
+    }
+  }
+  const res = await fetch(api, { method: "POST", headers: headers2, body: JSON.stringify({ body }) });
+  if (!res.ok) {
+    throw new Error(`failed to post PR comment: ${res.status} ${await res.text()}`);
+  }
+}
+
+// src/test-provenance.ts
+async function testProvenance(repo, pr, head, check, token) {
+  if (check.app?.slug !== "github-actions" || !check.id || !check.details_url) return;
+  const base = `https://github.com/${repo}/actions/runs/`;
+  if (!check.details_url.startsWith(base)) return;
+  const match = /^(\d+)\/job\/(\d+)$/.exec(check.details_url.slice(base.length));
+  if (!match || match[2] !== String(check.id)) return;
+  async function get(path) {
+    const res = await githubFetch(
+      `https://api.github.com/repos/${repo}/${path}`,
+      { headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" } },
+      "test provenance"
+    );
+    if (!res.ok) throw new Error(`test provenance: HTTP ${res.status}`);
+    return await res.json();
+  }
+  const job = await get(`actions/jobs/${check.id}`);
+  if (job.id !== check.id || job.name !== check.name || String(job.run_id) !== match[1]) return;
+  const run = await get(
+    `actions/runs/${job.run_id}/attempts/${job.run_attempt}`
+  );
+  if (run.head_sha !== head || run.event !== "pull_request" || run.head_repository?.full_name !== repo) return;
+  const source = { workflow: run.path, run_id: job.run_id, attempt: job.run_attempt, job_id: job.id, job: job.name };
+  const prefix = `Verified PR ${pr} checkout `;
+  const markers = job.steps.filter((s) => s.conclusion === "success" && s.name.startsWith(prefix));
+  const tested = markers.length === 1 && markers[0].name.slice(prefix.length);
+  if (job.conclusion !== "success" || !tested || !/^[0-9a-f]{40}$/.test(tested)) return source;
+  const commit = await get(`git/commits/${tested}`);
+  if (commit.parents.length !== 2 || commit.parents[1].sha !== head) return source;
+  return { ...source, tested_commit: tested, tested_tree: commit.tree.sha };
+}
+
+// src/revision.ts
+function canSignOff(gate, verified, phase) {
+  const review = gate.review;
+  return (phase === "verify" || phase === "full") && verified && gate.shape.pass && gate.final === "review" && review?.verdict === "review" && !!review.audit?.provider && !review.audit.cached && !review.failure_capsule?.agent_actions?.length && !review.failure_capsule?.findings?.some((f) => f.class === "blocking" && f.actor === "agent");
+}
+async function revisionApproval(repo, pr, sha2, token) {
+  if (!/^[0-9a-f]{40}$/.test(sha2)) return;
+  async function get(path) {
+    const response = await githubFetch(
+      `https://api.github.com/repos/${repo}/${path}`,
+      { headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" } },
+      "revision approval"
+    );
+    if (!response.ok) throw new Error(`GitHub returned ${response.status} reading approval`);
+    return await response.json();
+  }
+  const candidates = [];
+  for (let page = 1; ; page++) {
+    const comments = await get(`issues/${pr}/comments?per_page=100&page=${page}`);
+    candidates.push(...comments.filter((c) => c.user?.type === "User" && c.created_at === c.updated_at && [`/plumbline approve ${sha2}`, `/plumbline revoke ${sha2}`].includes(c.body.trim())));
+    if (comments.length < 100) break;
+  }
+  for (const comment of candidates.reverse()) {
+    const role = await get(`collaborators/${encodeURIComponent(comment.user.login)}/permission`);
+    if (role.permission !== "admin" && role.role_name !== "maintain") continue;
+    if (comment.body.trim() === `/plumbline approve ${sha2}`) {
+      return { actor: comment.user.login, comment_id: comment.id, sha: sha2 };
+    }
+    break;
+  }
+}
+
+// src/cli.ts
+import { execFileSync as execFileSync5 } from "node:child_process";
+
+// src/version.ts
+import { createRequire } from "node:module";
+var require2 = createRequire(import.meta.url);
+var PLUMB_VERSION = require2("../package.json").version;
+
+// src/cli.ts
+import {
+  readFileSync as readFileSync7,
+  writeFileSync as writeFileSync5,
+  existsSync as existsSync7,
+  mkdirSync as mkdirSync5,
+  mkdtempSync,
+  appendFileSync as appendFileSync2,
+  readdirSync as readdirSync4,
+  realpathSync
+} from "node:fs";
+import { join as join8, dirname as dirname4 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
 // src/types.ts
 var ValidationStepSchema = external_exports.object({
   command: external_exports.string().min(1),
@@ -4337,7 +5147,7 @@ var CONVERGENCE_CAP_ROUND = 3;
 
 // src/shape.ts
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 
 // src/glob.ts
 function globToRegExp(glob) {
@@ -4482,7 +5292,7 @@ function isReceiptPath(file) {
   return file === ".plumbline/receipt.json" || file === ".proofgate/receipt.json" || /^\.(?:plumbline|proofgate)\/receipts\/[^/]+\.json$/.test(file);
 }
 function computeDiffSha256(diff) {
-  return createHash("sha256").update(diff, "utf8").digest("hex");
+  return createHash2("sha256").update(diff, "utf8").digest("hex");
 }
 var DIFF_ALGO_CURRENT = "v1";
 var PLUMBLINE_VERSION = PLUMB_VERSION;
@@ -4839,6 +5649,9 @@ function shapeCheck(rawReceipt, policy, opts = {}) {
   return { result: { pass: errors.length === 0, errors, warnings }, receipt };
 }
 
+// src/review.ts
+import { createHash as createHash3 } from "node:crypto";
+
 // src/provider.ts
 var AnthropicProvider = class {
   constructor(apiKey, baseUrl = "https://api.anthropic.com") {
@@ -4952,8 +5765,8 @@ function selectProvider(policy) {
 }
 
 // src/cost.ts
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync as readFileSync2, writeFileSync } from "node:fs";
+import { dirname, join as join2 } from "node:path";
 var DOC_EXT = /\.(md|markdown|mdx|rst|txt|adoc)$/i;
 var CONFIG_EXT = /\.(json|ya?ml|toml|ini|cfg|conf|env|lock|editorconfig|gitignore|gitattributes)$/i;
 var CONFIG_BASENAME = /(^|\/)(\.gitignore|\.gitattributes|\.editorconfig|\.npmrc|\.nvmrc|LICENSE)$/i;
@@ -5001,13 +5814,13 @@ function protectedFloor(receipt, policy, actualFiles) {
   return null;
 }
 function cacheFilePath(cacheDir, diffSha256) {
-  return join(cacheDir, `${diffSha256}.json`);
+  return join2(cacheDir, `${diffSha256}.json`);
 }
 function readReviewCache(cacheDir, diffSha256, provider, model, promptVersion) {
   try {
     const p = cacheFilePath(cacheDir, diffSha256);
     if (!existsSync(p)) return null;
-    const entry = JSON.parse(readFileSync(p, "utf8"));
+    const entry = JSON.parse(readFileSync2(p, "utf8"));
     if (entry.diff_sha256 === diffSha256 && entry.provider === provider && entry.model === model && entry.prompt_version === promptVersion && entry.review) {
       return entry.review;
     }
@@ -5241,6 +6054,7 @@ async function semanticReview(mission, receipt, diff, policy, provider, context)
   const temperature = resolveReviewTemperature(policy);
   const prov = provider ?? selectProvider(policy);
   const audit = {
+    input_sha256: createHash3("sha256").update(prompt).digest("hex"),
     provider: prov.id ?? resolveProviderId(policy),
     model,
     prompt_version: PROMPT_VERSION,
@@ -5379,620 +6193,6 @@ function parseReviewJson(text) {
     }
   }
   return null;
-}
-
-// src/github.ts
-import { createHash as createHash2 } from "node:crypto";
-
-// src/verdict.ts
-var TABLE = {
-  approve: {
-    verdict: "approve",
-    checkName: "Plumbline: PASS",
-    conclusion: "success",
-    label: "\u2705 PASS",
-    commentTitle: "\u2705 Plumbline: PASS \u2014 merging automatically",
-    commentBanner: "**\u2705 Passed shape + semantic review. Merging automatically \u2014 no action needed.**",
-    annotationLevel: "notice",
-    mergeable: true
-  },
-  rework: {
-    verdict: "rework",
-    checkName: "Plumbline: REWORK \u2014 blocked, do not merge",
-    conclusion: "failure",
-    label: "\u{1F501} REWORK",
-    commentTitle: "\u{1F501} Plumbline: REWORK \u2014 BLOCKED, do NOT merge",
-    commentBanner: "**\u{1F501} REWORK \u2014 do NOT merge. The agent must fix the \u{1F916} items below and re-push.** This is the agent's turn, not a human sign-off \u2014 merging now ships un-reworked code.",
-    annotationLevel: "error",
-    mergeable: false
-  },
-  review: {
-    verdict: "review",
-    checkName: "Plumbline: REVIEW \u2014 awaiting human approval",
-    // action_required (not failure): the UI renders it as "needs a human to act"
-    // rather than "broken", which is exactly the REVIEW semantic — and makes it
-    // visually distinct from a REWORK failure at a glance.
-    conclusion: "action_required",
-    label: "\u26A0\uFE0F REVIEW",
-    commentTitle: "\u26A0\uFE0F Plumbline: REVIEW \u2014 awaiting explicit human approval",
-    commentBanner: "**\u26A0\uFE0F REVIEW \u2014 Human approval required. This is the human's turn: no agent rework needed, but this is NOT a rubber stamp.** A maintainer must read the findings and, if sound, approve/override-merge. Merging must be a deliberate act \u2014 do not confuse this with a REWORK (agent-fix) failure.",
-    annotationLevel: "warning",
-    mergeable: false
-  },
-  // INDETERMINATE (infra_error, v0.6.1): the gate could NOT evaluate because a
-  // GitHub infrastructure call failed transiently (503/timeout/etc.) and
-  // survived every retry. This is NEITHER a rework NOR an approval — there is
-  // no code verdict at all. It BLOCKS auto-merge (exit non-zero: we could not
-  // verify), but the wording must never read as "agent's turn to fix code"
-  // (REWORK) or as green PASS. It is trivially re-runnable: a fresh gate run
-  // once GitHub recovers produces a real verdict. Uses `action_required` so the
-  // UI reads it as "a human needs to act" (re-run) rather than a red "broken"
-  // failure — and the distinct 🔌 icon + wording keeps it unmistakable.
-  indeterminate: {
-    verdict: "indeterminate",
-    checkName: "Plumbline: INDETERMINATE \u2014 could not evaluate (GitHub infra error)",
-    conclusion: "action_required",
-    label: "\u{1F50C} INDETERMINATE",
-    commentTitle: "\u{1F50C} Plumbline: INDETERMINATE \u2014 could not evaluate (GitHub infrastructure error)",
-    commentBanner: "**\u26A0\uFE0F Gate could not evaluate \u2014 GitHub infrastructure error (e.g. 503/timeout), NOT a code verdict.** This is **neither a REWORK nor an approval**: the gate never assessed the code \u2014 a GitHub API call failed transiently and survived all retries. Do NOT change the code in response to this, and do NOT merge on it. **Re-run the gate when GitHub recovers** and it will produce a real verdict.",
-    annotationLevel: "warning",
-    mergeable: false
-  }
-};
-function verdictPresentation(verdict) {
-  return TABLE[verdict];
-}
-
-// src/github.ts
-function renderComment(result) {
-  const pres = verdictPresentation(result.final);
-  const lines = [];
-  lines.push(`## ${pres.commentTitle}`);
-  lines.push("");
-  const cap = result.review?.failure_capsule;
-  const agentActions = cap?.agent_actions ?? [];
-  const humanActions = cap?.human_actions ?? [];
-  const followUps = cap?.follow_ups ?? cap?.advisory ?? [];
-  const didNotConverge = cap?.did_not_converge === true;
-  if (result.final === "indeterminate") {
-    lines.push(`> ${pres.commentBanner}`);
-    lines.push("");
-    if (result.reasons.length > 0) {
-      for (const reason of result.reasons) lines.push(`> ${reason}`);
-      lines.push("");
-    }
-    lines.push("<sub>plumbline \xB7 proof-carrying gate for agent work</sub>");
-    return lines.join("\n");
-  }
-  if (result.final === "review" && didNotConverge) {
-    lines.push(
-      "> **\u{1F9D1}\u200D\u2696\uFE0F Gate did not converge \u2014 human decides.** After 2 rework rounds the gate stops iterating the agent. A maintainer reviews the remaining \u{1F9D1} items and override-merges if sound: `gh pr merge <PR> --squash --admin`."
-    );
-  } else {
-    lines.push(`> ${pres.commentBanner}`);
-  }
-  lines.push("");
-  if (result.final !== "approve" && result.review) {
-    const riskCount = (result.review.risk_notes.match(/(?:^|\s)\d+[\).]/g) || []).length;
-    const riskLabel = riskCount > 0 ? `${riskCount} risk finding${riskCount === 1 ? "" : "s"}` : "risk notes";
-    lines.push(
-      `> \u{1F4CB} **Review findings below \u2014 don't merge without reading them:** ${riskLabel}, plus validation-coverage and mission-alignment notes.`
-    );
-    lines.push("");
-  }
-  lines.push(`**Shape gate:** ${result.shape.pass ? "pass" : "FAIL"}`);
-  for (const e of result.shape.errors) lines.push(`- \u274C ${e}`);
-  for (const w of result.shape.warnings) lines.push(`- \u26A0\uFE0F ${w}`);
-  lines.push("");
-  if (result.review) {
-    const r = result.review;
-    lines.push(`**Semantic review:** ${r.verdict} (confidence ${r.confidence})`);
-    lines.push("");
-    lines.push(`- **Validation coverage:** ${r.validation_coverage_notes}`);
-    lines.push(`- **Mission alignment:** ${r.mission_alignment_notes}`);
-    lines.push(`- **Risk:** ${r.risk_notes}`);
-    if (r.failure_capsule) {
-      lines.push("");
-      lines.push(`### What's needed \u2014 ${r.failure_capsule.failing_check}`);
-      lines.push(`_${r.failure_capsule.suspected_cause}_`);
-      if (humanActions.length > 0) {
-        lines.push("");
-        lines.push("#### \u{1F9D1} Human must decide");
-        for (const a of humanActions) lines.push(`- [ ] ${a}`);
-      }
-      if (agentActions.length > 0) {
-        lines.push("");
-        lines.push("#### \u{1F916} Agent can do now");
-        for (const a of agentActions) lines.push(`- [ ] ${a}`);
-        lines.push("");
-        lines.push("_Agent: do the \u{1F916} items and re-push with an updated receipt._");
-      }
-      if (humanActions.length === 0 && agentActions.length === 0) {
-        lines.push("");
-        lines.push(`**Next action:** ${r.failure_capsule.next_action_requested}`);
-      }
-      if (followUps.length > 0) {
-        lines.push("");
-        lines.push("#### \u{1F4A1} Optional follow-ups \u2014 non-blocking (auto-filed as tracked issues)");
-        for (const a of followUps) lines.push(`- ${a}`);
-      }
-      lines.push("");
-      lines.push("<details><summary>Full capsule (JSON)</summary>");
-      lines.push("");
-      lines.push("```json");
-      lines.push(JSON.stringify(r.failure_capsule, null, 2));
-      lines.push("```");
-      lines.push("</details>");
-    }
-  }
-  if (result.reasons.length > 0) {
-    lines.push("");
-    for (const reason of result.reasons) lines.push(`> ${reason}`);
-  }
-  lines.push("");
-  lines.push("<sub>plumbline \xB7 proof-carrying gate for agent work</sub>");
-  return lines.join("\n");
-}
-function renderCiSummary(result) {
-  const pres = verdictPresentation(result.final);
-  if (result.final === "approve") {
-    return {
-      level: pres.annotationLevel,
-      title: pres.checkName,
-      message: "Receipt passed shape + semantic review. Merging automatically \u2014 no action needed."
-    };
-  }
-  if (result.final === "indeterminate") {
-    return {
-      level: pres.annotationLevel,
-      title: pres.checkName,
-      message: "Could not evaluate \u2014 a GitHub infrastructure call failed transiently (e.g. 503/timeout) and survived all retries. This is NOT a code verdict (neither REWORK nor PASS). Re-run the gate when GitHub recovers." + (result.reasons.length ? ` ${result.reasons[0]}` : "")
-    };
-  }
-  const cap = result.review?.failure_capsule;
-  const parts = [];
-  if (result.final === "rework") {
-    parts.push("REWORK \u2014 do NOT merge. The agent fixes the items in the PR comment and re-pushes.");
-  } else if (cap?.did_not_converge) {
-    parts.push("REVIEW \u2014 gate did not converge after 2 rework rounds; a human decides the remaining items.");
-  } else {
-    parts.push("REVIEW \u2014 human approval required (protected/billing surface). NOT a rubber stamp; NOT a broken build.");
-  }
-  if (cap?.failing_check) parts.push(`Focus: ${cap.failing_check}.`);
-  if (result.review) {
-    const riskCount = (result.review.risk_notes.match(/(?:^|\s)\d+[\).]/g) || []).length;
-    const findings = riskCount > 0 ? `${riskCount} risk finding${riskCount === 1 ? "" : "s"} + validation notes` : "risk + validation notes";
-    parts.push(`Read the ${findings} in the PR comment before merging.`);
-  }
-  return {
-    level: pres.annotationLevel,
-    title: pres.checkName,
-    message: parts.join(" ")
-  };
-}
-var GH_HEADERS = (token) => ({
-  authorization: `Bearer ${token}`,
-  accept: "application/vnd.github+json"
-});
-var RETRY_ATTEMPTS = 4;
-var RETRY_BASE_MS = 500;
-var RETRY_MAX_MS = 8e3;
-function isTransientStatus(status) {
-  return status === 429 || status >= 500 && status <= 599;
-}
-function isTransientNetworkError(err) {
-  const e = err;
-  const code = e?.code ?? e?.cause?.code ?? "";
-  if (["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EPIPE", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"].includes(code)) {
-    return true;
-  }
-  const msg = `${e?.name ?? ""} ${e?.message ?? ""}`.toLowerCase();
-  return /socket hang up|network|fetch failed|timeout|timed out|terminated|econnreset|etimedout/.test(msg);
-}
-var InfraError = class extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "InfraError";
-  }
-};
-var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function githubFetch(url, init, what, opts = {}) {
-  const attempts = opts.attempts ?? RETRY_ATTEMPTS;
-  const doFetch = opts.fetchImpl ?? fetch;
-  const doSleep = opts.sleepImpl ?? sleep;
-  let lastDetail = "";
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    let res = null;
-    try {
-      res = await doFetch(url, init);
-    } catch (err) {
-      if (isTransientNetworkError(err) && attempt < attempts) {
-        lastDetail = `network error: ${err.message}`;
-        await doSleep(backoffMs(attempt));
-        continue;
-      }
-      if (isTransientNetworkError(err)) {
-        throw new InfraError(`${what}: ${err.message} (after ${attempt} attempt${attempt === 1 ? "" : "s"})`);
-      }
-      throw err;
-    }
-    if (isTransientStatus(res.status) && attempt < attempts) {
-      lastDetail = `HTTP ${res.status}`;
-      await res.text().catch(() => "");
-      await doSleep(backoffMs(attempt));
-      continue;
-    }
-    if (isTransientStatus(res.status)) {
-      const body = await res.text().catch(() => "");
-      throw new InfraError(
-        `${what}: HTTP ${res.status} after ${attempt} attempts${body ? ` \u2014 ${body.slice(0, 200)}` : ""}`
-      );
-    }
-    void lastDetail;
-    return res;
-  }
-  throw new InfraError(`${what}: exhausted ${attempts} attempts (${lastDetail})`);
-}
-function backoffMs(attempt) {
-  const base = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** (attempt - 1));
-  return Math.floor(base / 2 + Math.random() * (base / 2));
-}
-async function getPrHeadSha(repo, prNumber, token) {
-  const res = await githubFetch(
-    `https://api.github.com/repos/${repo}/pulls/${prNumber}`,
-    { headers: GH_HEADERS(token) },
-    `get PR #${prNumber}`
-  );
-  if (!res.ok) throw new Error(`get PR #${prNumber}: ${res.status} ${await res.text()}`);
-  const pr = await res.json();
-  if (!pr.head?.sha) throw new Error(`PR #${prNumber} has no head.sha`);
-  return pr.head.sha;
-}
-async function getCheckRunsForSha(repo, sha, token) {
-  const res = await githubFetch(
-    `https://api.github.com/repos/${repo}/commits/${sha}/check-runs?per_page=100`,
-    { headers: GH_HEADERS(token) },
-    `get check-runs for ${sha}`
-  );
-  if (!res.ok) throw new Error(`get check-runs for ${sha}: ${res.status} ${await res.text()}`);
-  const data = await res.json();
-  return (data.check_runs ?? []).map((c) => ({
-    name: c.name,
-    status: c.status,
-    conclusion: c.conclusion ?? null
-  }));
-}
-function evaluateCiEvidence(checkRuns, required) {
-  const errors = [];
-  const notes = [];
-  for (const name of required) {
-    const runs = checkRuns.filter((c) => c.name === name);
-    if (runs.length === 0) {
-      errors.push(
-        `ci-evidence: required check "${name}" did not run for the head commit (the gate verifies the real CI run, not the receipt's self-report)`
-      );
-    } else if (runs.some((c) => c.conclusion === "success")) {
-      notes.push(`${name}: success`);
-    } else {
-      const w = runs.find((c) => c.status === "completed") ?? runs[0];
-      errors.push(
-        `ci-evidence: required check "${name}" did not pass \u2014 status=${w.status} conclusion=${w.conclusion ?? "none"}`
-      );
-    }
-  }
-  return { pass: errors.length === 0, errors, notes };
-}
-async function verifyCiEvidence(repo, prNumber, token, required) {
-  if (required.length === 0) return { pass: true, errors: [], notes: [] };
-  const sha = await getPrHeadSha(repo, prNumber, token);
-  const runs = await getCheckRunsForSha(repo, sha, token);
-  return evaluateCiEvidence(runs, required);
-}
-var HISTORY_MARKER = "<!-- plumbline:attempt-history -->";
-var ATTEMPT_DELIM = "<!-- plumbline:attempt -->";
-var HISTORY_CAP = 5;
-var ATTEMPT_MAX_CHARS = 4e3;
-function truncateBalanced(s, max) {
-  if (s.length <= max) return s;
-  let out = `${s.slice(0, max)}
-\u2026 (truncated)`;
-  const opens = (out.match(/<details/g) ?? []).length;
-  const closes = (out.match(/<\/details>/g) ?? []).length;
-  for (let i = closes; i < opens; i++) out += "\n</details>";
-  return out;
-}
-function appendAttemptHistory(newBody, existingBody, now = /* @__PURE__ */ new Date()) {
-  const idx = existingBody.indexOf(HISTORY_MARKER);
-  const existingCurrent = (idx >= 0 ? existingBody.slice(0, idx) : existingBody).trim();
-  const historyPart = idx >= 0 ? existingBody.slice(idx) : "";
-  const priorBlocks = historyPart.split(ATTEMPT_DELIM).slice(1).map((b, i, arr) => (i === arr.length - 1 ? b.replace(/\s*<\/details>\s*$/, "") : b).trim()).filter(Boolean);
-  const verdict = existingCurrent.match(/^##.*?plumbline:\s*(\w+)/im)?.[1]?.toUpperCase() ?? "PRIOR";
-  const when = `${now.toISOString().slice(0, 16).replace("T", " ")} UTC`;
-  const archived = `<details><summary>${verdict} \u2014 superseded ${when}</summary>
-
-${truncateBalanced(existingCurrent, ATTEMPT_MAX_CHARS)}
-
-</details>`;
-  const blocks = [archived, ...priorBlocks].slice(0, HISTORY_CAP);
-  return `${newBody}
-
-${HISTORY_MARKER}
-<details><summary>\u{1F4DC} Attempt history (${blocks.length})</summary>
-
-` + blocks.map((b) => `${ATTEMPT_DELIM}
-${b}`).join("\n\n") + `
-</details>`;
-}
-function countRounds(existingBody) {
-  if (!existingBody) return 1;
-  const idx = existingBody.indexOf(HISTORY_MARKER);
-  if (idx < 0) return 2;
-  const priorBlocks = existingBody.slice(idx).split(ATTEMPT_DELIM).slice(1).filter((b) => b.trim());
-  return priorBlocks.length + 2;
-}
-function extractPriorCapsule(existingBody) {
-  if (!existingBody) return void 0;
-  const hIdx = existingBody.indexOf(HISTORY_MARKER);
-  const current = hIdx >= 0 ? existingBody.slice(0, hIdx) : existingBody;
-  const m = current.match(/Full capsule \(JSON\)<\/summary>\s*```json\s*([\s\S]*?)```/);
-  if (!m) return void 0;
-  try {
-    return JSON.parse(m[1].trim());
-  } catch {
-    return void 0;
-  }
-}
-async function fetchExistingGateComment(repo, prNumber, token) {
-  try {
-    const res = await fetch(
-      `https://api.github.com/repos/${repo}/issues/${prNumber}/comments?per_page=100`,
-      { headers: GH_HEADERS(token) }
-    );
-    if (!res.ok) return void 0;
-    const comments = await res.json();
-    return comments.find(
-      (c) => c.body.includes("plumbline \xB7 proof-carrying gate") || // Legacy footer from the pre-rename (proofgate→Plumbline) version —
-      // still matched so re-runs update the existing thread instead of stacking.
-      c.body.includes("proofgate \xB7 proof-carrying gate")
-    )?.body;
-  } catch {
-    return void 0;
-  }
-}
-async function publishCheckRun(repo, headSha, name, conclusion, title, summary, token) {
-  try {
-    const res = await fetch(`https://api.github.com/repos/${repo}/check-runs`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        accept: "application/vnd.github+json",
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        name,
-        head_sha: headSha,
-        status: "completed",
-        conclusion,
-        // GitHub caps the check-run output summary; the full detail lives in the
-        // PR comment. Keep this short and pointed.
-        output: { title, summary: summary.slice(0, 6e4) }
-      })
-    });
-    if (!res.ok) {
-      console.error(`plumbline: could not publish verdict check-run (${res.status} ${await res.text().catch(() => "")})`);
-      return false;
-    }
-    return true;
-  } catch (e) {
-    console.error(`plumbline: could not publish verdict check-run: ${e.message}`);
-    return false;
-  }
-}
-var FOLLOWUP_LABEL = "plumbline-followup";
-var FOLLOWUP_MARKER = "<!-- plumbline:followup:";
-function followUpFingerprint(prNumber, description) {
-  const h = createHash2("sha256").update(`${prNumber}
-${description.trim()}`, "utf8").digest("hex");
-  return h.slice(0, 16);
-}
-async function followUpExists(repo, fingerprint, token) {
-  try {
-    const q = encodeURIComponent(`repo:${repo} is:issue is:open in:body ${FOLLOWUP_MARKER}${fingerprint}`);
-    const res = await fetch(`https://api.github.com/search/issues?q=${q}`, { headers: GH_HEADERS(token) });
-    if (!res.ok) return false;
-    const data = await res.json();
-    return (data.total_count ?? 0) > 0;
-  } catch {
-    return false;
-  }
-}
-async function createFollowUpIssue(repo, prNumber, description, token) {
-  const fingerprint = followUpFingerprint(prNumber, description);
-  if (await followUpExists(repo, fingerprint, token)) return null;
-  const title = `[plumbline follow-up] ${description.slice(0, 120)}${description.length > 120 ? "\u2026" : ""}`;
-  const body = `${FOLLOWUP_MARKER}${fingerprint} -->
-
-Filed by the Plumbline gate from PR #${prNumber} as an **optional-but-good** review finding (not blocking that PR, but worth doing so it isn't lost):
-
-> ${description}
-
-_Auto-filed so the suggestion is tracked instead of skipped. Close if not worth pursuing._`;
-  try {
-    const res = await fetch(`https://api.github.com/repos/${repo}/issues`, {
-      method: "POST",
-      headers: { ...GH_HEADERS(token), "content-type": "application/json" },
-      body: JSON.stringify({ title, body, labels: [FOLLOWUP_LABEL] })
-    });
-    if (!res.ok) {
-      if (res.status === 422) {
-        const retry = await fetch(`https://api.github.com/repos/${repo}/issues`, {
-          method: "POST",
-          headers: { ...GH_HEADERS(token), "content-type": "application/json" },
-          body: JSON.stringify({ title, body })
-        });
-        if (retry.ok) return (await retry.json()).number ?? null;
-      }
-      console.error(`plumbline: could not file follow-up issue (${res.status})`);
-      return null;
-    }
-    return (await res.json()).number ?? null;
-  } catch (e) {
-    console.error(`plumbline: could not file follow-up issue: ${e.message}`);
-    return null;
-  }
-}
-async function fileFollowUps(repo, prNumber, descriptions, token) {
-  const created = [];
-  for (const d of descriptions) {
-    const n = await createFollowUpIssue(repo, prNumber, d, token);
-    if (n !== null) created.push(n);
-  }
-  return created;
-}
-var PR_FOLLOWUP_MARKER = (prNumber) => `<!-- plumbline:pr-followups:${prNumber} -->`;
-function renderConsolidatedBody(prNumber, descriptions) {
-  const items = descriptions.map((d) => `- [ ] ${d.replace(/\n+/g, " ").trim()}`).join("\n");
-  return `${PR_FOLLOWUP_MARKER(prNumber)}
-
-Consolidated **optional-but-good** follow-up findings from PR #${prNumber} \u2014 none blocked that PR, but they're worth doing so they aren't lost:
-
-${items}
-
-_Auto-filed + updated in place by the Plumbline gate. Check off or close items as you go; the gate closes this issue when #${prNumber} merges (most items are stale-by-design once the PR lands)._`;
-}
-async function findConsolidatedIssue(repo, prNumber, token) {
-  try {
-    const q = encodeURIComponent(`repo:${repo} is:issue in:body ${PR_FOLLOWUP_MARKER(prNumber)}`);
-    const res = await fetch(`https://api.github.com/search/issues?q=${q}`, { headers: GH_HEADERS(token) });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const item = data.items?.[0];
-    return item ? { number: item.number, state: item.state } : null;
-  } catch {
-    return null;
-  }
-}
-async function fileConsolidatedFollowUps(repo, prNumber, descriptions, token) {
-  if (descriptions.length === 0) return { number: null, action: "noop" };
-  const body = renderConsolidatedBody(prNumber, descriptions);
-  const title = `Follow-ups for #${prNumber} (${descriptions.length} item${descriptions.length === 1 ? "" : "s"})`;
-  try {
-    const existing = await findConsolidatedIssue(repo, prNumber, token);
-    if (existing) {
-      const res2 = await fetch(`https://api.github.com/repos/${repo}/issues/${existing.number}`, {
-        method: "PATCH",
-        headers: { ...GH_HEADERS(token), "content-type": "application/json" },
-        body: JSON.stringify({ title, body, state: "open" })
-      });
-      if (res2.ok) return { number: existing.number, action: "updated" };
-      console.error(`plumbline: could not update consolidated follow-up issue #${existing.number} (${res2.status})`);
-      return { number: existing.number, action: "noop" };
-    }
-    const create = async (withLabel) => fetch(`https://api.github.com/repos/${repo}/issues`, {
-      method: "POST",
-      headers: { ...GH_HEADERS(token), "content-type": "application/json" },
-      body: JSON.stringify({ title, body, ...withLabel ? { labels: [FOLLOWUP_LABEL] } : {} })
-    });
-    let res = await create(true);
-    if (!res.ok && res.status === 422) res = await create(false);
-    if (!res.ok) {
-      console.error(`plumbline: could not file consolidated follow-up issue (${res.status})`);
-      return { number: null, action: "noop" };
-    }
-    return { number: (await res.json()).number ?? null, action: "created" };
-  } catch (e) {
-    console.error(`plumbline: could not file consolidated follow-up issue: ${e.message}`);
-    return { number: null, action: "noop" };
-  }
-}
-async function closeFollowUpOnMerge(repo, prNumber, token) {
-  try {
-    const existing = await findConsolidatedIssue(repo, prNumber, token);
-    if (!existing || existing.state === "closed") return null;
-    await fetch(`https://api.github.com/repos/${repo}/issues/${existing.number}/comments`, {
-      method: "POST",
-      headers: { ...GH_HEADERS(token), "content-type": "application/json" },
-      body: JSON.stringify({
-        body: `PR #${prNumber} merged \u2014 closing this consolidated follow-up issue. Most items were stale-by-design once the PR landed. Reopen any item still worth doing.`
-      })
-    }).catch(() => void 0);
-    const res = await fetch(`https://api.github.com/repos/${repo}/issues/${existing.number}`, {
-      method: "PATCH",
-      headers: { ...GH_HEADERS(token), "content-type": "application/json" },
-      body: JSON.stringify({ state: "closed", state_reason: "completed" })
-    });
-    return res.ok ? existing.number : null;
-  } catch {
-    return null;
-  }
-}
-async function getPrNodeId(repo, prNumber, token) {
-  const res = await githubFetch(
-    `https://api.github.com/repos/${repo}/pulls/${prNumber}`,
-    { headers: GH_HEADERS(token) },
-    `get PR #${prNumber} node id`
-  );
-  if (!res.ok) throw new Error(`get PR #${prNumber}: ${res.status} ${await res.text()}`);
-  const pr = await res.json();
-  if (!pr.node_id) throw new Error(`PR #${prNumber} has no node_id`);
-  return pr.node_id;
-}
-function resolveMergeToken(env) {
-  const merge = env.PLUMBLINE_MERGE_TOKEN?.trim();
-  if (merge) return { token: merge, suppressesWorkflows: false };
-  const fallback = env.GITHUB_TOKEN?.trim() || void 0;
-  return { token: fallback, suppressesWorkflows: fallback !== void 0 };
-}
-async function enableAutoMerge(repo, prNumber, token, mergeMethod = "SQUASH") {
-  try {
-    const nodeId = await getPrNodeId(repo, prNumber, token);
-    const query = "mutation($id:ID!,$m:PullRequestMergeMethod!){enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$m}){pullRequest{autoMergeRequest{enabledAt}}}}";
-    const res = await fetch("https://api.github.com/graphql", {
-      method: "POST",
-      headers: { ...GH_HEADERS(token), "content-type": "application/json" },
-      body: JSON.stringify({ query, variables: { id: nodeId, m: mergeMethod } })
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.errors?.length) {
-      const msg = data.errors?.map((e) => e.message).join("; ") || `HTTP ${res.status}`;
-      console.error(
-        `plumbline: could not enable GitHub auto-merge on PR #${prNumber}: ${msg} (is auto-merge allowed on the repo? does the token have the merge scope?) \u2014 leaving PASS standing.`
-      );
-      return false;
-    }
-    return true;
-  } catch (e) {
-    console.error(`plumbline: could not enable GitHub auto-merge on PR #${prNumber}: ${e.message}`);
-    return false;
-  }
-}
-async function postPrComment(repo, prNumber, body, token) {
-  const api = `https://api.github.com/repos/${repo}/issues/${prNumber}/comments`;
-  const headers2 = {
-    authorization: `Bearer ${token}`,
-    accept: "application/vnd.github+json",
-    "content-type": "application/json"
-  };
-  const list = await fetch(`${api}?per_page=100`, { headers: headers2 });
-  if (list.ok) {
-    const comments = await list.json();
-    const mine = comments.find(
-      (c) => c.body.includes("plumbline \xB7 proof-carrying gate") || // Legacy footer from the pre-rename (proofgate→Plumbline) version.
-      c.body.includes("proofgate \xB7 proof-carrying gate")
-    );
-    if (mine) {
-      const merged = appendAttemptHistory(body, mine.body);
-      const upd = await fetch(
-        `https://api.github.com/repos/${repo}/issues/comments/${mine.id}`,
-        { method: "PATCH", headers: headers2, body: JSON.stringify({ body: merged }) }
-      );
-      if (upd.ok) return;
-    }
-  }
-  const res = await fetch(api, { method: "POST", headers: headers2, body: JSON.stringify({ body }) });
-  if (!res.ok) {
-    throw new Error(`failed to post PR comment: ${res.status} ${await res.text()}`);
-  }
 }
 
 // src/preflight.ts
@@ -6149,62 +6349,62 @@ function pickReceipt(candidates, ctx) {
 
 // src/scaffold.ts
 import { fileURLToPath } from "node:url";
-import { dirname as dirname2, join as join4 } from "node:path";
+import { dirname as dirname2, join as join5 } from "node:path";
 
 // src/basedir.ts
 import { existsSync as existsSync2 } from "node:fs";
-import { join as join2 } from "node:path";
+import { join as join3 } from "node:path";
 var CANONICAL_DIR = ".plumbline";
 var LEGACY_DIR = ".proofgate";
 function baseDir(cwd) {
-  if (existsSync2(join2(cwd, CANONICAL_DIR))) return CANONICAL_DIR;
-  if (existsSync2(join2(cwd, LEGACY_DIR))) return LEGACY_DIR;
+  if (existsSync2(join3(cwd, CANONICAL_DIR))) return CANONICAL_DIR;
+  if (existsSync2(join3(cwd, LEGACY_DIR))) return LEGACY_DIR;
   return CANONICAL_DIR;
 }
 function resolveDualPath(cwd, path) {
-  if (existsSync2(join2(cwd, path))) return path;
+  if (existsSync2(join3(cwd, path))) return path;
   let twin;
   if (path.startsWith(`${CANONICAL_DIR}/`)) {
     twin = LEGACY_DIR + path.slice(CANONICAL_DIR.length);
   } else if (path.startsWith(`${LEGACY_DIR}/`)) {
     twin = CANONICAL_DIR + path.slice(LEGACY_DIR.length);
   }
-  if (twin && existsSync2(join2(cwd, twin))) return twin;
+  if (twin && existsSync2(join3(cwd, twin))) return twin;
   return path;
 }
 
 // src/scaffold.ts
-import { existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import { existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync4, writeFileSync as writeFileSync2 } from "node:fs";
 
 // src/stack.ts
-import { existsSync as existsSync3, readFileSync as readFileSync2, readdirSync } from "node:fs";
+import { existsSync as existsSync3, readFileSync as readFileSync3, readdirSync as readdirSync2 } from "node:fs";
 import { execFileSync as execFileSync2 } from "node:child_process";
-import { join as join3 } from "node:path";
+import { join as join4 } from "node:path";
 var KNOWN_STACKS = ["rust-sqlx"];
 function isStackId(s) {
   return KNOWN_STACKS.includes(s);
 }
 function detectStack(cwd) {
-  const cargo = join3(cwd, "Cargo.toml");
+  const cargo = join4(cwd, "Cargo.toml");
   if (!existsSync3(cargo)) return void 0;
-  const hasMigrations = existsSync3(join3(cwd, "migrations"));
+  const hasMigrations = existsSync3(join4(cwd, "migrations"));
   if (!hasMigrations) return void 0;
   let usesSqlx = false;
   try {
-    if (/(^|\n)\s*sqlx\b/.test(readFileSync2(cargo, "utf8"))) usesSqlx = true;
+    if (/(^|\n)\s*sqlx\b/.test(readFileSync3(cargo, "utf8"))) usesSqlx = true;
   } catch {
   }
   if (!usesSqlx) {
-    const lock = join3(cwd, "Cargo.lock");
+    const lock = join4(cwd, "Cargo.lock");
     try {
-      if (existsSync3(lock) && /name = "sqlx"/.test(readFileSync2(lock, "utf8"))) usesSqlx = true;
+      if (existsSync3(lock) && /name = "sqlx"/.test(readFileSync3(lock, "utf8"))) usesSqlx = true;
     } catch {
     }
   }
   return usesSqlx ? "rust-sqlx" : void 0;
 }
 function hasDockerfile(cwd) {
-  return existsSync3(join3(cwd, "Dockerfile"));
+  return existsSync3(join4(cwd, "Dockerfile"));
 }
 function migrationVersion(filename) {
   const base = filename.replace(/^.*\//, "");
@@ -6256,7 +6456,7 @@ function runMigrationGuard(cwd, baseRef, migrationsDir = "migrations") {
 
 // src/scaffold.ts
 function templatesDir() {
-  return join4(dirname2(fileURLToPath(import.meta.url)), "..", "templates");
+  return join5(dirname2(fileURLToPath(import.meta.url)), "..", "templates");
 }
 var INIT_PLAN = [
   { dest: "<dir>", dir: true },
@@ -6304,7 +6504,7 @@ function runInit(cwd, opts = {}) {
   for (const item of plan) {
     if (item.when && !item.when(cwd)) continue;
     const dest = item.dest.replace("<dir>", dir);
-    const abs = join4(cwd, dest);
+    const abs = join5(cwd, dest);
     if (existsSync4(abs)) {
       out.push({ dest, created: false, note: "exists \u2014 left as-is" });
       continue;
@@ -6314,8 +6514,8 @@ function runInit(cwd, opts = {}) {
       out.push({ dest, created: true });
       continue;
     }
-    const srcPath = item.stack ? join4(tdir, "stack", item.stack, item.src) : join4(tdir, item.src);
-    let content = readFileSync3(srcPath, "utf8").replaceAll(".plumbline/", `${dir}/`);
+    const srcPath = item.stack ? join5(tdir, "stack", item.stack, item.src) : join5(tdir, item.src);
+    let content = readFileSync4(srcPath, "utf8").replaceAll(".plumbline/", `${dir}/`);
     if (item.src === "workflow.yml") content = content.replace(/^# Copy to [^\n]*\n/, "");
     if (item.dest === "<dir>/policy.json") content = policyForStack(content, stack);
     mkdirSync2(dirname2(abs), { recursive: true });
@@ -6666,8 +6866,8 @@ function checkMechanical(receipt, mech) {
 
 // src/propose.ts
 import { execFileSync as execFileSync4 } from "node:child_process";
-import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
-import { join as join5 } from "node:path";
+import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync5, writeFileSync as writeFileSync3 } from "node:fs";
+import { join as join6 } from "node:path";
 function slugFromTitle(title) {
   const s = title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60).replace(/-+$/, "");
   return s || "change";
@@ -6784,19 +6984,19 @@ function runPropose(opts) {
   let proposalPath;
   if (!opts.lite) {
     const slug = slugFromTitle(opts.title);
-    const folder = join5("openspec", "changes", slug);
-    const abs = join5(opts.cwd, folder);
+    const folder = join6("openspec", "changes", slug);
+    const abs = join6(opts.cwd, folder);
     result.slug = slug;
     result.folder = folder;
     if (existsSync5(abs)) {
       log(`propose: ${folder}/ already exists \u2014 left as-is (scaffolding is never destructive).`);
-      proposalPath = join5(abs, "proposal.md");
+      proposalPath = join6(abs, "proposal.md");
     } else {
-      mkdirSync3(join5(abs, "specs"), { recursive: true });
-      proposalPath = join5(abs, "proposal.md");
+      mkdirSync3(join6(abs, "specs"), { recursive: true });
+      proposalPath = join6(abs, "proposal.md");
       writeFileSync3(proposalPath, proposalMd({ title: opts.title, body: opts.body, taskId: opts.task }));
-      writeFileSync3(join5(abs, "tasks.md"), tasksMd(opts.title));
-      writeFileSync3(join5(abs, "specs", "README.md"), specsReadme());
+      writeFileSync3(join6(abs, "tasks.md"), tasksMd(opts.title));
+      writeFileSync3(join6(abs, "specs", "README.md"), specsReadme());
       log(`created ${folder}/ (proposal.md + tasks.md + specs/) \u2014 fill the TODO sections; the tool never writes judgment content.`);
     }
   }
@@ -6827,7 +7027,7 @@ function runPropose(opts) {
   ${result.ghCommand}`);
   }
   if (result.issueNumber !== void 0 && proposalPath && existsSync5(proposalPath)) {
-    writeFileSync3(proposalPath, writeBackTaskId(readFileSync4(proposalPath, "utf8"), result.issueNumber));
+    writeFileSync3(proposalPath, writeBackTaskId(readFileSync5(proposalPath, "utf8"), result.issueNumber));
     log(`linked: proposal.md task_id \u2194 issue #${result.issueNumber}`);
   }
   if (prediction.selfModifying) {
@@ -6838,8 +7038,8 @@ function runPropose(opts) {
 }
 
 // src/archive.ts
-import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync5, readdirSync as readdirSync2, renameSync, writeFileSync as writeFileSync4 } from "node:fs";
-import { join as join6, dirname as dirname3 } from "node:path";
+import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync6, readdirSync as readdirSync3, renameSync, writeFileSync as writeFileSync4 } from "node:fs";
+import { join as join7, dirname as dirname3 } from "node:path";
 var REQ_HEADER = /^### Requirement:\s*(.+?)\s*$/;
 function parseRequirements(md) {
   const lines = md.split("\n");
@@ -6946,16 +7146,16 @@ function taskIdFromProposal(proposal) {
 }
 function findReceipt(cwd, taskId) {
   for (const dir of [CANONICAL_DIR, LEGACY_DIR]) {
-    const exact = join6(dir, "receipts", `${taskId}.json`);
-    if (existsSync6(join6(cwd, exact))) return exact;
+    const exact = join7(dir, "receipts", `${taskId}.json`);
+    if (existsSync6(join7(cwd, exact))) return exact;
   }
   for (const dir of [CANONICAL_DIR, LEGACY_DIR]) {
-    const receipts = join6(cwd, dir, "receipts");
+    const receipts = join7(cwd, dir, "receipts");
     if (!existsSync6(receipts)) continue;
-    for (const f of readdirSync2(receipts).filter((f2) => f2.endsWith(".json"))) {
+    for (const f of readdirSync3(receipts).filter((f2) => f2.endsWith(".json"))) {
       try {
-        const j = JSON.parse(readFileSync5(join6(receipts, f), "utf8"));
-        if (j.task_id === taskId) return join6(dir, "receipts", f);
+        const j = JSON.parse(readFileSync6(join7(receipts, f), "utf8"));
+        if (j.task_id === taskId) return join7(dir, "receipts", f);
       } catch {
       }
     }
@@ -6966,8 +7166,8 @@ function runArchive(opts) {
   const log = opts.log ?? ((l) => console.error(l));
   const policy = opts.policy ?? PolicySchema.parse({ version: "1.0" });
   const res = { ok: false, specsUpdated: [], notes: [], warnings: [], errors: [] };
-  const changeRel = join6("openspec", "changes", opts.slug);
-  const changeAbs = join6(opts.cwd, changeRel);
+  const changeRel = join7("openspec", "changes", opts.slug);
+  const changeAbs = join7(opts.cwd, changeRel);
   if (opts.slug === "archive" || opts.slug.includes("/") || opts.slug.includes("..")) {
     res.errors.push(`'${opts.slug}' is not a change slug`);
     return res;
@@ -6976,8 +7176,8 @@ function runArchive(opts) {
     res.errors.push(`no change folder at ${changeRel}/ \u2014 is it already archived, or misspelled?`);
     return res;
   }
-  const proposalPath = join6(changeAbs, "proposal.md");
-  const taskId = existsSync6(proposalPath) ? taskIdFromProposal(readFileSync5(proposalPath, "utf8")) : void 0;
+  const proposalPath = join7(changeAbs, "proposal.md");
+  const taskId = existsSync6(proposalPath) ? taskIdFromProposal(readFileSync6(proposalPath, "utf8")) : void 0;
   const receiptRel = taskId ? findReceipt(opts.cwd, taskId) : void 0;
   let gateProblem;
   if (!taskId) {
@@ -6985,7 +7185,7 @@ function runArchive(opts) {
   } else if (!receiptRel) {
     gateProblem = `no receipt found for task_id '${taskId}' (looked in ${CANONICAL_DIR}/receipts/ and ${LEGACY_DIR}/receipts/)`;
   } else {
-    const { result } = shapeCheck(readFileSync5(join6(opts.cwd, receiptRel), "utf8"), policy, {
+    const { result } = shapeCheck(readFileSync6(join7(opts.cwd, receiptRel), "utf8"), policy, {
       skipGit: true
     });
     if (result.pass) {
@@ -7003,19 +7203,19 @@ function runArchive(opts) {
     res.warnings.push(`FORCED past the gate-before-archive rule: ${gateProblem}`);
     log(`plumb archive \u26A0\uFE0F  ${res.warnings[res.warnings.length - 1]}`);
   }
-  const deltaRoot = join6(changeAbs, "specs");
+  const deltaRoot = join7(changeAbs, "specs");
   if (existsSync6(deltaRoot)) {
-    for (const capability of readdirSync2(deltaRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)) {
-      const deltaPath = join6(deltaRoot, capability, "spec.md");
+    for (const capability of readdirSync3(deltaRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)) {
+      const deltaPath = join7(deltaRoot, capability, "spec.md");
       if (!existsSync6(deltaPath)) continue;
-      const delta = parseDeltaSpec(readFileSync5(deltaPath, "utf8"));
+      const delta = parseDeltaSpec(readFileSync6(deltaPath, "utf8"));
       if (delta.added.length + delta.modified.length + delta.removed.length === 0) {
         res.warnings.push(`${capability}: delta spec has no ADDED/MODIFIED/REMOVED sections \u2014 nothing applied`);
         continue;
       }
-      const livingRel = join6("openspec", "specs", capability, "spec.md");
-      const livingAbs = join6(opts.cwd, livingRel);
-      const living = existsSync6(livingAbs) ? readFileSync5(livingAbs, "utf8") : void 0;
+      const livingRel = join7("openspec", "specs", capability, "spec.md");
+      const livingAbs = join7(opts.cwd, livingRel);
+      const living = existsSync6(livingAbs) ? readFileSync6(livingAbs, "utf8") : void 0;
       const applied = applyDelta(living, delta, capability);
       mkdirSync4(dirname3(livingAbs), { recursive: true });
       writeFileSync4(livingAbs, applied.md);
@@ -7025,8 +7225,8 @@ function runArchive(opts) {
     }
   }
   const date = opts.date ?? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-  const destRel = join6("openspec", "changes", "archive", `${date}-${opts.slug}`);
-  const destAbs = join6(opts.cwd, destRel);
+  const destRel = join7("openspec", "changes", "archive", `${date}-${opts.slug}`);
+  const destAbs = join7(opts.cwd, destRel);
   if (existsSync6(destAbs)) {
     res.errors.push(`archive destination ${destRel}/ already exists \u2014 refusing to overwrite`);
     return res;
@@ -7112,7 +7312,7 @@ function loadPolicy(path) {
     console.error(`plumb: policy file not found at ${path} \u2014 using defaults`);
     return PolicySchema.parse({ version: "1.0" });
   }
-  return PolicySchema.parse(JSON.parse(readFileSync6(path, "utf8")));
+  return PolicySchema.parse(JSON.parse(readFileSync7(path, "utf8")));
 }
 function getDiff(baseRef, cwd) {
   return execFileSync5("git", ["diff", `${baseRef}...HEAD`], {
@@ -7145,7 +7345,7 @@ function protectedFloorHit(receipt, policy, baseRef, cwd, skipGit) {
 }
 function preflightWarnings(cwd, baseRef) {
   for (const d of [".plumbline", ".proofgate"]) {
-    if (existsSync7(join7(cwd, d, "receipt.json"))) {
+    if (existsSync7(join8(cwd, d, "receipt.json"))) {
       console.error(
         `plumb \u26A0\uFE0F  legacy ${d}/receipt.json present \u2014 use one file per PR at ${d}/receipts/<task_id>.json (a shared receipt.json gets dragged forward across branches and conflicts). \`plumb new\` creates the per-PR file.`
       );
@@ -7169,11 +7369,11 @@ function preflightWarnings(cwd, baseRef) {
 }
 function pinnedGateVersion(cwd) {
   try {
-    const dir = join7(cwd, ".github", "workflows");
+    const dir = join8(cwd, ".github", "workflows");
     if (!existsSync7(dir)) return null;
-    for (const f of readdirSync3(dir)) {
+    for (const f of readdirSync4(dir)) {
       if (!/\.ya?ml$/.test(f)) continue;
-      const text = readFileSync6(join7(dir, f), "utf8");
+      const text = readFileSync7(join8(dir, f), "utf8");
       const m = text.match(/plumbline[@#]v?(\d+\.\d+\.\d+)/);
       if (m) return m[1];
     }
@@ -7221,7 +7421,7 @@ function resolveReceiptPath(explicit, baseRef, cwd, skipGit, fallback, allowUntr
   if (changed.length > 1) {
     const candidates = changed.map((p) => {
       try {
-        const j = JSON.parse(readFileSync6(join7(cwd, p), "utf8"));
+        const j = JSON.parse(readFileSync7(join8(cwd, p), "utf8"));
         return {
           path: p,
           taskId: typeof j.task_id === "string" ? j.task_id : void 0,
@@ -7253,6 +7453,11 @@ function flag(name) {
 }
 async function main() {
   const cmd = process.argv[2];
+  if (cmd === "outcomes") {
+    if (!process.argv[3]) throw new Error("Usage: plumb outcomes DIRECTORY");
+    console.log(JSON.stringify(summarize(readOutcomes(process.argv[3])), null, 2));
+    return 0;
+  }
   const ci = detectCi();
   const cwd = arg("cwd", process.cwd());
   const dir = baseDir(cwd);
@@ -7283,6 +7488,7 @@ async function main() {
     console.log(`plumbline \u2014 the plumb line for AI agent work (Amos 7:7-8): proof-carrying gate
 
 usage:
+  plumb outcomes DIRECTORY   (summarize gate receipts, reuse evidence and labeled outcomes)
   plumb init    [--stack rust-sqlx] [--no-stack] [--protect]   (scaffold the governed CI into this
                 repo: gate workflow WITH ci-evidence poll-wait + .plumbline/ + AGENTS.md, and \u2014 on a
                 detected stack \u2014 the stack preset (rust-sqlx: migration guard + rust-cache CI). Start here.)
@@ -7393,10 +7599,10 @@ plumbline initialized. Next:
       console.error("plumb setup-protection: GITHUB_TOKEN with repo-admin scope is required");
       return 2;
     }
-    const checks = [];
+    const checks2 = [];
     for (let i = 0; i < process.argv.length; i++) {
       if (process.argv[i] === "--check" && process.argv[i + 1] && !process.argv[i + 1].startsWith("--")) {
-        checks.push(process.argv[i + 1]);
+        checks2.push(process.argv[i + 1]);
       }
     }
     try {
@@ -7404,7 +7610,7 @@ plumbline initialized. Next:
         repo,
         token,
         branch: arg("branch"),
-        checks,
+        checks: checks2,
         gateCheck: arg("gate-check", "plumbline"),
         dryRun: flag("dry-run"),
         force: flag("force")
@@ -7527,7 +7733,7 @@ Commit the archive: git add openspec/ && git commit -m "chore(openspec): archive
       } catch {
       }
     }
-    const dest = join7(cwd, dir, "receipts", `${taskId}.json`);
+    const dest = join8(cwd, dir, "receipts", `${taskId}.json`);
     if (existsSync7(dest)) {
       console.error(
         `plumb new: ${dir}/receipts/${taskId}.json already exists \u2014 left as-is. Edit it, then run 'plumb receipt --write' + 'plumb check'.`
@@ -7605,8 +7811,8 @@ Fill intent / validation_plan / execution_evidence / result_summary, then: plumb
         protectedPaths: policy.protected_paths,
         ciEvidenceChecks: policy.ci_evidence_checks
       });
-      const dest2 = join7(dir, "receipts", `${taskId}.json`);
-      const destAbs2 = join7(cwd, dest2);
+      const dest2 = join8(dir, "receipts", `${taskId}.json`);
+      const destAbs2 = join8(cwd, dest2);
       mkdirSync5(dirname4(destAbs2), { recursive: true });
       writeFileSync5(destAbs2, `${JSON.stringify(receipt2, null, 2)}
 `);
@@ -7655,9 +7861,9 @@ Commit the receipt with the change; the gate corroborates CI on the PR. Pre-chec
         }
       }
       const taskId = sanitizeTaskId(arg("task", branch || "TASK"));
-      dest = join7(dir, "receipts", `${taskId}.json`);
+      dest = join8(dir, "receipts", `${taskId}.json`);
     }
-    const destAbs = join7(cwd, dest);
+    const destAbs = join8(cwd, dest);
     if (checkOnly) {
       if (!existsSync7(destAbs)) {
         console.error(`plumb receipt --check: no receipt at ${dest} \u2014 run 'plumb receipt --write'`);
@@ -7665,7 +7871,7 @@ Commit the receipt with the change; the gate corroborates CI on the PR. Pre-chec
       }
       let obj;
       try {
-        obj = JSON.parse(readFileSync6(destAbs, "utf8"));
+        obj = JSON.parse(readFileSync7(destAbs, "utf8"));
       } catch (e) {
         console.error(`plumb receipt --check: ${dest} is not valid JSON: ${String(e)}`);
         return 1;
@@ -7702,7 +7908,7 @@ Commit the receipt with the change; the gate corroborates CI on the PR. Pre-chec
     } else {
       let obj;
       try {
-        obj = JSON.parse(readFileSync6(destAbs, "utf8"));
+        obj = JSON.parse(readFileSync7(destAbs, "utf8"));
       } catch (e) {
         console.error(`plumb receipt --write: ${dest} is not valid JSON: ${String(e)}`);
         return 1;
@@ -7719,7 +7925,7 @@ Commit the receipt with the change; the gate corroborates CI on the PR. Pre-chec
 Now fill the judgment fields (the tool never writes these):`);
     for (const j of JUDGMENT_CHECKLIST) console.error(`  \xB7 ${j}`);
     try {
-      const raw = readFileSync6(destAbs, "utf8");
+      const raw = readFileSync7(destAbs, "utf8");
       const { result: shape2 } = shapeCheck(raw, policy, { baseRef, cwd, skipGit: false });
       const evidenceGaps = shape2.errors.filter((e) => e.startsWith("no execution evidence for required step"));
       if (evidenceGaps.length > 0) {
@@ -7776,7 +7982,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
     );
     return 1;
   }
-  const rawReceipt = readFileSync6(receiptPath, "utf8");
+  const rawReceipt = readFileSync7(receiptPath, "utf8");
   if (cmd === "stamp") {
     if (skipGit || !baseRef) {
       console.error("plumb stamp: needs git + a --base ref to compute the diff");
@@ -7844,6 +8050,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
         }
       }
     }
+    if (arg("result") && (!wantReview || !canReviewLocally)) throw new Error("--result requires an available reviewer and --review");
     if (!wantReview || !canReviewLocally) {
       for (const e of shape2.errors) console.error(`shape \u274C ${e}`);
       for (const w of shape2.warnings) console.error(`shape \u26A0\uFE0F  ${w}`);
@@ -7869,6 +8076,19 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
   };
   if (cmd === "shape") return shape.pass ? 0 : 1;
   let infraError;
+  const repository = process.env.GITHUB_REPOSITORY;
+  const githubPr = cmd === "run" && ci.provider === "github" && ci.prNumber !== void 0;
+  const resultPath = arg("result");
+  if (resultPath && cmd === "check" && (!(repository || arg("repo")) || !(ci.prNumber || Number(arg("pr")) > 0) || skipGit)) {
+    throw new Error("A shadow result needs a Git checkout, --repo OWNER/REPO and --pr NUMBER");
+  }
+  const gitId = (ref) => execFileSync5("git", ["rev-parse", "--verify", ref], { cwd, encoding: "utf8" }).trim();
+  const head = !skipGit && (githubPr || resultPath) ? gitId("HEAD") : void 0;
+  const allowApproval = githubPr && process.env.PLUMBLINE_REVISION_APPROVAL === "true";
+  let checks = [];
+  let verified = false;
+  let approval;
+  let reviewMs;
   const ciEvidenceSeverity = resolveSeverity("ci_evidence", policy);
   if (cmd === "run" && !runCiEvidence && policy.ci_evidence_checks.length > 0) {
     console.error(
@@ -7895,7 +8115,12 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
     };
     if (ci.provider === "github" && repo && token && ci.prNumber !== void 0) {
       try {
-        const ev = await verifyCiEvidence(repo, ci.prNumber, token, policy.ci_evidence_checks);
+        const ev = await verifyCiEvidence(repo, ci.prNumber, token, policy.ci_evidence_checks, head);
+        checks = ev.checks ?? [];
+        verified = !!head && ev.pass && policy.ci_evidence_checks.every((name) => {
+          const matches = checks.filter((check) => check.name === name);
+          return matches.length === 1 && matches[0].app?.slug === "github-actions" && matches[0].status === "completed" && matches[0].conclusion === "success";
+        });
         for (const n of ev.notes) console.error(`ci-evidence \u2713 ${n}`);
         for (const e of ev.errors) fail(e);
         console.error(
@@ -7933,7 +8158,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
       console.error(`plumb: mission file not found at ${missionPath}`);
       return 1;
     }
-    const mission = readFileSync6(missionPath, "utf8");
+    const mission = readFileSync7(missionPath, "utf8");
     const diff = skipGit ? "" : getDiff(baseRef, cwd);
     const skip = shouldSkipReview(receipt, policy, diff);
     const floorHit = protectedFloorHit(receipt, policy, baseRef, cwd, skipGit);
@@ -7980,7 +8205,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
         gate.review = review;
         gate.final = review.verdict;
       }
-      const cacheDir = join7(cwd, policy.review_cache.dir);
+      const cacheDir = join8(cwd, policy.review_cache.dir);
       let cacheKeyValid = false;
       if (provider && policy.review_cache.enabled && !skipGit && receipt.diff_sha256) {
         try {
@@ -7997,7 +8222,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
           cacheKeyValid = false;
         }
       }
-      if (provider && cacheKeyValid) {
+      if (provider && cacheKeyValid && !allowApproval && !resultPath) {
         const hit = readReviewCache(
           cacheDir,
           receipt.diff_sha256,
@@ -8033,6 +8258,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
             }
           }
         }
+        const started = performance.now();
         try {
           review = await semanticReview(mission, receipt, diff, policy, provider, reviewContext);
         } catch (e) {
@@ -8054,6 +8280,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
             );
           }
         }
+        reviewMs = Math.round(performance.now() - started);
         if (review.audit && policy.review_cache.enabled && !skipGit && receipt.diff_sha256 && cacheKeyValid) {
           writeReviewCache(
             cacheDir,
@@ -8101,6 +8328,60 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
         "Phase 2 (verify): terminal verdict \u2014 ci-evidence (tests present + passing) verified against the real CI run. Phase 1 (quality: shape + semantic) is assumed already green."
       );
     }
+  }
+  if (allowApproval && head && repository && process.env.GITHUB_TOKEN && ci.prNumber !== void 0 && canSignOff(gate, verified, phase)) {
+    try {
+      approval = await revisionApproval(repository, ci.prNumber, head, process.env.GITHUB_TOKEN);
+      if (approval && await getPrHeadSha(repository, ci.prNumber, process.env.GITHUB_TOKEN) === head) {
+        gate.final = "approve";
+        gate.reasons.push(`@${approval.actor} approved revision \`${head}\` in PR comment #${approval.comment_id}.`);
+      } else {
+        approval = void 0;
+        gate.reasons.push(`A maintainer can comment \`/plumbline approve ${head}\` and rerun the gate job.`);
+      }
+    } catch (error) {
+      approval = void 0;
+      gate.reasons.push("Maintainer approval could not be verified. Rerun the gate.");
+      console.error(String(error));
+    }
+  }
+  const artifact = githubPr && phase !== "quality" && process.env.GITHUB_OUTPUT && head;
+  if (artifact || resultPath) {
+    const path = resultPath ?? join8(mkdtempSync(join8(process.env.RUNNER_TEMP || tmpdir(), "plumbline-")), "gate-result.json");
+    const pr = ci.prNumber ?? Number(arg("pr", "0"));
+    const observedChecks = await Promise.all(checks.map(async (check) => {
+      try {
+        const provenance = await testProvenance(repository, pr, head, check, process.env.GITHUB_TOKEN);
+        return { ...check, provenance };
+      } catch {
+        return { ...check, provenance_unavailable: true };
+      }
+    }));
+    const result = {
+      schema: "plumbline.gate-result.v1",
+      source: cmd === "check" ? "shadow" : "ci",
+      repository: repository ?? arg("repo"),
+      pr,
+      head,
+      tree: head && gitId("HEAD^{tree}"),
+      phase,
+      policy_sha256: createHash4("sha256").update(existsSync7(policyPath) ? readFileSync7(policyPath) : JSON.stringify(policy)).digest("hex"),
+      diff_sha256: receipt?.diff_sha256,
+      workflow: process.env.GITHUB_WORKFLOW_REF,
+      run_id: process.env.GITHUB_RUN_ID,
+      attempt: process.env.GITHUB_RUN_ATTEMPT,
+      job: process.env.GITHUB_JOB,
+      checks: observedChecks,
+      verdict: gate.final,
+      reviewer_verdict: gate.review?.verdict,
+      audit: gate.review?.audit,
+      review_ms: reviewMs,
+      approval,
+      findings: (gate.review?.failure_capsule?.findings ?? []).map((f) => ({ ...f, id: followUpFingerprint(pr, f.description) }))
+    };
+    writeFileSync5(path, JSON.stringify(result, null, 2) + "\n");
+    if (artifact) appendFileSync2(process.env.GITHUB_OUTPUT, `receipt=${path}
+`);
   }
   if (cmd === "run") {
     const prOverride = process.env.PLUMBLINE_PR_NUMBER || process.env.PROOFGATE_PR_NUMBER;
@@ -8172,7 +8453,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
       if (repo && token && ci.prNumber !== void 0) {
         const pres = verdictPresentation(gate.final);
         try {
-          const headSha = await getPrHeadSha(repo, ci.prNumber, token);
+          const headSha = head ?? await getPrHeadSha(repo, ci.prNumber, token);
           const ok = await publishCheckRun(
             repo,
             headSha,
@@ -8193,7 +8474,7 @@ Agent work must ship with a proof receipt. See templates/receipt.example.json.`
       }
     }
     const terminalPhase = phase === "full" || phase === "verify";
-    if (ci.provider === "github" && policy.lifecycle === "auto_merge" && gate.final === "approve" && terminalPhase) {
+    if (ci.provider === "github" && policy.lifecycle === "auto_merge" && !approval && gate.final === "approve" && terminalPhase) {
       const repo = process.env.GITHUB_REPOSITORY;
       const { token, suppressesWorkflows } = resolveMergeToken(process.env);
       if (repo && token && ci.prNumber !== void 0) {

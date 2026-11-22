@@ -10,6 +10,10 @@ Consumers should pin a released tag (e.g. `amos-labs/plumbline@v1`) rather than
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in maintainer sign-off for a specific PR revision, downloadable CI result receipts, a reusable exact-tree test evidence action and reviewer outcome comparisons.
+
 ## [0.7.4] - 2026-08-21
 
 ### Fixed

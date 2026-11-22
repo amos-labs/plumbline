@@ -148,7 +148,7 @@ export function renderCiSummary(result: GateResult): CiAnnotation {
     return {
       level: pres.annotationLevel,
       title: pres.checkName,
-      message: "Receipt passed shape + semantic review. Merging automatically — no action needed.",
+      message: "Plumbline passed. GitHub applies the repository’s merge settings.",
     };
   }
   if (result.final === "indeterminate") {
@@ -196,6 +196,9 @@ export function renderCiSummary(result: GateResult): CiAnnotation {
 // need not self-report status for these — and can't fake a passing suite.)
 
 export interface CheckRun {
+  id?: number;
+  details_url?: string;
+  app?: { slug?: string };
   name: string;
   /** queued | in_progress | completed */
   status: string;
@@ -350,8 +353,12 @@ export async function getCheckRunsForSha(repo: string, sha: string, token: strin
     `get check-runs for ${sha}`,
   );
   if (!res.ok) throw new Error(`get check-runs for ${sha}: ${res.status} ${await res.text()}`);
-  const data = (await res.json()) as { check_runs?: CheckRun[] };
+  const data = (await res.json()) as { check_runs?: CheckRun[]; total_count?: number };
+  if ((data.total_count ?? 0) > (data.check_runs?.length ?? 0)) throw new Error("Incomplete check-run list");
   return (data.check_runs ?? []).map((c) => ({
+    id: c.id,
+    details_url: c.details_url,
+    app: c.app && { slug: c.app.slug },
     name: c.name,
     status: c.status,
     conclusion: c.conclusion ?? null,
@@ -418,11 +425,13 @@ export async function verifyCiEvidence(
   prNumber: number,
   token: string,
   required: string[],
-): Promise<{ pass: boolean; errors: string[]; notes: string[] }> {
+  expectedHead?: string,
+): Promise<{ pass: boolean; errors: string[]; notes: string[]; checks?: CheckRun[] }> {
   if (required.length === 0) return { pass: true, errors: [], notes: [] };
   const sha = await getPrHeadSha(repo, prNumber, token);
+  if (expectedHead && sha !== expectedHead) throw new Error("PR head changed since checkout");
   const runs = await getCheckRunsForSha(repo, sha, token);
-  return evaluateCiEvidence(runs, required);
+  return { ...evaluateCiEvidence(runs, required), checks: runs.filter(c => required.includes(c.name)) };
 }
 
 // ── Attempt history: reruns keep context instead of overwriting it ─────────

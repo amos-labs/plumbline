@@ -7,6 +7,7 @@ on:
     types: [opened, synchronize, reopened]
 
 permissions:
+  actions: read
   contents: read
   pull-requests: write
   # read: poll-wait reads other check-runs. write: publish the distinct
@@ -30,7 +31,13 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm run build
-      - run: npm test
+      - name: Full suite
+        run: |
+          npm test
+          python3 -B -m unittest discover -s actions/test-proof
+      - name: Verified PR ${{ github.event.number }} checkout ${{ github.sha }}
+        if: github.event_name == 'pull_request'
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
   dist-check:
     # The Action runs the committed prebuilt bundle (dist/index.js) directly,
@@ -75,5 +82,6 @@ jobs:
       - name: Run plumbline on itself
         uses: ./
         with:
+          revision-approval: "true"
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
